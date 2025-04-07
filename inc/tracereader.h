@@ -34,22 +34,22 @@ class tracereader
   static uint64_t instr_unique_id; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
   struct reader_concept {
     virtual ~reader_concept() = default;
-    virtual ooo_model_instr operator()() = 0;
-    [[nodiscard]] virtual bool eof() const = 0;
+    virtual ooo_model_instr operator()() = 0;    // operator()表示支持重载括号运算符，因此一个实例化对象可以像函数一样被调用；这不同于constructor
+    [[nodiscard]] virtual bool eof() const = 0; // nodiscard表示这个函数返回的值不应该被忽略
   };
 
   template <typename T>
   struct reader_model final : public reader_concept {
     T intern_;
-    reader_model(T&& val) : intern_(std::move(val)) {}
+    reader_model(T&& val) : intern_(std::move(val)) {}  // 右值引用，T&& val是给caller看的，std::move(val)是callee要做的
 
     template <typename U>
-    using has_eof = decltype(std::declval<U>().eof());
+    using has_eof = decltype(std::declval<U>().eof());  // 主要用于在编译期检查类型 U 是否具备 eof() 成员函数，并获取该函数的返回类型
 
     ooo_model_instr operator()() override { return intern_(); }
     [[nodiscard]] bool eof() const override
     {
-      if constexpr (champsim::is_detected_v<has_eof, T>) {
+      if constexpr (champsim::is_detected_v<has_eof, T>) {  // 编译期检测类型T是否具备eof()成员函数，保证intern_.eof()是有效的
         return intern_.eof();
       }
       return false; // If an eof() member function is not provided, assume the trace never ends.

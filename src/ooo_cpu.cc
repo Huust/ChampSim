@@ -116,7 +116,7 @@ void O3_CPU::initialize_instruction()
 
     stop_fetch = do_init_instruction(input_queue.front());
 
-    // Add to IFETCH_BUFFER
+    // Add to IFETCH_BUFFER, this means instructions are not fetched from icache, but from input_queue (storing trace file)
     IFETCH_BUFFER.push_back(input_queue.front());
     input_queue.pop_front();
 
@@ -126,6 +126,12 @@ void O3_CPU::initialize_instruction()
 
 namespace
 {
+// inst 1: sub $8, %rap
+// inst 2: mov %rax, (%rsp)
+// 传统流程：
+// 指令1经过解码后进入issue buffer，等待执行，在执行完成并写回到 ROB 后，指令2才能获取正确的 SP 值并被发射执行。
+// 使用 stack pointer folding：
+// 在解码阶段就能确定 SP 的新值，指令2可以依赖这个预计算的值，同时与指令1一起被发射（而不是依赖1的结果后发射），从而减少延迟。
 void do_stack_pointer_folding(ooo_model_instr& arch_instr)
 {
   // The exact, true value of the stack pointer for any given instruction can usually be determined immediately after the instruction is decoded without
@@ -200,6 +206,8 @@ bool O3_CPU::do_init_instruction(ooo_model_instr& arch_instr)
   return do_predict_branch(arch_instr);
 }
 
+// 有一个DIB缓冲区专门保存之前已经被解析过的部分指令（被解析过的指令的cache），如果发现DIB命中，
+// 则可以跳过完整的decode阶段
 long O3_CPU::check_dib()
 {
   // scan through IFETCH_BUFFER to find instructions that hit in the decoded instruction buffer
@@ -242,12 +250,15 @@ long O3_CPU::fetch_instruction()
   };
 
   // Find the chunk of instructions in the block
+  // 检查两条指令是否属于同一cache block
   auto no_match_ip = [](const auto& lhs, const auto& rhs) {
     return champsim::block_number{lhs.ip} != champsim::block_number{rhs.ip};
   };
 
+  // 找到第一个fetch_ready的指令
   auto l1i_req_begin = std::find_if(std::begin(IFETCH_BUFFER), std::end(IFETCH_BUFFER), fetch_ready);
   for (champsim::bandwidth to_read{L1I_BANDWIDTH}; to_read.has_remaining() && l1i_req_begin != std::end(IFETCH_BUFFER); to_read.consume()) {
+    // 保证只读取位于同一cache line的指令
     auto l1i_req_end = std::adjacent_find(l1i_req_begin, std::end(IFETCH_BUFFER), no_match_ip);
     if (l1i_req_end != std::end(IFETCH_BUFFER)) {
       l1i_req_end = std::next(l1i_req_end); // adjacent_find returns the first of the non-equal elements
@@ -266,6 +277,7 @@ long O3_CPU::fetch_instruction()
   return progress;
 }
 
+// 这个函数负责向L1I发起请求，两个参数是指令序列的分别指向起始和结束的迭代器
 bool O3_CPU::do_fetch_instruction(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end)
 {
   CacheBus::request_type fetch_packet;
@@ -273,6 +285,7 @@ bool O3_CPU::do_fetch_instruction(std::deque<ooo_model_instr>::iterator begin, s
   fetch_packet.instr_id = begin->instr_id;
   fetch_packet.ip = begin->ip;
 
+  // instr_depend_on_me: 存储依赖于这个缓存请求的所有指令ID，用于实现缓存请求合并和响应共享
   std::transform(begin, end, std::back_inserter(fetch_packet.instr_depend_on_me), [](const auto& instr) { return instr.instr_id; });
 
   if constexpr (champsim::debug_print) {
@@ -300,18 +313,22 @@ long O3_CPU::promote_to_decode()
   auto fetched_check_end = std::find_if(std::begin(IFETCH_BUFFER), std::end(IFETCH_BUFFER), [](const ooo_model_instr& x) { return !x.fetch_completed; });
   // find the first not fetch completed
   auto [window_begin, window_end] = champsim::get_span_p(std::begin(IFETCH_BUFFER), fetched_check_end, available_fetch_bandwidth, fetch_complete_and_ready);
-  auto decoded_window_end = std::stable_partition(window_begin, window_end, is_decoded); // reorder instructions
+  auto decoded_window_end = std::stable_partition(window_begin, window_end, is_decoded);  // reorder instructions (stable_partition 把序列按照谓词（这里的is_decoded）
+                                                                                          // 划分成两部分（即重排序，第一部分为满足条件，第二部分不满足条件），并且保持原序)
+  // 如果是走完整的decode路径需要的latency
   auto mark_for_decode = [time = current_time, lat = DECODE_LATENCY, warmup = warmup](auto& x) {
     return x.ready_time = time + (warmup ? champsim::chrono::clock::duration{} : lat);
   };
+  // 如果dib hit需要的latency
   // to DIB_HIT_BUFFER
   auto mark_for_dib = [time = current_time, lat = DIB_HIT_LATENCY, warmup = warmup](auto& x) {
     return x.ready_time = time + lat;
   };
 
+  // 下面四行代码：已解码指令放入DIB_HIT_BUFFER；
+  // 未解码指令放入DECODE_BUFFER
   std::for_each(window_begin, decoded_window_end, mark_for_dib); // assume DECODE_LATENCY = DIB_HIT_LATENCY
   std::move(window_begin, decoded_window_end, std::back_inserter(DIB_HIT_BUFFER));
-  // to DECODE_BUFFER
 
   std::for_each(decoded_window_end, window_end, mark_for_decode);
   std::move(decoded_window_end, window_end, std::back_inserter(DECODE_BUFFER));
@@ -334,10 +351,18 @@ long O3_CPU::decode_instruction()
   champsim::bandwidth available_decode_bandwidth{DECODE_WIDTH};
 
   // bw move instructions to dispatch_buffer
+  // DIB_INORDER_WIDTH: 描述一个周期内最多能向dispatch_buffer推进多少条指令，类似于
+  // decode阶段和dispatch阶段之间流水线寄存器的宽度
+  // 因此实际每个周期能推进多少指令同时取决于流水线寄存器宽度&可用的dispatch buffer
   champsim::bandwidth available_dib_inorder_bandwidth{
       std::min(DIB_INORDER_WIDTH, champsim::bandwidth::maximum_type{static_cast<long>(DISPATCH_BUFFER_SIZE - std::size(DISPATCH_BUFFER))})};
 
   // conditions choose how many instructions sent to dispatch_buffer
+  // 核心功能是按照程序原始顺序从两个不同的指令缓冲区中选择指令，并为后续移入DISPATCH_BUFFER做准备
+
+  // 下面的三段while代码是一种典型的合并算法模式，后两个while保证了当因为
+  // 另一个序列提前结束导致第一个while结束后，能让未结束的序列被写入第三个序列中
+  // 注意真正的合并是在std::merge那个代码中，将dib_hit_buffer和decode_buffer的指令按照program order写入dispatch buffer
   while (dib_hit_buffer_end != std::end(DIB_HIT_BUFFER) && decode_buffer_end != std::end(DECODE_BUFFER) && available_dib_inorder_bandwidth.has_remaining()
          && available_decode_bandwidth.has_remaining() && is_ready(std::min(*dib_hit_buffer_end, *decode_buffer_end, ooo_model_instr::program_order))) {
     if (ooo_model_instr::program_order(*dib_hit_buffer_end, *decode_buffer_end)) {
@@ -363,8 +388,25 @@ long O3_CPU::decode_instruction()
   }
 
   // decode instructions have not decoded, merge instructions with dib_hit_buffer then send to dispatch_buffer
+  // 这个lambda函数会在之后被用于decode buffer中每条指令上
+  /**
+ * 对Decode Buffer中的指令进行解码处理
+ * 
+ * @param db_entry 需要解码的指令
+ * 
+ * 主要功能:
+ * 1. 更新指令解码缓存(DIB)以加速后续相同指令的处理
+ * 2. 处理早期分支预测错误检测
+ *    - 对于直接跳转/调用等目标地址明确的分支，可在解码阶段检测预测错误
+ *    - 检测到错误时清除错误标志并添加预测惩罚延迟
+ *    - 防止在执行阶段重复处理已知的预测错误
+ * 3. 设置指令的就绪时间，准备进入调度阶段
+ * 
+ * 注: 这种早期分支预测错误检测机制能减少流水线中不必要的指令处理，
+ * 提高处理器资源利用率，反映了现代处理器的优化设计。
+ */
   auto do_decode = [&, this](auto& db_entry) {
-    this->do_dib_update(db_entry);
+    this->do_dib_update(db_entry);  // 第一次被decode的指令（保存在decode buffer中），因为要被decode，所以可以写入DIB
 
     // Resume fetch
     if (db_entry.branch_mispredicted) {
@@ -389,11 +431,14 @@ long O3_CPU::decode_instruction()
     dib_entry.ready_time = this->current_time + (this->warmup ? champsim::chrono::clock::duration{} : this->DISPATCH_LATENCY);
   };
 
+  // 对decode buffer中每条指令做解码
   std::for_each(decode_buffer_begin, decode_buffer_end, do_decode);
+  // 修正相应的latency
   std::for_each(dib_hit_buffer_begin, dib_hit_buffer_end, do_dib_hit);
 
   long progress{std::distance(dib_hit_buffer_begin, dib_hit_buffer_end) + std::distance(decode_buffer_begin, decode_buffer_end)};
 
+  // 合并入dispatch buffer
   std::merge(dib_hit_buffer_begin, dib_hit_buffer_end, decode_buffer_begin, decode_buffer_end, std::back_inserter(DISPATCH_BUFFER),
              ooo_model_instr::program_order);
   DECODE_BUFFER.erase(decode_buffer_begin, decode_buffer_end);
@@ -409,8 +454,16 @@ long O3_CPU::dispatch_instruction()
   champsim::bandwidth available_dispatch_bandwidth{DISPATCH_WIDTH};
 
   // dispatch DISPATCH_WIDTH instructions into the ROB
+  // 把一个指令从dispatch buffer发射到ROB需要先验证一些条件:
+  // - dispatch bw（dispatch和issue之间的流水线）
+  // - dispatch buffer is not empty
+  // - ROB is not full
+  // - LQ has position for instruction's source memory（是否有足够的空闲项来容纳当前指令的所有内存读取操作）
+  // - SQ has position for instruction's destination memory
   while (available_dispatch_bandwidth.has_remaining() && !std::empty(DISPATCH_BUFFER) && DISPATCH_BUFFER.front().ready_time <= current_time
          && std::size(ROB) != ROB_SIZE
+         // 常见设计中，在dispatch阶段除了把指令写入ROB，还会在LSQ中预留entries给load和store指令，
+         // 所以这里检查LQ和SQ是否有额外的空间
          && ((std::size_t)std::count_if(std::begin(LQ), std::end(LQ), [](const auto& lq_entry) { return !lq_entry.has_value(); })
              >= std::size(DISPATCH_BUFFER.front().source_memory))
          && ((std::size(DISPATCH_BUFFER.front().destination_memory) + std::size(SQ)) <= SQ_SIZE)) {
@@ -425,6 +478,7 @@ long O3_CPU::dispatch_instruction()
   return available_dispatch_bandwidth.amount_consumed();
 }
 
+// 负责寄存器重命名和调度准备工作，但不负责实际的指令执行
 long O3_CPU::schedule_instruction()
 {
   champsim::bandwidth search_bw{SCHEDULER_SIZE};
@@ -482,6 +536,8 @@ long O3_CPU::execute_instruction()
   return exec_bw.amount_consumed();
 }
 
+// 模拟器关注的是时序和性能，不需要实际计算
+// 而且ChampSim是主要针对memory system的模拟器，所以不用关心计算
 void O3_CPU::do_execution(ooo_model_instr& instr)
 {
   instr.executed = true;
@@ -505,16 +561,22 @@ void O3_CPU::do_execution(ooo_model_instr& instr)
     fmt::print("[ROB] {} instr_id: {} ready_time: {}\n", __func__, instr.instr_id, instr.ready_time.time_since_epoch() / clock_period);
   }
 }
-
+// 1. Load指令处理：
+// 分配Load Queue项
+// 检查Store-to-Load转发
+// 管理内存依赖关系
+// 2. Store指令处理：
+// 分配Store Queue项
+// 为后续Load指令提供转发数据
 void O3_CPU::do_memory_scheduling(ooo_model_instr& instr)
 {
   // load
   for (auto& smem : instr.source_memory) {
     auto q_entry = std::find_if_not(std::begin(LQ), std::end(LQ), [](const auto& lq_entry) { return lq_entry.has_value(); });
     assert(q_entry != std::end(LQ));
-    q_entry->emplace(smem, instr.instr_id, instr.ip, instr.asid); // add it to the load queue
+    q_entry->emplace(smem, instr.instr_id, instr.ip, instr.asid); // add this inst (and address) to the load queue
 
-    // Check for forwarding
+    // Check for forwarding (fetch data from store queue)
     auto sq_it = std::max_element(std::begin(SQ), std::end(SQ), [smem](const auto& lhs, const auto& rhs) {
       return lhs.virtual_address != smem || (rhs.virtual_address == smem && LSQ_ENTRY::program_order(lhs, rhs));
     });

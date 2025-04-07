@@ -109,8 +109,8 @@ struct ooo_model_instr : champsim::program_ordered<ooo_model_instr> {
   champsim::address branch_target{};
 
   bool dib_checked = false;
-  bool fetch_issued = false;
-  bool fetch_completed = false;
+  bool fetch_issued = false;    // if request is sent to L1I
+  bool fetch_completed = false; // inst is hit in dib and no need to fetch from l1i
   bool decoded = false;
   bool scheduled = false;
   bool executed = false;

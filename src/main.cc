@@ -113,15 +113,20 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       {champsim::phase_info{"Warmup", true, warmup_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names},
        champsim::phase_info{"Simulation", false, simulation_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names}}};
 
+  // std::iota 是 C++ 标准库 <numeric> 中提供的一个算法，用来为一个范围内的元素赋予连续递增的数值序列。具体来说：
+	// 参数： 它接受三个参数：起始迭代器、结束迭代器和一个初始值。
   for (auto& p : phases) {
     std::iota(std::begin(p.trace_index), std::end(p.trace_index), 0);
   }
 
+  // Champsim would print it before starting warmup and simulation
   fmt::print("\n*** ChampSim Multicore Out-of-Order Simulator ***\nWarmup Instructions: {}\nSimulation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\n\n",
              phases.at(0).length, phases.at(1).length, std::size(gen_environment.cpu_view()), PAGE_SIZE);
 
+  // in champsim.cc
   auto phase_stats = champsim::main(gen_environment, phases, traces);
 
+  // Champsim would print it after warmup and simulation are done
   fmt::print("\nChampSim completed all CPUs\n\n");
 
   champsim::plain_printer{std::cout}.print(phase_stats);

@@ -111,9 +111,9 @@ public:
   dib_type DIB;
 
   // reorder buffer, load/store queue, register file
-  std::deque<ooo_model_instr> IFETCH_BUFFER;
-  std::deque<ooo_model_instr> DISPATCH_BUFFER;
-  std::deque<ooo_model_instr> DECODE_BUFFER;
+  std::deque<ooo_model_instr> IFETCH_BUFFER;    // store insts (pre)fetched from icache
+  std::deque<ooo_model_instr> DISPATCH_BUFFER;  // reservation station, storing insts to be dispatched
+  std::deque<ooo_model_instr> DECODE_BUFFER;    // store insts to be decoded
   std::deque<ooo_model_instr> ROB;
   std::deque<ooo_model_instr> DIB_HIT_BUFFER;
 
