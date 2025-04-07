@@ -27,3 +27,7 @@ absolute.options
 
 .vscode/
 **/.DS_Store
+
+**/.cache/
+
+**/*.xz
