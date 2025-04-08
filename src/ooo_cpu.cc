@@ -907,5 +907,7 @@ bool CacheBus::issue_write(request_type data_packet)
   data_packet.type = access_type::WRITE;
   data_packet.response_requested = false;
 
+  // Channel表示的就是两个层级之间的bus，所以在这里
+  // lower_level表示的是通过bus要传输到的地方，即cache
   return lower_level->add_wq(data_packet);
 }

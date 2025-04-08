@@ -49,15 +49,16 @@ struct cache_queue_stats {
 
 class channel
 {
+  // 在channel中定义这种结构体的作用是：在channel的成员变量中使用这些临时定义的类型
   struct request {
-    bool forward_checked = false;
+    bool forward_checked = false; // forward means check SQ before LOAD data from memory
     bool is_translated = true;
-    bool response_requested = true;
+    bool response_requested = true; // whether this request needs response (need by some LOAD inst)
 
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
     access_type type{access_type::LOAD};
 
-    uint32_t pf_metadata = 0;
+    uint32_t pf_metadata = 0; // 通过位掩码标记prefetch的各种metadata
     uint32_t cpu = std::numeric_limits<uint32_t>::max();
 
     champsim::address address{};
@@ -105,9 +106,9 @@ public:
   channel() = default;
   channel(std::size_t rq_size, std::size_t pq_size, std::size_t wq_size, champsim::data::bits offset_bits, bool match_offset);
 
-  bool add_rq(const request_type& packet);
-  bool add_wq(const request_type& packet);
-  bool add_pq(const request_type& packet);
+  bool add_rq(const request_type& packet);  // read request / queue
+  bool add_wq(const request_type& packet);  // write request / queue
+  bool add_pq(const request_type& packet);  // prefetch request / queue
 
   [[nodiscard]] std::size_t rq_occupancy() const;
   [[nodiscard]] std::size_t wq_occupancy() const;
