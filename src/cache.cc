@@ -247,6 +247,8 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   return true;
 }
 
+// try_hit函数是缓存系统中一个核心函数，用于尝试在缓存中查找请求的数据，
+// 并处理缓存命中和未命中的情况。这个函数模拟了实际硬件中缓存标签比较和数据访问的过程。
 bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 {
   cpu = handle_pkt.cpu;
@@ -381,6 +383,7 @@ bool CACHE::handle_write(const tag_lookup_type& handle_pkt)
 
   mshr_type to_allocate{handle_pkt, current_time};
   to_allocate.data_promise.ready_at(current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY));
+  // inflight_writes: 当前缓存层级要写入下一层级的写请求，已经发出但没有得到相应的
   inflight_writes.push_back(to_allocate);
 
   sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
@@ -428,11 +431,14 @@ long CACHE::operate()
   }
 
   // Finish returns
+  // 在正式处理来在upper level的请求前，需要先处理完来自lower level的response
   std::for_each(std::cbegin(lower_level->returned), std::cend(lower_level->returned), [this](const auto& pkt) { this->finish_packet(pkt); });
   progress += std::distance(std::cbegin(lower_level->returned), std::cend(lower_level->returned));
   lower_level->returned.clear();
 
   // Finish translations
+  // 给TLB使用（因为TLB也是cache），用于不同层次的地址翻译的mapping传递（L1 TLB <- L2 TLB <- PTW）
+  // 生成lower level到upper level的translation队列的物理地址
   if (lower_translate != nullptr) {
     std::for_each(std::cbegin(lower_translate->returned), std::cend(lower_translate->returned), [this](const auto& pkt) { this->finish_translation(pkt); });
     progress += std::distance(std::cbegin(lower_translate->returned), std::cend(lower_translate->returned));
@@ -440,8 +446,11 @@ long CACHE::operate()
   }
 
   // Perform fills
+  // 核心函数：handle_fill()
+  // 读取MSHR和inflight_writes队列找到可以完成的写回操作，并更新队列
   champsim::bandwidth fill_bw{MAX_FILL};
   for (auto q : {std::ref(MSHR), std::ref(inflight_writes)}) {
+    // 保证数据已经就绪且数据量不超过填充带宽
     auto [fill_begin, fill_end] = champsim::get_span_p(std::cbegin(q.get()), std::cend(q.get()), fill_bw,
                                                        [time = current_time](const auto& x) { return x.data_promise.is_ready_at(time); });
     auto complete_end = std::find_if_not(fill_begin, fill_end, [this](const auto& x) { return this->handle_fill(x); });
@@ -450,18 +459,23 @@ long CACHE::operate()
   }
 
   // Initiate tag checks
+  // MAX_TAG乘以后面的factor是因为考虑到流水线，可以一次输入更多的tags等待比较
+  // inflight_tag_check是因为tag checker需要被多个地方使用，所以可能有其他硬件已经占用了一部分带宽
   const champsim::bandwidth::maximum_type bandwidth_from_tag_checks{champsim::to_underlying(MAX_TAG) * (long)(HIT_LATENCY / clock_period)
                                                                     - (long)std::size(inflight_tag_check)};
   champsim::bandwidth initiate_tag_bw{std::clamp(bandwidth_from_tag_checks, champsim::bandwidth::maximum_type{0}, MAX_TAG)};
   auto can_translate = [avail = (std::size(translation_stash) < static_cast<std::size_t>(MSHR_SIZE))](const auto& entry) {
     return avail || entry.is_translated;
   };
+  // 这个函数会遍历translation_stash中的请求，找出那些已经完成地址转换的请求（is_translated为true），
+  // 将它们转移到inflight_tag_check中，同时考虑带宽限制。
   auto stash_bandwidth_consumed =
       champsim::transform_while_n(translation_stash, std::back_inserter(inflight_tag_check), initiate_tag_bw, is_translated, initiate_tag_check<false>());
   initiate_tag_bw.consume(stash_bandwidth_consumed);
   std::vector<long long> channels_bandwidth_consumed{};
 
   if (std::size(upper_levels) > 1) {
+    // 把队列中第一个放到最后一个位置
     std::rotate(upper_levels.begin(), upper_levels.begin() + 1, upper_levels.end());
   }
 
@@ -476,6 +490,8 @@ long CACHE::operate()
       // this needs to be in this loop, we need to ensure that for cases where bandwidth doesn't divide nicely across upstreams,
       // we don't accidentally consume more bandwidth than expected
       champsim::bandwidth per_upper_tag_bw{std::min(per_upper_bandwidth, champsim::bandwidth::maximum_type{initiate_tag_bw.amount_remaining()})};
+      // 这个函数会遍历上层缓存队列中的请求，找出那些可以进行地址转换的请求（can_translate为true），
+      // 将它们转移到inflight_tag_check中，同时考虑带宽限制
       auto bandwidth_consumed =
           champsim::transform_while_n(q.get(), std::back_inserter(inflight_tag_check), per_upper_tag_bw, can_translate, initiate_tag_check<true>(ul));
       channels_bandwidth_consumed.push_back(bandwidth_consumed);
@@ -483,6 +499,7 @@ long CACHE::operate()
     }
   }
 
+  // 自己会生成prefetch queue，所以属于internal_PQ
   auto pq_bandwidth_consumed =
       champsim::transform_while_n(internal_PQ, std::back_inserter(inflight_tag_check), initiate_tag_bw, can_translate, initiate_tag_check<false>());
   initiate_tag_bw.consume(pq_bandwidth_consumed);
@@ -500,7 +517,7 @@ long CACHE::operate()
   // Perform tag checks
   auto do_handle_miss = [this](const auto& pkt) {
     if (pkt.type == access_type::WRITE && !this->match_offset_bits) {
-      return this->handle_write(pkt); // Treat writes (that is, writebacks) like fills
+      return this->handle_write(pkt); // Treat writes (that is, writebacks) like fills (填充到下一个层级的存储器)
     }
     return this->handle_miss(pkt); // Treat writes (that is, stores) like reads
   };
@@ -610,6 +627,9 @@ bool CACHE::prefetch_line(uint64_t /*deprecated*/, uint64_t /*deprecated*/, uint
 void CACHE::finish_packet(const response_type& packet)
 {
   // check MSHR information
+  // MSHR保存了所有从CPU端向cache：发出、产生miss、未完成的访存请求
+  // 所以这里，从lower level返回至upper level的packet，一定是因为miss，需要从lower level写回数据，因此
+  // 这个请求一定存在于MSHR队列中
   auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(packet.address));
   auto first_unreturned = std::find_if(MSHR.begin(), MSHR.end(), [](auto x) { return x.data_promise.has_unknown_readiness(); });
 
@@ -620,6 +640,7 @@ void CACHE::finish_packet(const response_type& packet)
   }
 
   // MSHR holds the most updated information about this request
+  // 更新MSHR中这个条目的data_promise，标记为waitable
   mshr_type::returned_value finished_value{packet.data, packet.pf_metadata};
   mshr_entry->data_promise = champsim::waitable{finished_value, current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY)};
   if constexpr (champsim::debug_print) {
@@ -629,16 +650,20 @@ void CACHE::finish_packet(const response_type& packet)
 
   // Order this entry after previously-returned entries, but before non-returned
   // entries
+  // 将这个条目放在第一个未返回的条目前
   std::iter_swap(mshr_entry, first_unreturned);
 }
 
 void CACHE::finish_translation(const response_type& packet)
 {
   auto matches_vpage = [page_num = champsim::page_number{packet.v_address}](const auto& entry) {
+    // 我猜，==在这里是被重载过的，会根据v_address转换成对应的page_num
     return (champsim::page_number{entry.v_address} == page_num) && !entry.is_translated;
   };
+  // 注意这种情况下的cache只会是TLB，所以packet.data是physical page number（即缺少offset的物理页）
   auto mark_translated = [p_page = champsim::page_number{packet.data}, this](auto& entry) {
     [[maybe_unused]] auto old_address = entry.address;
+    // 将虚拟地址提取出offset，和p_page合并得到完整的物理地址
     entry.address = champsim::address{champsim::splice(p_page, champsim::page_offset{entry.v_address})}; // translated address
     entry.is_translated = true;                                                                          // This entry is now translated
 
@@ -649,11 +674,13 @@ void CACHE::finish_translation(const response_type& packet)
   };
 
   // Restart stashed translations
+  // 从translation stash中找到需要被翻译的，将其entry的address成员变量设置为物理地址
   auto finish_begin = std::find_if_not(std::begin(translation_stash), std::end(translation_stash), [](const auto& x) { return x.is_translated; });
   auto finish_end = std::stable_partition(finish_begin, std::end(translation_stash), matches_vpage);
   std::for_each(finish_begin, finish_end, mark_translated);
 
   // Find all packets that match the page of the returned packet
+  // 作用于stash的事情也作用于infligth_tag_check队列
   for (auto& entry : inflight_tag_check) {
     if (matches_vpage(entry)) {
       mark_translated(entry);

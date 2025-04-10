@@ -104,6 +104,7 @@ public:
   stats_type sim_stats{}, roi_stats{};
 
   channel() = default;
+  // offset_bits表示寻址时offset占用地址的多少位
   channel(std::size_t rq_size, std::size_t pq_size, std::size_t wq_size, champsim::data::bits offset_bits, bool match_offset);
 
   bool add_rq(const request_type& packet);  // read request / queue

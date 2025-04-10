@@ -75,6 +75,7 @@ void champsim::channel::check_collision()
   auto read_shamt = OFFSET_BITS;
 
   // Check WQ for duplicates, merging if they are found
+  // 合并相同的写请求
   for (auto wq_it = std::find_if(std::begin(WQ), std::end(WQ), std::not_fn(&request_type::forward_checked)); wq_it != std::end(WQ);) {
     if (do_collision_for_merge(std::begin(WQ), wq_it, *wq_it, write_shamt)) {
       sim_stats.WQ_MERGED++;
@@ -86,6 +87,7 @@ void champsim::channel::check_collision()
   }
 
   // Check RQ for forwarding from WQ (return if found), then for duplicates (merge if found)
+  // 如果有写请求，那么可以将读请求通过forward，变成读取WQ的结果
   for (auto rq_it = std::find_if(std::begin(RQ), std::end(RQ), std::not_fn(&request_type::forward_checked)); rq_it != std::end(RQ);) {
     if (do_collision_for_return(std::begin(WQ), std::end(WQ), *rq_it, write_shamt, returned)) {
       sim_stats.WQ_FORWARD++;
