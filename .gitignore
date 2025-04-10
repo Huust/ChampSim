@@ -31,3 +31,5 @@ absolute.options
 **/.cache/
 
 **/*.xz
+
+**/champsim_cache_analysis.md
