@@ -122,10 +122,11 @@ struct DRAM_CHANNEL final : public champsim::operable {
    * | row address | rank index | column address | bank index | channel | block
    * offset |
    */
-
-  struct BANK_REQUEST {
+    struct BANK_REQUEST {
+    // valid: true表示正在处理请求，不能接受新请求；false表示空闲，可以接受新请求
     bool valid = false, row_buffer_hit = false, need_refresh = false, under_refresh = false;
 
+    // 类似于Rust中的Option<size_t>，表示哪一个row处以activate状态；当然也可能没有
     std::optional<std::size_t> open_row{};
 
     champsim::chrono::clock::time_point ready_time{};
@@ -136,6 +137,9 @@ struct DRAM_CHANNEL final : public champsim::operable {
   const champsim::data::bytes channel_width;
 
   using request_array_type = std::vector<BANK_REQUEST>;
+
+  // 这其实是bank status，表示整个dram中每个bank的状态
+  // 命名问题，误以为是请求
   request_array_type bank_request;
   request_array_type::iterator active_request;
 
@@ -191,7 +195,7 @@ class MEMORY_CONTROLLER : public champsim::operable
   using channel_type = champsim::channel;
   using request_type = typename channel_type::request_type;
   using response_type = typename channel_type::response_type;
-  std::vector<channel_type*> queues;
+  std::vector<channel_type*> queues;  // upper level requests from different upper level channels (like from LLC and PTW)
   const champsim::data::bytes channel_width;
 
   void initiate_requests();
