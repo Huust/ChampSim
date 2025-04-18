@@ -242,9 +242,12 @@ class NormalizedConfiguration:
         if verbose:
             print('P: core count', len(self.cores))
 
+        # 2. 处理所有缓存配置
+        # itertools会对self.cores, pinned_cache_names两个“向量”做笛卡尔内积，进而得到每个核心都配有相应cache的新结构
+        # 再把这一结构根据core和name送入extract_element()；combine_named会把两个参数具有相同key name的项合并；因为第一个参数为空所以返回值就是第二个参数本身
         pinned_cache_names = ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB')
         self.caches = util.combine_named(
-            config_file.get('caches', []),
+            config_file.get('caches', []),  # 因为config json中并没有'caches' key，所以返回[]
             (extract_element(name, core, config_file) for core, name in itertools.product(self.cores, pinned_cache_names))
         )
 
@@ -319,6 +322,7 @@ class NormalizedConfiguration:
         def transform_for_keys(element, keys, transform_func):
             return { k:transform_func(v) for k,v in util.subdict(element, keys).items() }
 
+        # 1. 设置基础配置（block size等）
         root_config = util.chain(
             transform_for_keys(self.root, ('block_size', 'page_size'), int_or_prefixed_size),
             self.root,
@@ -328,6 +332,7 @@ class NormalizedConfiguration:
             }
         )
 
+        # 2. 设置物理内存配置
         pmem = util.chain(self.pmem, {
             'name': 'DRAM', 'data_rate': 3200, 'frequency': 1600, 'channels': 1, 'ranks': 1, 'bankgroups': 8, 'banks': 4, 'bank_rows': 65536, 'bank_columns': 1024,
             'channel_width': 8, 'wq_size': 64, 'rq_size': 64, 'tRP': 24, 'tRCD': 24, 'tCAS': 24, 'tRAS' : 52,
@@ -336,6 +341,7 @@ class NormalizedConfiguration:
         pmem = util.chain(pmem,(do_deprecation(pmem, pmem_deprecation_keys,pmem_deprecation_warnings)))
         
         #convert vmem boolean to string
+        # 3. 设置虚拟内存配置
         vmem = util.chain(
             transform_for_keys(self.vmem, ('pte_page_size',), int_or_prefixed_size),
             self.vmem,
@@ -473,6 +479,7 @@ def parse_config(*configs, module_dir=None, branch_dir=None, btb_dir=None, pref_
     def do_merge(lhs, rhs):
         lhs.merge(rhs)
         return lhs
+    # 把多个configs合并，一般我们只会写一种config，所以合并无意义
     merged_config = functools.reduce(do_merge, (NormalizedConfiguration(c, verbose=verbose) for c in configs))
 
     contexts = dict(
@@ -484,6 +491,7 @@ def parse_config(*configs, module_dir=None, branch_dir=None, btb_dir=None, pref_
     if verbose:
         for k,v in contexts.items():
             print(k, v.paths)
+    # IMPORTANT: 使用apply_defaults_in方法，将默认值应用到配置中
     elements, module_info, config_file = merged_config.apply_defaults_in(**contexts, verbose=verbose)
 
     if compile_all_modules:
@@ -496,4 +504,7 @@ def parse_config(*configs, module_dir=None, branch_dir=None, btb_dir=None, pref_
             *(c['_btb_data'] for c in elements['cores'])
         ))]
 
+    # elements包含所有硬件组件的配置信息
+    # module_info包含所有模块的配置信息
+    # config_file包含基础配置信息的内容
     return executable_name(*configs), elements, modules_to_compile, module_info, config_file

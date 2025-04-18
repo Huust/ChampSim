@@ -164,6 +164,12 @@ class Fragment:
 
         fileparts = [
             # Instantiation file
+            # 把新生成的文件加到objdir_name中，也就是core_inst.inc和core_inst.cc.inc应该属于的目录
+            # elements 是一个字典，其中包含了从配置文件解析出来的各种组件信息
+            # elements['cores'] 是一个列表，包含了所有CPU核心的配置信息
+            # elements来自parse.py的最后返回值中的element
+            # len() 函数计算这个列表的长度，也就是获取配置了多少个CPU核心
+            # get_instantiation_header函数几乎就是直接生成了core_inst.inc，没有额外的抽象
             (os.path.join(objdir_name, 'core_inst.inc'), cxx_file(get_instantiation_header(len(elements['cores']), config_file, build_id=build_id))),
             (os.path.join(objdir_name, 'core_inst.cc.inc'), cxx_file(get_instantiation_lines(build_id=build_id, **elements))),
 
@@ -217,6 +223,9 @@ class FileWriter:
         :param srcdir_name: the directory to search for source files
         :param objdir_name: the directory to place object files
         '''
+        # 收集多个配置的文件生成需求
+        # 统一处理所有文件的写入
+        # 避免重复写入相同的文件内容
         self.fragments.append(Fragment.from_config(
             parsed_config,
             bindir_name=bindir_name or self.bindir_name,

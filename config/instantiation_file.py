@@ -269,6 +269,32 @@ def get_upper_levels(cores, caches, ptws):
     def named_selector(elem, key):
         return elem.get(key), elem.get('name')
 
+    # 原函数 named_selector(elem, key)，我们给它先绑定 key='lower_level'，
+    # 就得到了一个新函数 f(elem)，等价于 named_selector(elem, 'lower_level')
+    # 举例
+    # ptws = [
+        # {
+        #     'name': 'ITLB_0',
+        #     'lower_level': 'STLB'
+        # }, 
+        # {
+        #     'name': 'DTLB_0',
+        #     'lower_level': 'STLB'
+        # },
+        # {
+        #     'name': 'STLB',
+        #     'lower_level': 'DRAM'
+        # }
+    # ]
+    # 生成：
+    # [('STLB', 'ITLB_0'),    # ITLB_0 -> STLB
+    #  ('STLB', 'DTLB_0'),    # DTLB_0 -> STLB
+    #  ('DRAM', 'STLB')]      # STLB -> DRAM
+    # 因为named_selector(elem, key)会返回一个tuple，第一个元素是
+    # elem[key]，而partial导致key是lower_level，所以第一个元素的值就是第一个
+    # dict中lower_level的值，也就是STLB；第二个元素是name，也就是ITLB_0
+    # apply_defaults_in允许用户完全使用默认的缓存层次结构（不在 JSON 中指定任何 lower_level），
+    # 因为它会检测到并自动合并入
     return list(filter(lambda x: x[0] is not None, itertools.chain(
         map(functools.partial(named_selector, key='lower_level'), ptws),
         map(functools.partial(named_selector, key='lower_level'), caches),
@@ -312,12 +338,16 @@ def decorate_queues(caches, ptws, pmem):
 def get_queue_info(ul_pairs, decoration):
     return [decoration.get(ll) for ll,_ in ul_pairs]
 
+# feature of python: parameter unpacking (dict -> various single parameters)
 def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     '''
     Generate the lines for a C++ file that instantiates a configuration.
     '''
     classname = f'champsim::configured::generated_environment<0x{build_id}>'
+    # ul_pairs是一个序列，序列中的每个元素是(lower_name, upper_name)
     ul_pairs = get_upper_levels(cores, caches, ptws)
+    # decorate_queues会把软件信息例如wq rq pq等合并到例如cache ptws等信息中
+    # get_queue_info会根据ul_pairs提供的上下级信息，从decorate返回的信息中，提取下级组件的信息
     queues = get_queue_info(ul_pairs, decorate_queues(caches, ptws, pmem))
 
     datas = itertools.filterfalse(operator.methodcaller('get', 'legacy', False), itertools.chain(
@@ -331,11 +361,13 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     # Get fastest clock period in picoseconds
     global_clock_period = int(1000000/max(x['frequency'] for x in itertools.chain(cores, caches, ptws, (pmem,))))
 
+    # 这行代码在生成所有的channels
     channels_head, channels_tail = util.cut((f'champsim::channel{{{queue_fmtstr.format(**v)}}}' for v in queues), n=-1)
     channel_instantiation_body = ('channels{', *(v+',' for v in channels_head), *channels_tail, '},')
 
     pmem_instantiation_body = (
         'DRAM{',
+        # 格式化字符串，根据传入的参数，来填充待格式化的内容，也就是core_inst.cc.inc中DRAM的构造函数
         pmem_fmtstr.format(
             clock_period_dbus=int(1000000/pmem['data_rate']),
             clock_period_mc=int(1000000/pmem['frequency']),
@@ -381,6 +413,7 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
         '}'
     )
 
+    # yield产生的代码行被外部函数cxx_file捕获，并写入对应的文件中
     yield f'champsim::configured::generated_environment<0x{build_id}>::generated_environment() :'
     yield from itertools.chain(
     )
@@ -394,6 +427,7 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     yield '}'
     yield ''
 
+    # 生成各种view类实例化代码
     yield from get_ref_vector_function('O3_CPU', f'{classname}::cpu_view', 'cores')
     yield ''
 
