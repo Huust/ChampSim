@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pprint
 import itertools
 import functools
 import operator
@@ -283,13 +284,13 @@ def get_upper_levels(cores, caches, ptws):
         # },
         # {
         #     'name': 'STLB',
-        #     'lower_level': 'DRAM'
+        #     'lower_level': 'PTW'
         # }
     # ]
     # 生成：
     # [('STLB', 'ITLB_0'),    # ITLB_0 -> STLB
     #  ('STLB', 'DTLB_0'),    # DTLB_0 -> STLB
-    #  ('DRAM', 'STLB')]      # STLB -> DRAM
+    #  ('PTW', 'STLB')]      # STLB -> PTW
     # 因为named_selector(elem, key)会返回一个tuple，第一个元素是
     # elem[key]，而partial导致key是lower_level，所以第一个元素的值就是第一个
     # dict中lower_level的值，也就是STLB；第二个元素是name，也就是ITLB_0
@@ -321,6 +322,8 @@ def module_include_files(datas):
 
     yield from (f'#include "{f}"' for _,f in candidates)
 
+# *({c['name']: cache_queue_defaults(c)} for c in caches)
+# 这段代码*()内是一个迭代器生成器（用于生成cache的队列信息），所以需要使用*得到一个字典
 def decorate_queues(caches, ptws, pmem):
     return util.chain(
             *({c['name']: cache_queue_defaults(c)} for c in caches),
@@ -346,8 +349,10 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     classname = f'champsim::configured::generated_environment<0x{build_id}>'
     # ul_pairs是一个序列，序列中的每个元素是(lower_name, upper_name)
     ul_pairs = get_upper_levels(cores, caches, ptws)
-    # decorate_queues会把软件信息例如wq rq pq等合并到例如cache ptws等信息中
-    # get_queue_info会根据ul_pairs提供的上下级信息，从decorate返回的信息中，提取下级组件的信息
+    # get_queue_info需要两个参数：ul_pairs提供元信息，即(lower_level, upper_level)
+    # decorate_queues(caches, ptws, pmem)提供具体信息，是每一个模块的队列信息
+    # get_queue_info需要根据ul_pairs，选取lower_level的模块，并从decorate_queues返回的信息中，提取出这些模块的信息
+    # 因为channels的实例化需要rq wq等信息，所以在此用queues来保存
     queues = get_queue_info(ul_pairs, decorate_queues(caches, ptws, pmem))
 
     datas = itertools.filterfalse(operator.methodcaller('get', 'legacy', False), itertools.chain(

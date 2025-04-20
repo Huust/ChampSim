@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pprint
 import itertools
 import functools
 import operator
@@ -22,6 +23,8 @@ from collections import deque
 from . import defaults
 from . import modules
 from . import util
+
+has_printed = 0
 
 cache_deprecation_keys = {
     'max_read': 'max_tag_check',
@@ -184,6 +187,9 @@ def do_deprecation(element, deprecation_map, warning_msg_map={}):
 def path_end_in(path, end_name, key='lower_level'):
     return {'name': deque(path, maxlen=1)[0]['name'], key: end_name}
 
+# 如果某个父级字典有这个 key，并且 key 对应的值是一个非空字典，那么这个子字典就会被“提取”出来，作为最终合并的候选之一。
+# 如果某个父级字典没有这个 key，或者 key 对应的值不是一个非空字典（比如是 None, 字符串, 数字, 列表, 或者空字典 {}），那么这个父级在贡献 key 对应的内容方面，就会被忽略。
+# 最后，函数会将所有被成功“提取”出来的非空子字典进行合并。所以在一个有、一个没有 'PTW' 键（且值为非空字典）的情况下，最终合并的结果就会包含那个“有”的父级提供的子字典内容。
 def extract_element(key, *parents):
     '''
     Extract a certain key from the series of parents, returning the merged keys.
@@ -226,9 +232,14 @@ class NormalizedConfiguration:
     def __init__(self, config_file, verbose=False):
         ''' Normalize a JSON configuration in preparation for parsing '''
         # Copy or trim cores as necessary to fill out the specified number of cores
+        # .get()如果有key则返回值，否则返回默认值
+        # duplicate根据cores的数量扩展内核配置，例：配置文件提供了2个不同的CPU核心配置，但是num_cores要求4个核心总数
         self.cores = duplicate_to_length(config_file.get('ooo_cpu', [{}]), config_file.get('num_cores', 1))
 
         # Default core elements
+        # 从config_file（和json文件一致）中找到包含括号内的keys；但是
+        # 因为其中大部分keys（除了DIB）都是在ooo_cpu中的（所以不是全局级别的key）
+        # 所以core_from_config的结果只会包含DIB
         core_from_config = util.subdict(config_file,
             (
                 'frequency', 'ifetch_buffer_size', 'decode_buffer_size', 'dispatch_buffer_size', 'register_file_size', 'rob_size', 'lq_size',
@@ -245,6 +256,7 @@ class NormalizedConfiguration:
         # 2. 处理所有缓存配置
         # itertools会对self.cores, pinned_cache_names两个“向量”做笛卡尔内积，进而得到每个核心都配有相应cache的新结构
         # 再把这一结构根据core和name送入extract_element()；combine_named会把两个参数具有相同key name的项合并；因为第一个参数为空所以返回值就是第二个参数本身
+        # 最后得到字典，每个key是形如'cpux_STLB'或者'cpux_L1D'这种，也就是每个cpu核心以及它的私有cache
         pinned_cache_names = ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB')
         self.caches = util.combine_named(
             config_file.get('caches', []),  # 因为config json中并没有'caches' key，所以返回[]
@@ -252,6 +264,7 @@ class NormalizedConfiguration:
         )
 
         # Read LLC from the configuration file
+        # 把LLC也更新进self.caches
         if 'LLC' in config_file:
             self.caches.update(LLC={'name': 'LLC', **config_file['LLC']})
 
@@ -281,6 +294,8 @@ class NormalizedConfiguration:
         self.pmem = config_file.get('physical_memory', {})
         
         #this allows frequency to be specified instead of data rate or vice-versa for DRAM
+        # 即：允许你在写json文件时，用frequency或者data_rate来指定DRAM的频率
+        # 因为是DDR所以frequency=data_rate/2
         if('frequency' in self.pmem.keys()):
             self.pmem['data_rate'] = self.pmem['frequency']
             self.pmem['frequency'] = self.pmem['frequency']/2
@@ -295,6 +310,7 @@ class NormalizedConfiguration:
         if verbose:
             print('P: vmem', list(self.vmem.keys()))
 
+        # 获取配置中一些额外信息
         self.root = util.subdict(config_file,
             ('block_size', 'page_size', 'heartbeat_frequency')
         )
@@ -310,6 +326,7 @@ class NormalizedConfiguration:
 
     def apply_defaults_in(self, branch_context, btb_context, prefetcher_context, replacement_context, verbose=False):
         ''' Apply defaults and produce a result suitible for writing the generated files. '''
+        global has_printed
         if verbose:
             print('D: keys in root', list(self.root.keys()))
             for cpu in self.cores:
@@ -332,12 +349,13 @@ class NormalizedConfiguration:
             }
         )
 
-        # 2. 设置物理内存配置
+        # 2. 设置物理内存配置，chain会保留self.pmem中的内容；除非不存在于self.pmem中，才会使用默认值
         pmem = util.chain(self.pmem, {
             'name': 'DRAM', 'data_rate': 3200, 'frequency': 1600, 'channels': 1, 'ranks': 1, 'bankgroups': 8, 'banks': 4, 'bank_rows': 65536, 'bank_columns': 1024,
             'channel_width': 8, 'wq_size': 64, 'rq_size': 64, 'tRP': 24, 'tRCD': 24, 'tCAS': 24, 'tRAS' : 52,
             'refresh_period': 32, 'refreshes_per_period': 8192
         })
+        # 如果发现配置pmem时用到了已经被淘汰的参数，则发出warning
         pmem = util.chain(pmem,(do_deprecation(pmem, pmem_deprecation_keys,pmem_deprecation_warnings)))
         
         #convert vmem boolean to string
@@ -354,6 +372,7 @@ class NormalizedConfiguration:
         path_root_names = tuple(tuple(cpu[name] for cpu in cores) for name in ('L1I', 'L1D', 'ITLB', 'DTLB'))
 
         # Instantiate any missing default caches
+        # 这里将config.json中未填写的配置，用default来补全；这也是补全每个层级lower_level关键字的位置，方便根据lower_level生成channel代码
         caches = util.combine_named(self.caches.values(), ({ 'name': 'LLC' },), *map(defaults.cache_core_defaults, cores))
         ptws = util.combine_named(self.ptws.values(), *map(defaults.ptw_core_defaults, cores))
 
@@ -442,6 +461,7 @@ class NormalizedConfiguration:
             'pmem': pmem,
             'vmem': vmem
         }
+
         module_info = {
             'repl': util.combine_named(*(c['_replacement_data'] for c in caches.values()), replacement_context.find_all()),
             'pref': util.combine_named(*(c['_prefetcher_data'] for c in caches.values()), prefetcher_context.find_all()),
@@ -454,6 +474,11 @@ class NormalizedConfiguration:
             'num_cores': len(cores)
         }
 
+        # if has_printed % 2 == 0:
+        #     has_printed += 1
+        # else:
+        #     pprint.pprint(elements)
+        
         return elements, module_info, config_extern
 
 def parse_config(*configs, module_dir=None, branch_dir=None, btb_dir=None, pref_dir=None, repl_dir=None, compile_all_modules=False, verbose=False): # pylint: disable=line-too-long,
@@ -504,7 +529,7 @@ def parse_config(*configs, module_dir=None, branch_dir=None, btb_dir=None, pref_
             *(c['_btb_data'] for c in elements['cores'])
         ))]
 
-    # elements包含所有硬件组件的配置信息
-    # module_info包含所有模块的配置信息
-    # config_file包含基础配置信息的内容
+    # elements: cores, caches, ptws, pmem, vmem
+    # module_info: replacement, prefetcher, branch, btb
+    # config_file: block_size, page_size, heartbeat_frequency, num_cores
     return executable_name(*configs), elements, modules_to_compile, module_info, config_file

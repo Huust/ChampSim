@@ -21,6 +21,7 @@
 # -> filewrite.py: write_file() -> from_config() -> get_instantiation_header() | get_instantiation_lines()
 # -> instantiation_file.py: get_instantiation_header() | get_instantiation_lines()
 import json
+import pprint
 import sys,os
 import itertools
 import argparse
@@ -92,7 +93,7 @@ if __name__ == '__main__':
     if not args.files:
         print("No configuration specified. Building default ChampSim with no prefetching.")
     # reversed(args.files) 是针对多个文件的顺序
-    # 经过这条脚本，files就是类json格式的python对象
+    # 经过这条脚本，files就是类json格式的python对象，经测试，不保证遵循json原顺序
     files = map(config.util.wrap_list, map(parse_file, reversed(args.files)))
 
     # 根据 join 参数决定如何合并多个配置文件
@@ -122,6 +123,10 @@ if __name__ == '__main__':
         'verbose': args.verbose
     }
     # 解析所有配置组合，生成最终的配置对象
+    # parsed_configs是迭代器生成器，每次得到一个函数返回值就塞入创建的迭代器中
+    # 不过一般我们只会提供一个config_file所以for循环只会执行一次
+    # for c in config_files每次得到的c是一个元组；所以传入parse_config后
+    # 再对它做一次for迭代，得到的元素其实是元组中的第一个元素，仍然是一个完整的json格式对象，而非json中每个kv对
     parsed_configs = (config.parse.parse_config(*c, **parse_args) for c in config_files)
 
     # 使用 FileWriter 将解析后的配置写入文件
