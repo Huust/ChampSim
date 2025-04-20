@@ -380,6 +380,7 @@ class NormalizedConfiguration:
         caches = filter_inaccessible(caches, itertools.chain(*path_root_names))
 
         # Follow paths and apply default sizings
+        # 这一步还向caches中添加了新的key lower_translate
         caches = util.combine_named(caches.values(), defaults.list_defaults(cores, caches))
 
         branch_parse = functools.partial(module_parse, context=branch_context)
