@@ -326,12 +326,8 @@ def get_instantiation_lines(cores, caches, ptws, cxl, pmem, vmem, build_id):
     Generate the lines for a C++ file that instantiates a configuration.
     '''
     classname = f'champsim::configured::generated_environment<0x{build_id}>'
-    # pprint.pprint(caches)
     ul_pairs = get_upper_levels(cores, caches, ptws)
-    # pprint.pprint(ul_pairs)
     queues = get_queue_info(ul_pairs, decorate_queues(caches, ptws, cxl, pmem))
-    print("\n\n\n")
-    # pprint.pprint(len(queues))
 
     datas = itertools.filterfalse(operator.methodcaller('get', 'legacy', False), itertools.chain(
         *(c['_branch_predictor_data'] for c in cores),

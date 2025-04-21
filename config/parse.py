@@ -393,7 +393,6 @@ class NormalizedConfiguration:
 
         tlb_path = itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[2:])))
         data_path = itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[:2])))
-        pprint.pprint(caches)
         caches = util.combine_named(
             # Set prefetcher_activate
             ({ 'name': k,
@@ -420,7 +419,9 @@ class NormalizedConfiguration:
 
             # The end of the data path is the physical memory
             *((
+                path_end_in(util.iter_system(caches, cpu['L1I']), 'CXL', 'lower_level_cxl'),
                 path_end_in(util.iter_system(caches, cpu['L1I']), 'DRAM'),
+                path_end_in(util.iter_system(caches, cpu['L1I']), 'CXL', 'lower_level_cxl'),
                 path_end_in(util.iter_system(caches, cpu['L1D']), 'DRAM'),
                 path_end_in(util.iter_system(caches, cpu['ITLB']), cpu['PTW']),
                 path_end_in(util.iter_system(caches, cpu['DTLB']), cpu['PTW'])
@@ -435,10 +436,6 @@ class NormalizedConfiguration:
                '_prefetcher_data': [*map(functools.partial(prefetcher_parse, cache=cache), util.wrap_list(cache.get('prefetcher', 'no')))]
             } for k,cache in caches.items())
         )
-
-        print("\n\n\n")
-        pprint.pprint(caches)
-
 
         ptws = util.combine_named(
             ptws.values(),
