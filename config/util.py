@@ -18,6 +18,8 @@ import operator
 import collections
 import os
 
+# yield会返回迭代器生成器，所以最后iter_system返回的是迭代器生成器，这个迭代器每个元素都是一个dict，按照从upper到lower level
+# 根据name（假设name是L1D），则是L1D -> L2C -> LLC
 def iter_system(system, name, key='lower_level'):
     '''
     Iterate through a dictionary system.

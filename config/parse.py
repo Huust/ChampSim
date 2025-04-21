@@ -184,6 +184,9 @@ def do_deprecation(element, deprecation_map, warning_msg_map={}):
             retval = { new: element[old], **retval }
     return retval
 
+# 把每次deque的元素放进队列中；但是因为限制maxlen是1，
+# 所以队列的长度是1，所以每当有新值也就是被deque的path中靠后的值产生，就会从队列中将旧值驱逐放入新值，最后[0]就是这唯一的元素
+# 因此deque(path, maxlen=1)[0]的结果是LLC，所以json对象中LLC部分的字段就会被追加'lower_level': 'DRAM'
 def path_end_in(path, end_name, key='lower_level'):
     return {'name': deque(path, maxlen=1)[0]['name'], key: end_name}
 
@@ -394,6 +397,7 @@ class NormalizedConfiguration:
 
         tlb_path = itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[2:])))
         data_path = itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[:2])))
+        # 经过这段代码，LLC也会拥有'lower_level': 'DRAM' 这样的lower level字段（此前，在调用cache_core_defaults时会向除了LLC之外的cache增加lower_level字段）
         caches = util.combine_named(
             # Set prefetcher_activate
             ({ 'name': k,
@@ -417,6 +421,7 @@ class NormalizedConfiguration:
             default_frequencies(cores, caches),
 
             # The end of the data path is the physical memory
+            # LLC在这里被追加'lower_level': 'DRAM'
             *((
                 path_end_in(util.iter_system(caches, cpu['L1I']), 'DRAM'),
                 path_end_in(util.iter_system(caches, cpu['L1D']), 'DRAM'),
