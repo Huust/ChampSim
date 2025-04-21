@@ -354,6 +354,8 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     # get_queue_info需要根据ul_pairs，选取lower_level的模块，并从decorate_queues返回的信息中，提取出这些模块的信息
     # 因为channels的实例化需要rq wq等信息，所以在此用queues来保存
     queues = get_queue_info(ul_pairs, decorate_queues(caches, ptws, pmem))
+    pprint.pprint(len(ul_pairs))
+    # pprint.pprint(queues)
 
     datas = itertools.filterfalse(operator.methodcaller('get', 'legacy', False), itertools.chain(
         *(c['_branch_predictor_data'] for c in cores),
@@ -367,6 +369,7 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     global_clock_period = int(1000000/max(x['frequency'] for x in itertools.chain(cores, caches, ptws, (pmem,))))
 
     # 这行代码在生成所有的channels
+    # cut结合n=-1 表示将生成的序列分为两部分，第二部分仅包含最后一个元素；这么做是为了第二行代码最后一个元素后不需要添加逗号
     channels_head, channels_tail = util.cut((f'champsim::channel{{{queue_fmtstr.format(**v)}}}' for v in queues), n=-1)
     channel_instantiation_body = ('channels{', *(v+',' for v in channels_head), *channels_tail, '},')
 
