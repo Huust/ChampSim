@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pprint
 import itertools
 import functools
 import operator
@@ -295,11 +296,19 @@ def module_include_files(datas):
 
     yield from (f'#include "{f}"' for _,f in candidates)
 
-def decorate_queues(caches, ptws, pmem):
+def decorate_queues(caches, ptws, pmem, cxl):
     return util.chain(
             *({c['name']: cache_queue_defaults(c)} for c in caches),
             *({p['name']: ptw_queue_defaults(p)} for p in ptws),
             {pmem['name']: {
+                    'rq_size':'std::numeric_limits<std::size_t>::max()',
+                    'wq_size':'std::numeric_limits<std::size_t>::max()',
+                    'pq_size':'std::numeric_limits<std::size_t>::max()',
+                    '_offset_bits':'champsim::lg2(BLOCK_SIZE)',
+                    '_queue_check_full_addr':False
+                }
+            },
+            {cxl['name']: {
                     'rq_size':'std::numeric_limits<std::size_t>::max()',
                     'wq_size':'std::numeric_limits<std::size_t>::max()',
                     'pq_size':'std::numeric_limits<std::size_t>::max()',
@@ -312,13 +321,17 @@ def decorate_queues(caches, ptws, pmem):
 def get_queue_info(ul_pairs, decoration):
     return [decoration.get(ll) for ll,_ in ul_pairs]
 
-def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
+def get_instantiation_lines(cores, caches, ptws, cxl, pmem, vmem, build_id):
     '''
     Generate the lines for a C++ file that instantiates a configuration.
     '''
     classname = f'champsim::configured::generated_environment<0x{build_id}>'
+    # pprint.pprint(caches)
     ul_pairs = get_upper_levels(cores, caches, ptws)
-    queues = get_queue_info(ul_pairs, decorate_queues(caches, ptws, pmem))
+    # pprint.pprint(ul_pairs)
+    queues = get_queue_info(ul_pairs, decorate_queues(caches, ptws, cxl, pmem))
+    print("\n\n\n")
+    # pprint.pprint(len(queues))
 
     datas = itertools.filterfalse(operator.methodcaller('get', 'legacy', False), itertools.chain(
         *(c['_branch_predictor_data'] for c in cores),

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pprint
 import itertools
 import functools
 import operator
@@ -276,6 +277,8 @@ class NormalizedConfiguration:
         self.caches = {k:v for k,v in self.caches.items() if k != 'DRAM'}
 
         self.pmem = config_file.get('physical_memory', {})
+
+        self.cxl = config_file.get('cxl_memory', {})
         
         #this allows frequency to be specified instead of data rate or vice-versa for DRAM
         if('frequency' in self.pmem.keys()):
@@ -284,8 +287,15 @@ class NormalizedConfiguration:
         elif('data_rate' in self.pmem.keys()):
             self.pmem['frequency'] = self.pmem['data_rate']/2
 
+        if('frequency' in self.cxl.keys()):
+            self.cxl['data_rate'] = self.cxl['frequency']
+            self.cxl['frequency'] = self.cxl['frequency']/2
+        elif('data_rate' in self.cxl.keys()):
+            self.cxl['frequency'] = self.cxl['data_rate']/2 
+
         if verbose:
             print('P: pmem', list(self.pmem.keys()))
+            print('P: cxl', list(self.cxl.keys()))
 
         self.vmem = config_file.get('virtual_memory', {})
 
@@ -301,6 +311,7 @@ class NormalizedConfiguration:
         self.cores = list(itertools.starmap(util.chain, itertools.zip_longest(self.cores, rhs.cores, fillvalue={})))
         self.caches = util.chain(self.caches, rhs.caches)
         self.ptws = util.chain(self.ptws, rhs.ptws)
+        self.cxl = util.chain(self.cxl, rhs.cxl)
         self.pmem = util.chain(self.pmem, rhs.pmem)
         self.vmem = util.chain(self.vmem, rhs.vmem)
         self.root = util.chain(self.root, rhs.root)
@@ -334,6 +345,20 @@ class NormalizedConfiguration:
             'refresh_period': 32, 'refreshes_per_period': 8192
         })
         pmem = util.chain(pmem,(do_deprecation(pmem, pmem_deprecation_keys,pmem_deprecation_warnings)))
+
+        cxl = util.chain(self.cxl, {
+            "name" : 'CXL',
+            "frequency" : 2000,
+            "data_rate" : 4000,
+            "channels" : 2,
+            "rq_size": 1024,
+            "wq_size": 1024,
+            "tCXL" : 25,
+            "RD_BW" : 25.7,
+            "WR_BW" : 12.7,
+            "RD_Ch_width_bits" : 8,
+            "WR_Ch_width_bits" : 8
+        })
         
         #convert vmem boolean to string
         vmem = util.chain(
@@ -368,6 +393,7 @@ class NormalizedConfiguration:
 
         tlb_path = itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[2:])))
         data_path = itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[:2])))
+        pprint.pprint(caches)
         caches = util.combine_named(
             # Set prefetcher_activate
             ({ 'name': k,
@@ -382,6 +408,8 @@ class NormalizedConfiguration:
             ({'name': c['name'], **transform_for_keys(c, ('size',), int_or_prefixed_size)} for c in caches.values()),
 
             caches.values(),
+
+
 
             ## DEPRECATION
             # The listed keys are deprecated. For now, permit them but print a warning
@@ -408,6 +436,10 @@ class NormalizedConfiguration:
             } for k,cache in caches.items())
         )
 
+        print("\n\n\n")
+        pprint.pprint(caches)
+
+
         ptws = util.combine_named(
             ptws.values(),
 
@@ -433,6 +465,7 @@ class NormalizedConfiguration:
             'cores': cores,
             'caches': tuple(caches.values()),
             'ptws': tuple(ptws.values()),
+            'cxl': cxl,
             'pmem': pmem,
             'vmem': vmem
         }

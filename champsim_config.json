@@ -159,6 +159,18 @@
         "replacement": "lru"
     },
 
+    "cxl_memory": {
+        "frequency" : 2000,
+        "channels" : 2,
+        "rq_size": 1024,
+        "wq_size": 1024,
+        "tCXL" : 25,
+        "RD_BW" : 25.7,
+        "WR_BW" : 12.7,
+        "RD_Ch_width_bits" : 8,
+        "WR_Ch_width_bits" : 8
+    },
+
     "physical_memory": {
         "data_rate": 3200,
         "channels": 1,
