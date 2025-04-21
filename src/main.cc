@@ -54,6 +54,8 @@ const unsigned LOG2_PAGE_SIZE = champsim::lg2(PAGE_SIZE);
 #ifndef CHAMPSIM_TEST_BUILD
 int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 {
+  // configured_environment是类型别名，实际类型是champsim::configured::generated_environment<CHAMPSIM_BUILD>
+  // 而这个类型的constructor定义在由脚本生成的问奶奶core_inst.cc.inc中
   configured_environment gen_environment{};
 
   CLI::App app{"A microarchitecture simulator for research and education"};
