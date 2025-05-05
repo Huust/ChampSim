@@ -195,7 +195,7 @@ class MEMORY_CONTROLLER : public champsim::operable
   using channel_type = champsim::channel;
   using request_type = typename channel_type::request_type;
   using response_type = typename channel_type::response_type;
-  std::vector<channel_type*> queues;  // upper level requests from different upper level channels (like from LLC and PTW)
+  std::vector<channel_type*> queues;  // upper level requests from different upper level channels
   const champsim::data::bytes channel_width;
 
   void initiate_requests();
