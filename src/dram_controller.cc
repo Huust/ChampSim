@@ -28,7 +28,7 @@
 #include "util/units.h"
 
 MEMORY_CONTROLLER::MEMORY_CONTROLLER(champsim::chrono::picoseconds dbus_period, champsim::chrono::picoseconds mc_period, std::size_t t_rp, std::size_t t_rcd,
-                                     std::size_t t_cas, std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::vector<channel_type*>&& ul,  // 有意思的点：dram应该有两个ul分别是LLC和PTW，但是配置文件只有一个LLC；但是配置文件让LLC和PTW使用不同的channel连接到dram
+                                     std::size_t t_cas, std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::vector<channel_type*>&& ul,
                                      std::size_t rq_size, std::size_t wq_size, std::size_t chans, champsim::data::bytes chan_width, std::size_t rows,
                                      std::size_t columns, std::size_t ranks, std::size_t bankgroups, std::size_t banks, std::size_t refreshes_per_period)
     : champsim::operable(mc_period), queues(std::move(ul)), channel_width(chan_width),
@@ -42,12 +42,15 @@ MEMORY_CONTROLLER::MEMORY_CONTROLLER(champsim::chrono::picoseconds dbus_period, 
 }
 
 // mc_period: 因为是同步DRAM所以由memory controller提供时钟，mc_period是时钟周期
+// mc_period和dbus_period是2: 1的关系，因为是DDR，所以数据传输速率是内存控制器时钟的两倍，因此period是1/2
 // 一些size_t类型参数是周期数
 // DRAM_ROWS_PER_REFRESH:
 // tREF: 也称为tREFI，指两次刷新指令之间的时间间隔（比如规定一tRFC个cell 64ms刷新一次，bank有8192行，那么tREFI= 64ms/8192=7.8us，经过该时间，从n行刷新变为n+1行）
 // 所以refresh_period指的是一个cell需要经过多久被再次刷新
 // DRAM_ROWS_PER_REFRESH = rows / refreshes_per_period表明模拟器支持每次刷新指令可以刷新多行
-// tRFC: Refresh Cycle Time。指一行经过刷新后需要多久才能恢复正常读写；模拟器根据dram的密度来计算，是因为tRFC和DRAM的密度正相关  
+// tRFC: Refresh Cycle Time。指一行经过刷新后需要多久才能恢复正常读写；模拟器根据dram的密度来计算，是因为tRFC和DRAM的密度正相关
+//
+// DRAM_CHANNEL可以想象成：在physical memory模块内MC和DRAM连接的channels
 DRAM_CHANNEL::DRAM_CHANNEL(champsim::chrono::picoseconds dbus_period, champsim::chrono::picoseconds mc_period, std::size_t t_rp, std::size_t t_rcd,
                            std::size_t t_cas, std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::size_t refreshes_per_period,
                            champsim::data::bytes width, std::size_t rq_size, std::size_t wq_size, DRAM_ADDRESS_MAPPING addr_mapper)
@@ -64,7 +67,7 @@ DRAM_CHANNEL::DRAM_CHANNEL(champsim::chrono::picoseconds dbus_period, champsim::
       data_bus_period(dbus_period)
 {
   // 这里的数值都是在单个上层模块中的数值，例如banks指的是单个bankgroups中的bank的数量
-  // 因为dram这部分并没有涉及DIMM也就是module，所以默认.ranks()表示一个channel中ranks的数量
+  // 因为dram这部分并没有涉及DIMM也就是module，所以默认.ranks()表示一个channel中banks的数量
   request_array_type br(address_mapping.ranks() * address_mapping.banks() * address_mapping.bankgroups());
   bank_request = br;
   active_request = std::end(bank_request);
@@ -144,7 +147,6 @@ long DRAM_CHANNEL::operate()
     }
   }
 
-  // TODO
   check_write_collision();
   check_read_collision();
   progress += finish_dbus_request();  // 第二阶段：数据总线 -> 上层接收者
@@ -156,6 +158,9 @@ long DRAM_CHANNEL::operate()
   return progress;
 }
 
+// Checks if the request currently occupying the data bus
+// has finished transferring (active_request->ready_time is met) and sends
+// the response back to the requesting cache
 long DRAM_CHANNEL::finish_dbus_request()
 {
   long progress{0};
@@ -167,6 +172,7 @@ long DRAM_CHANNEL::finish_dbus_request()
       ret->push_back(response);
     }
 
+    // update bank request status
     active_request->valid = false;
 
     active_request->pkt->reset();
@@ -254,13 +260,21 @@ void DRAM_CHANNEL::swap_write_mode()
     // Reset scheduled requests
     for (auto it = std::begin(bank_request); it != std::end(bank_request); ++it) {
       // Leave active request on the data bus
+      // 所以每个cycle都有可能service一个等待被执行的request，
+      // 但是并不是每个cycle都能让上一个正在dbus中的request结束，
+      // 所以会出现bank valid但是不是active request的情况
+      // TODO
       if (it != active_request && it->valid) {
-        // Leave rows charged
+        // 一般情况：保留row激活
+        // if是特殊情况：如果这个被取消请求的CAS（列访问）阶段已经完成或非常接近完成，
+        // 那么就选择将该行关闭（预充电）。 
+        // 这可以看作是一种“清理”策略，避免在CAS操作的关键节点上中断可能导致的复杂状态，
+        // 选择了一个更明确的“行关闭”状态
         if (it->ready_time < (current_time + tCAS)) {
           it->open_row.reset();
         }
 
-        // This bank is ready for another DRAM request
+        // 相当于把和bank原先绑定的pkt解绑并且重新放入request queue中
         it->valid = false;
         it->pkt->value().scheduled = false;
         it->pkt->value().ready_time = current_time;
@@ -290,27 +304,40 @@ long DRAM_CHANNEL::populate_dbus()
 {
   long progress{0};
 
-  // 找到下一个应该使用数据总线的bank请求
+  // 找到下一个应该使用数据总线的bank请求（忙碌且ready_time更小的）
   auto iter_next_process = std::min_element(std::begin(bank_request), std::end(bank_request),
                                             [](const auto& lhs, const auto& rhs) { return !rhs.valid || (lhs.valid && lhs.ready_time < rhs.ready_time); });
+  // 无论是读还是写，都是命令先行：先把命令从MC发送至DRAM，DRAM准备就绪（经过tCAS 以及可能的tRD和tRP）
+  // 才传输数据；
+  // 如果是读操作：DRAM就绪后，被送上dbus写回MC
+  // 如果是写操作：DRAM就绪后，MC将数据送上dbus传送到bank
   if (iter_next_process->valid && iter_next_process->ready_time <= current_time) {
+    // 在finish_dbus_request中，一个请求结束会重新把active_request指向end
+    // 但是如果前后两次请求不是都为读/写，则需要dbus turn-around time
+    // 你可以在swap_write_mode中看到dbus_cycle_available记录了一次请求结束后，附加turnaround时间后的时间点
+    // 总结：逻辑上，dbus没有请求；物理上（硬件上），dbus完成turnaround
     if (active_request == std::end(bank_request) && dbus_cycle_available <= current_time) {
       // Bus is available
       // Put this request on the data bus
 
       // get which bankgroup we are in
       auto op_bankgroup = bankgroup_request_index(iter_next_process->pkt->value().address);
+      // bankgroup_ready_time这个时间点代表了该Bank Group下一次可以开始在数据总线 (dbus) 上进行数据传输的最早时刻。
       auto bankgroup_ready_time = bankgroup_readytime[op_bankgroup];
 
       active_request = iter_next_process;
 
       // set return time. Incur penalty if bankgroup is on cooldown
+      // 即使bank就绪，但如果bankgroup未就绪，因此一个request真正的就绪时间是bankgroup_ready_time + DRAM_DBUS_RETURN_TIME
+      // 其中DRAM_DBUS_RETURN_TIME表示数据在dbus上传输的时间，因为每次burst length都是固定8字节，所以传输时间相同
       if (bankgroup_ready_time > current_time)
         active_request->ready_time = bankgroup_ready_time + DRAM_DBUS_RETURN_TIME;
       else
         active_request->ready_time = current_time + DRAM_DBUS_RETURN_TIME;
 
       // set when bankgroup dbus will be next ready
+      // DRAM_DBUS_BANKGROUP_STALL表示在一个Bank Group完成一次数据总线传输后，
+      // 该Bank Group需要等待这段时间才能再次发起下一次数据总线传输
       bankgroup_readytime[op_bankgroup] = current_time + DRAM_DBUS_RETURN_TIME + DRAM_DBUS_BANKGROUP_STALL;
 
       // 统计row buffer命中/未命中
@@ -357,24 +384,44 @@ std::size_t DRAM_CHANNEL::bankgroup_request_index(champsim::address addr) const
 }
 
 // Look for queued packets that have not been scheduled
+// 1. schedule_packet不保证返回的迭代器对象一定是有效的，所以service_packet开头就会检查
+// 2. lambda函数中很粗糙的返回true/false，即使被暂时返回的对象（例如true表示lhs）未必是有效的，
+// 但可能在下一次迭代中，它就因为无效而被淘汰；只有队列中全都是无效packet，
+// 这个函数才会返回一个指向无效packet的迭代器对象
+// 3. 综上，schedule函数寻找一个合适的packet的逻辑是：
+// 有效的->未被调度过的->读写地址所在bank free的->满足FCFS的
 DRAM_CHANNEL::queue_type::iterator DRAM_CHANNEL::schedule_packet()
 {
   // Look for queued packets that have not been scheduled
   // prioritize packets that are ready to execute, bank is free
   auto next_schedule = [this](const auto& lhs, const auto& rhs) {
+    // 1. 基本有效性检查：只考虑存在且未被调度的请求
     if (!(rhs.has_value() && !rhs.value().scheduled)) {
+      // 如果 rhs 无效或已调度，则 lhs “更好”（或者说 rhs 不符合条件）
       return true;
     }
     if (!(lhs.has_value() && !lhs.value().scheduled)) {
+      // 如果 lhs 无效或已调度（但 rhs 是有效的），则 rhs “更好”
       return false;
     }
 
+    // 到这里，lhs 和 rhs 都是存在且未被调度的有效候选请求
+
+    // 2. 获取这两个请求将要访问的 bank 的索引
     auto lop_idx = this->bank_request_index(lhs.value().address);
     auto rop_idx = this->bank_request_index(rhs.value().address);
-    auto rready = !this->bank_request[rop_idx].valid;
-    auto lready = !this->bank_request[lop_idx].valid;
+
+    // 3. 检查这两个 bank 当前是否空闲 (bank_request[idx].valid == false 表示空闲)
+    auto rready = !this->bank_request[rop_idx].valid; // rhs 对应的 bank 是否空闲
+    auto lready = !this->bank_request[lop_idx].valid; // lhs 对应的 bank 是否空闲
+
+    // 4. 核心比较逻辑：
+    //    优先选择 bank 空闲的请求。
+    //    如果 bank 状态相同，则选择 ready_time 更早的请求。
+    //    如果不等，并且lready为true，则返回true，表示lready优先；
+    //    如果不等且rready为true（lready为false），则返回false，表示rready优先
     return (rready == lready) ? lhs.value().ready_time <= rhs.value().ready_time : lready;
-  };
+  }; 
   queue_type::iterator iter_next_schedule;
   if (write_mode) {
     iter_next_schedule = std::min_element(std::begin(WQ), std::end(WQ), next_schedule);
@@ -384,9 +431,18 @@ DRAM_CHANNEL::queue_type::iterator DRAM_CHANNEL::schedule_packet()
   return (iter_next_schedule);
 }
 
+// 更新pkt需要访问的那个bank的状态：
+// - 不空闲
+// - 判断row_buffer_hit
+// - 不需要refresh也未处在refresh中
+// - 记录open_row（如果row buffer hit就不需要更新）
+// - 更新ready_time，tCAS + (tRCD + (tRP))
+// - 将packet（来自dram channel的request）绑定到这个bank上
 long DRAM_CHANNEL::service_packet(DRAM_CHANNEL::queue_type::iterator pkt)
 {
   long progress{0};
+  // 因为通过调用schedule_packet返回的pkt iterator不保证has_value()
+  // 且不保证ready_time <= current_time，所以先检查
   if (pkt->has_value() && pkt->value().ready_time <= current_time) {
     // 获取行地址和bank索引
     auto op_row = address_mapping.get_row(pkt->value().address);
@@ -468,7 +524,7 @@ bool DRAM_ADDRESS_MAPPING::is_collision(champsim::address a, champsim::address b
   return (a.slice_upper(offset_bits) == b.slice_upper(offset_bits));
 }
 
-// 合并WQ中相同的请求
+// 合并WQ中相同（指：将两个地址输入is_collision后判断除offset之外其它地址位是否相同）的请求
 void DRAM_CHANNEL::check_write_collision()
 {
   for (auto wq_it = std::begin(WQ); wq_it != std::end(WQ); ++wq_it) {
@@ -509,6 +565,8 @@ void DRAM_CHANNEL::check_read_collision()
       if (auto wq_it = std::find_if(std::begin(WQ), std::end(WQ), checker); wq_it != std::end(WQ)) {
         response_type response{rq_it->value().address, rq_it->value().v_address, wq_it->value().data, rq_it->value().pf_metadata,
                                rq_it->value().instr_depend_on_me};
+        // to_return被记录在每个request packet中，是一个指针，指向和upper level连接的champsim channel的response queue中
+        // 所以这里是创建一个response，并写入champsim channel中
         for (auto* ret : rq_it->value().to_return) {
           ret->push_back(response);
         }
@@ -517,6 +575,13 @@ void DRAM_CHANNEL::check_read_collision()
 
       }
       // backwards check
+      // 两条load指令可能先后访问相同的地址，它们有不同的指令依赖
+      // 例如load r1, addr和load r2, addr意味着后续依赖r1和r2的指令需要被合并看待
+      //
+      // 尽管default配置中，dram的upper level只有LLC，但是在一个更复杂的系统中，
+      // 例如GPU和CPU共享DRAM做为显存和内存，不同的处理单元（CPU 和 iGPU）可能同时请求相同的数据，
+      // 以及to_return合并机制确保数据被正确地分发给所有请求者
+      // 类似地，IO设备通过DMA访问DRAM也可能和CPU访问相同的地址
       else if (auto found = std::find_if(std::begin(RQ), rq_it, checker); found != rq_it) {
         auto instr_copy = std::move(found->value().instr_depend_on_me);
         auto ret_copy = std::move(found->value().to_return);
@@ -550,6 +615,16 @@ void DRAM_CHANNEL::check_read_collision()
 void MEMORY_CONTROLLER::initiate_requests()
 {
   // Initiate read requests (来自上层的read请求和prefetch请求都存入RQ)
+  // 1. 这里写for (auto ul: queues)是一样的，但是
+  // 代码中的写法更明确地表达了你期望容器中的元素是指针。
+  // 它增加了一个编译时检查：如果容器元素不是指针，编译将失败。
+  // 这可以看作是一种代码意图的明确化和额外的静态检查。
+
+  // 内层循环在做：
+  // 将LLC和MC之间由champsim提供的channels中的read request和prefetch request
+  // 通过add_rq转移到physical memory中每个内部channel（这是dram channel）的RQ中
+  // 并且champsim channel中RQ和PQ都会转移到dram channel中的RQ
+  // 最后清空champsim channel中的请求队列packet
   for (auto* ul : queues) {
     for (auto q : {std::ref(ul->RQ), std::ref(ul->PQ)}) {
       auto [begin, end] = champsim::get_span_p(std::cbegin(q.get()), std::cend(q.get()), [ul, this](const auto& pkt) { return this->add_rq(pkt, ul); });
@@ -573,12 +648,20 @@ bool MEMORY_CONTROLLER::add_rq(const request_type& packet, champsim::channel* ul
 {
   auto& channel = channels[address_mapping.get_channel(packet.address)];
 
+  // C++ 17 features: if statement with initializer
+  // the scope of rq_it is limited within if statement
   if (auto rq_it = std::find_if_not(std::begin(channel.RQ), std::end(channel.RQ), [this](const auto& pkt) { return pkt.has_value(); });
       rq_it != std::end(channel.RQ)) {
     *rq_it = DRAM_CHANNEL::request_type{packet};
     rq_it->value().forward_checked = false;
     rq_it->value().scheduled = false;
     rq_it->value().ready_time = current_time;
+    // 注意packet是champsim channel中的request类型
+    // 而*rq_it是DRAM_CHANNEL的request type类型
+    // 这里如果发现需要response（读操作）就会初始化to_return
+    // 否则默认to_return是nullptr（因为struct request_type中to_return{}）
+    // 在finish_dbus_request函数中，无论读写会直接遍历to_return，因为
+    // 读请求to_return为空，所以相当于没有将response写入to_return队列中，这符合读请求不需要response的情况
     if (packet.response_requested)
       rq_it->value().to_return = {&ul->returned};
 
@@ -636,6 +719,7 @@ unsigned long DRAM_ADDRESS_MAPPING::get_bankgroup(champsim::address address) con
   unsigned long bk_bits = champsim::size(get<SLICER_BANK_IDX>(address_slicer));
   return (swizzle_bits(address, bg_bits + bk_bits, champsim::data::bits{0}, bankgroup, bg_bits));
 }
+// Given address, return bank number in some specific bankgroup
 unsigned long DRAM_ADDRESS_MAPPING::get_bank(champsim::address address) const
 {
   unsigned long bank = std::get<SLICER_BANK_IDX>(address_slicer(address)).to<unsigned long>();

@@ -97,7 +97,7 @@ struct DRAM_CHANNEL final : public champsim::operable {
 
   struct request_type {
     bool scheduled = false;
-    bool forward_checked = false;
+    bool forward_checked = false; // DRAM_CHANNEL中一个packet是否检查过队列中靠前/靠后的其它packet存在可以合并的状态
 
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
 
@@ -106,6 +106,9 @@ struct DRAM_CHANNEL final : public champsim::operable {
     champsim::address address{};
     champsim::address v_address{};
     champsim::address data{};
+    // request的ready time并不重要，它们在add rq wq函数中
+    // 被设置为current time；这主要是为了服务next schedule lambda函数中
+    // 根据lhs和rhs的ready time大小确定谁是先到的请求
     champsim::chrono::clock::time_point ready_time = champsim::chrono::clock::time_point::max();
 
     std::vector<uint64_t> instr_depend_on_me{};
@@ -124,9 +127,11 @@ struct DRAM_CHANNEL final : public champsim::operable {
    */
     struct BANK_REQUEST {
     // valid: true表示正在处理请求，不能接受新请求；false表示空闲，可以接受新请求
+    // under_refresh: 正在被刷新
     bool valid = false, row_buffer_hit = false, need_refresh = false, under_refresh = false;
 
     // 类似于Rust中的Option<size_t>，表示哪一个row处以activate状态；当然也可能没有
+    // open_row.has_value()表明某一行处在activate状态，也即这一行的值保存在row buffer中
     std::optional<std::size_t> open_row{};
 
     champsim::chrono::clock::time_point ready_time{};
@@ -151,6 +156,9 @@ struct DRAM_CHANNEL final : public champsim::operable {
   std::size_t bankgroup_request_index(champsim::address addr) const;
 
   bool write_mode = false;
+  // dbus_cycle_available 是一个时间点 (champsim::chrono::clock::time_point)，
+  // 它记录了数据总线因为模式切换而需要等待的“转向时间”结束的时刻。
+  // 换句话说，它代表数据总线最早可以再次被用于（新的）数据传输的时间点。
   champsim::chrono::clock::time_point dbus_cycle_available{};
 
   std::size_t refresh_row = 0;
@@ -195,7 +203,7 @@ class MEMORY_CONTROLLER : public champsim::operable
   using channel_type = champsim::channel;
   using request_type = typename channel_type::request_type;
   using response_type = typename channel_type::response_type;
-  std::vector<channel_type*> queues;  // upper level requests from different upper level channels (like from LLC and PTW)
+  std::vector<channel_type*> queues;  // upper level requests from different upper level channels (in default configuration, only one upper level: LLC)
   const champsim::data::bytes channel_width;
 
   void initiate_requests();
