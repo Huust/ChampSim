@@ -188,6 +188,8 @@ long DRAM_CHANNEL::finish_dbus_request()
 // 2. 经过刷新，bank的row buffer为空；下一次读取数据需要重新activate某一行
 // 这段代码的效果是：每个周期检查刷新间隔时间是否到达，如果到达，则根据bank是否被访问
 // 如果空闲就开始刷新，如果被访问则下个周期再检查，直到空闲开启刷新；有的bank先完成刷新后，row buffer被重置
+// 3. 注意区别tREF和tRFC：前者是发出刷新命令的平均间隔时间；后者是执行一次刷新操作所需要的时间
+// 显然tREF要比tRFC大不少，否则bank绝大部分时间将处于under refresh，无法处理MC发来的命令
 long DRAM_CHANNEL::schedule_refresh()
 {
   long progress = {0};
@@ -211,8 +213,10 @@ long DRAM_CHANNEL::schedule_refresh()
     if (schedule_refresh) {
       b_req.need_refresh = true;
     }
-    // refresh is being scheduled for this bank
+    // if this bank needs refresh and bank is free: under_refresh
     if (b_req.need_refresh && !b_req.valid) {
+      // ready time的两用性：在under refresh中判断何时恢复可使用状态；
+      // 在service packet中确定bank的row何时数据就绪
       b_req.ready_time = current_time + tRFC;
       b_req.need_refresh = false;
       b_req.under_refresh = true;
@@ -263,13 +267,19 @@ void DRAM_CHANNEL::swap_write_mode()
       // 所以每个cycle都有可能service一个等待被执行的request，
       // 但是并不是每个cycle都能让上一个正在dbus中的request结束，
       // 所以会出现bank valid但是不是active request的情况
-      // TODO
       if (it != active_request && it->valid) {
         // 一般情况：保留row激活
         // if是特殊情况：如果这个被取消请求的CAS（列访问）阶段已经完成或非常接近完成，
         // 那么就选择将该行关闭（预充电）。 
         // 这可以看作是一种“清理”策略，避免在CAS操作的关键节点上中断可能导致的复杂状态，
         // 选择了一个更明确的“行关闭”状态
+
+        // 因为tCAS是bank数据就绪的最后一步latency
+        // 所以这几行代码考察了：如果dbus还在传输并且因为
+        // MC发送新命令可以和dbus传输时间重叠，而经过一段时间后
+        // 新命令的数据即将在bank的row中就绪，但dbus还在传输，
+        // 碰巧这个cycle发现读写请求不均衡需要turnaround，
+        // 于是reset这个bank，相当于rollback新命令
         if (it->ready_time < (current_time + tCAS)) {
           it->open_row.reset();
         }
@@ -282,6 +292,10 @@ void DRAM_CHANNEL::swap_write_mode()
     }
 
     // Add data bus turn-around time
+    // dbus_cycle_available是一个时间点，如果此时dbus上有数据在被传输，
+    // 则其传输完成时间+turnaround time就是下一次dbus_cycle_available的时间点
+    // 从硬件角度看，一定是等dbus空闲后（比如一直是空闲or传输完一个request后）
+    // 才会改变dbus传输方向
     if (active_request != std::end(bank_request)) {
       dbus_cycle_available = active_request->ready_time + DRAM_DBUS_TURN_AROUND_TIME; // After ongoing finish
     } else {
@@ -423,6 +437,8 @@ DRAM_CHANNEL::queue_type::iterator DRAM_CHANNEL::schedule_packet()
     return (rready == lready) ? lhs.value().ready_time <= rhs.value().ready_time : lready;
   }; 
   queue_type::iterator iter_next_schedule;
+  // 根据write_mode决定选择读还是写请求
+  // write_mode由swap_write_mode函数修改
   if (write_mode) {
     iter_next_schedule = std::min_element(std::begin(WQ), std::end(WQ), next_schedule);
   } else {
