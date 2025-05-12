@@ -47,6 +47,13 @@ struct DRAM_ADDRESS_MAPPING {
                                            champsim::dynamic_extent, champsim::dynamic_extent, champsim::dynamic_extent>;
   const slicer_type address_slicer;
 
+  // 由形参pref_size决定
+  // 例如cc文件中初始化时传入的值是BLOCK_SIZE / chan_width.count()
+  // 应该是64/8，表示需要prefetch 8次，每次数据大小是channel的宽度
+  // 因为DRAM向LLC传输数据一定是以block size为单位的，所以
+  // dbus的传输时间一定是基于64B
+  // dbus_period定义的默认值是312ps也就0.3ns，这符合根据3200MT/s计算得到的单个引脚传输速率
+  // 因此dbus_period*8表示传输8次，每次传输8字节，需要的时间，也即DRAM_DBUS_RETURN_TIME
   const std::size_t prefetch_size;
 
   DRAM_ADDRESS_MAPPING(champsim::data::bytes channel_width, std::size_t pref_size, std::size_t channels, std::size_t bankgroups, std::size_t banks,
