@@ -1,4 +1,4 @@
-.csconfig/
+.csconfig
 _configuration.mk
 
 **/__pycache__/

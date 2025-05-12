@@ -79,7 +79,7 @@ DRAM_ADDRESS_MAPPING::DRAM_ADDRESS_MAPPING(champsim::data::bytes channel_width_,
 {
   // assert prefetch size is not zero
   assert(prefetch_size != 0);
-  // assert prefetch size is multiple of block size（此处prefetch_size指的是以每次获取8字节为单位，可以预取几个单位）
+  // assert prefetch size is multiple of block size
   assert((channel_width_.count() * prefetch_size) % BLOCK_SIZE == 0);
 
   // mapping sanity check
