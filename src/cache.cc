@@ -152,9 +152,6 @@ auto CACHE::fill_block(mshr_type mshr, uint32_t metadata) -> BLOCK
   return to_fill;
 }
 
-// 返回一个lambda函数，用于比较除了OFFSET部分的地址是否匹配
-// 调用这个函数输入的参数addr会作为第一个地址，这个函数返回的
-// lambda函数（代码中成为matcher）输入的参数entry会作为第二个地址
 auto CACHE::matches_address(champsim::address addr) const
 {
   return [match = addr.slice_upper(OFFSET_BITS), shamt = OFFSET_BITS](const auto& entry) {
@@ -162,7 +159,6 @@ auto CACHE::matches_address(champsim::address addr) const
   };
 }
 
-// 通过 slice_upper 去除offset位，只保留tag + set index，这就得到了这个cache line对应的块地址
 template <typename T>
 champsim::address CACHE::module_address(const T& element) const
 {
@@ -178,13 +174,12 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   auto [set_begin, set_end] = get_set_span(fill_mshr.address);
   auto way = std::find_if_not(set_begin, set_end, [](auto x) { return x.valid; });
   if (way == set_end) {
-    // 如果在当前set中没有找到invalid cache line：先找victim (这里并没有真正开始replace)
     way = std::next(set_begin, impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id, get_set_index(fill_mshr.address), &*set_begin, fill_mshr.ip,
                                                 fill_mshr.address, fill_mshr.type));
   }
   assert(set_begin <= way);
   assert(way <= set_end);
-  assert(way != set_end || fill_mshr.type != access_type::WRITE); // Writes may not bypass（即：只关心如果是WRITE操作时必须要求，way != set_end）
+  assert(way != set_end || fill_mshr.type != access_type::WRITE); // Writes may not bypass
   const auto way_idx = std::distance(set_begin, way);             // cast protected by earlier assertion
 
   if constexpr (champsim::debug_print) {
@@ -194,7 +189,6 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
                (fill_mshr.time_enqueued.time_since_epoch()) / clock_period, (current_time.time_since_epoch()) / clock_period);
   }
 
-  // 将victim写回
   if (way != set_end && way->valid && way->dirty) {
     request_type writeback_packet;
 
@@ -223,11 +217,6 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
     evicting_address = module_address(*way);
   }
 
-  /* 新的cache block还没有被写入，但是因为旧block已经被打包发送到下一层级的wq所以变成无效,
-   * 因此需要使用新cache block的信息（来自fill_mshr）更新prefetcher和replacement status：
-   * - 替换策略需要这些信息来维护其内部状态（如LRU队列）
-   * - 预取器需要这些信息来学习和适应程序的访存模式（如IP-stride通过记录每个指令的访存步长），以做出更准确的预取决策
-  */
   auto metadata_thru = impl_prefetcher_cache_fill(module_address(fill_mshr), get_set_index(fill_mshr.address), way_idx,
                                                   (fill_mshr.type == access_type::PREFETCH), evicting_address, fill_mshr.data_promise->pf_metadata);
   impl_replacement_cache_fill(fill_mshr.cpu, get_set_index(fill_mshr.address), way_idx, module_address(fill_mshr), fill_mshr.ip, evicting_address,
@@ -242,7 +231,6 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
       ++sim_stats.pf_fill;
     }
 
-    // 将新block更新到way中
     *way = fill_block(fill_mshr, metadata_thru);
   }
 
@@ -259,8 +247,6 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   return true;
 }
 
-// try_hit函数是缓存系统中一个核心函数，用于尝试在缓存中查找请求的数据，
-// 并处理缓存命中和未命中的情况。这个函数模拟了实际硬件中缓存标签比较和数据访问的过程。
 bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 {
   cpu = handle_pkt.cpu;
@@ -269,7 +255,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   auto [set_begin, set_end] = get_set_span(handle_pkt.address);
   auto way = std::find_if(set_begin, set_end, [matcher = matches_address(handle_pkt.address)](const auto& x) { return x.valid && matcher(x); });
   const auto hit = (way != set_end);
-  const auto useful_prefetch = (hit && way->prefetch && !handle_pkt.prefetch_from_this);  // 命中了prefetch得到的cache line
+  const auto useful_prefetch = (hit && way->prefetch && !handle_pkt.prefetch_from_this);
 
   if constexpr (champsim::debug_print) {
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} data: {} set: {} way: {} ({}) type: {} cycle: {}\n", NAME, __func__, handle_pkt.instr_id,
@@ -277,29 +263,9 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
                hit ? "HIT" : "MISS", access_type_names.at(champsim::to_underlying(handle_pkt.type)), current_time.time_since_epoch() / clock_period);
   }
 
-  // 初始化预取元数据，先保存当前请求携带的预取元数据
   auto metadata_thru = handle_pkt.pf_metadata;
 
-  // 检查是否需要激活预取器来分析当前的内存访问
   if (should_activate_prefetcher(handle_pkt)) {
-    /* 调用预取器的操作函数来分析当前访问并生成新的预取请求
-     * 参数说明：
-     * - module_address(handle_pkt): 当前访问的内存地址
-     * - handle_pkt.ip: 触发该内存访问的指令地址
-     * - hit: 当前访问是否命中缓存
-     * - useful_prefetch: 是否命中了之前预取的数据（用于评估预取效果）
-     * - handle_pkt.type: 访问类型（如READ、WRITE等）
-     * - metadata_thru: 当前的预取元数据
-     * 
-     * 返回值：
-     * - 更新后的预取元数据，用于指导后续的预取决策
-     * 
-     * 这个调用让预取器能够：
-     * 1. 观察和学习程序的内存访问模式
-     * 2. 评估之前预取的效果（通过useful_prefetch参数）
-     * 3. 根据当前访问生成新的预取请求
-     * 4. 维护和更新预取状态（通过metadata）
-     */
     metadata_thru = impl_prefetcher_cache_operate(module_address(handle_pkt), 
                                                 handle_pkt.ip, 
                                                 hit, 
@@ -308,12 +274,6 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
                                                 metadata_thru);
   }
 
-  // update replacement policy
-  // 当缓存命中时，需要更新该缓存行的访问状态
-  // 这些状态用于实现不同的置换策略：
-  // LRU：更新最后访问时间
-  // SHIP：更新RRPV值
-  // 其他策略：更新各自的状态位
   const auto way_idx = std::distance(set_begin, way);
   impl_update_replacement_state(handle_pkt.cpu, get_set_index(handle_pkt.address), way_idx, module_address(handle_pkt), handle_pkt.ip, {}, handle_pkt.type,
                                 hit);
@@ -362,10 +322,6 @@ auto CACHE::mshr_and_forward_packet(const tag_lookup_type& handle_pkt) -> std::p
   return std::pair{std::move(to_allocate), std::move(fwd_pkt)};
 }
 
-// 这个函数核心行为是：
-// 将miss写入lower level的channel中，这里miss的原因可以是read miss也可以是要做prefetch
-// 将miss写入MSHR中
-// 如果有需要，考虑merge等操作，并更新一些statistics
 bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
 {
   if constexpr (champsim::debug_print) {
@@ -386,7 +342,6 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
 
   if (mshr_entry != MSHR.end()) // miss already inflight
   {
-    // 如果我的miss刚好出现在mshr中（根据地址），且已经在mshr中的条目是一个未完成的prefetch：说明prefetch是有效的
     if (mshr_entry->type == access_type::PREFETCH && handle_pkt.type != access_type::PREFETCH) {
       // Mark the prefetch as useful
       if (mshr_entry->prefetch_from_this) {
@@ -395,7 +350,6 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     }
 
     // COLLECT STATS
-    // 如果发现既有的mshr不是一个prefetch请求，那么就是相同的请求，所以可以合并
     sim_stats.mshr_merge.increment(std::pair{to_allocate.type, to_allocate.cpu});
 
     *mshr_entry = mshr_type::merge(*mshr_entry, to_allocate);
@@ -404,9 +358,6 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
       return false;  // TODO should we allow prefetches anyway if they will not be filled to this level?
     }
 
-    // prefetch_as_load 是一个配置选项，用于决定预取请求是否应该被当作普通的load请求来处理
-    // 如果设置了prefetch_as_load，那么prefetch请求会进入RQ，否则进入PQ
-    // 也就是更激进地将prefetch请求当作普通请求
     const bool send_to_rq = (prefetch_as_load || handle_pkt.type != access_type::PREFETCH);
     bool success = send_to_rq ? lower_level->add_rq(mshr_pkt.second) : lower_level->add_pq(mshr_pkt.second);
 
@@ -435,7 +386,6 @@ bool CACHE::handle_write(const tag_lookup_type& handle_pkt)
 
   mshr_type to_allocate{handle_pkt, current_time};
   to_allocate.data_promise.ready_at(current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY));
-  // inflight_writes: 来自上层的writeback（比如L1的脏块写回到L2，那么这个写请求暂存在L2的inflight_writes队列中）
   inflight_writes.push_back(to_allocate);
 
   sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
@@ -483,14 +433,11 @@ long CACHE::operate()
   }
 
   // Finish returns
-  // 在正式处理来在upper level的请求前，需要先处理完来自lower level的response
   std::for_each(std::cbegin(lower_level->returned), std::cend(lower_level->returned), [this](const auto& pkt) { this->finish_packet(pkt); });
   progress += std::distance(std::cbegin(lower_level->returned), std::cend(lower_level->returned));
   lower_level->returned.clear();
 
   // Finish translations
-  // 给TLB使用（因为TLB也是cache），用于不同层次的地址翻译的mapping传递（L1 TLB <- L2 TLB <- PTW）
-  // 生成lower level到upper level的translation队列的物理地址
   if (lower_translate != nullptr) {
     std::for_each(std::cbegin(lower_translate->returned), std::cend(lower_translate->returned), [this](const auto& pkt) { this->finish_translation(pkt); });
     progress += std::distance(std::cbegin(lower_translate->returned), std::cend(lower_translate->returned));
@@ -498,14 +445,8 @@ long CACHE::operate()
   }
 
   // Perform fills
-  // 核心函数：handle_fill()
-  // 读取MSHR和inflight_writes队列找到可以完成的操作(x.data_promise.is_ready_at(time))，consume带宽并更新队列
-  // - MSHR处理的是需要等待下一级返回数据的请求 (来自lower level)
-  // - inflight_writes处理的是已经有完整数据、只需要写入的请求 (来自upper level)
-  // - 不过它们的效果最终都是：fill这一层级cache，必要时做replacement，并向下层通过wq发送writeback
   champsim::bandwidth fill_bw{MAX_FILL};
   for (auto q : {std::ref(MSHR), std::ref(inflight_writes)}) {
-    // 保证数据已经就绪且数据量不超过填充带宽
     auto [fill_begin, fill_end] = champsim::get_span_p(std::cbegin(q.get()), std::cend(q.get()), fill_bw,
                                                        [time = current_time](const auto& x) { return x.data_promise.is_ready_at(time); });
     auto complete_end = std::find_if_not(fill_begin, fill_end, [this](const auto& x) { return this->handle_fill(x); });
@@ -514,30 +455,18 @@ long CACHE::operate()
   }
 
   // hardware limited bw -> - inflight_tag_check -> - translation_stash -> divided between upper levels -> - internal_PQ
-  // Initiate tag checks
-  // MAX_TAG乘以后面的factor是因为考虑到流水线，可以一次输入更多的tags等待比较
-  // inflight_tag_check是因为tag checker需要被多个地方使用，所以可能有其他硬件已经占用了一部分带宽
   const champsim::bandwidth::maximum_type bandwidth_from_tag_checks{champsim::to_underlying(MAX_TAG) * (long)(HIT_LATENCY / clock_period)
                                                                     - (long)std::size(inflight_tag_check)};
-  // 限制bw在0-MAX_TAG之间
   champsim::bandwidth initiate_tag_bw{std::clamp(bandwidth_from_tag_checks, champsim::bandwidth::maximum_type{0}, MAX_TAG)};
-  // 这里std::size(translation_stash) < static_cast<std::size_t>(MSHR_SIZE)更像是一种断言，
-  // 所以核心判断是entry.is_translated
   auto can_translate = [avail = (std::size(translation_stash) < static_cast<std::size_t>(MSHR_SIZE))](const auto& entry) {
     return avail || entry.is_translated;
   };
-  // 这个函数会遍历translation_stash中的请求，找出那些已经完成地址转换的请求（is_translated为true），
-  // 将它们转移到inflight_tag_check中，同时考虑带宽限制，并且消耗initiate_tag_bw，也就是实际可用带宽
-  // NOTE: 一个请求先写入inflight_tag_check，如果发现地址未被翻译，为了不阻塞后面的请求处理，需要写入translation_stash；
-  // 直到translation_stash完成；我们才可以写回inflight_tag_check
-  // NOTE: 只有L1的translation_stash有意义因为只有L1接收虚拟地址的同时需要等待地址翻译完成
   auto stash_bandwidth_consumed =
       champsim::transform_while_n(translation_stash, std::back_inserter(inflight_tag_check), initiate_tag_bw, is_translated, initiate_tag_check<false>());
   initiate_tag_bw.consume(stash_bandwidth_consumed);
   std::vector<long long> channels_bandwidth_consumed{};
 
   if (std::size(upper_levels) > 1) {
-    // 把队列中第一个元素放到最后一个位置
     std::rotate(upper_levels.begin(), upper_levels.begin() + 1, upper_levels.end());
   }
 
@@ -552,8 +481,6 @@ long CACHE::operate()
       // this needs to be in this loop, we need to ensure that for cases where bandwidth doesn't divide nicely across upstreams,
       // we don't accidentally consume more bandwidth than expected
       champsim::bandwidth per_upper_tag_bw{std::min(per_upper_bandwidth, champsim::bandwidth::maximum_type{initiate_tag_bw.amount_remaining()})};
-      // 这个函数会遍历上层缓存队列中的请求，找出那些可以进行地址转换的请求（can_translate为true），
-      // 将它们转移到inflight_tag_check中，同时考虑带宽限制
       auto bandwidth_consumed =
           champsim::transform_while_n(q.get(), std::back_inserter(inflight_tag_check), per_upper_tag_bw, can_translate, initiate_tag_check<true>(ul));
       channels_bandwidth_consumed.push_back(bandwidth_consumed);
@@ -561,33 +488,11 @@ long CACHE::operate()
     }
   }
 
-  // internal_PQ vs upper level的PQ：
-  // internal_PQ:
-  // - 由当前cache层次的prefetcher生成
-  // - 基于本层观察到的访问模式预测
-  // - 主动预取行为
-  // - 控制权在本层cache
-  // 上层PQ:
-  // - 来自上层cache的预取请求
-  // - 被动接收和处理
-  // - 控制权在上层cache
-  // 为什么不把来自上层的预取请求和RQ合并到一个队列中？
-  // 因为预取请求有其特殊性：
-  // 1. 优先级较低（相比demand请求）
-  // 2. 可以被取消（如果资源紧张）
-  // 3. 准确性不确定（可能预测错误）
-  // 4. 需要特殊的性能统计（如预取准确率）
-  // 而Read请求：
-  // 1. 优先级高（必须完成）
-  // 2. 不能取消
-  // 3. 一定是程序需要的
   auto pq_bandwidth_consumed =
       champsim::transform_while_n(internal_PQ, std::back_inserter(inflight_tag_check), initiate_tag_bw, can_translate, initiate_tag_check<false>());
   initiate_tag_bw.consume(pq_bandwidth_consumed);
 
   // Issue translations
-  // ISSUE不等于完成，issue只是向TLB发送了一个读请求，所以可以直接先在inflight_tag_check中issue;
-  // stash中issue是因为可能由于TLB的channel带宽限制，导致上一个周期没有把全部请求都发送出去
   std::for_each(std::begin(inflight_tag_check), std::end(inflight_tag_check), [this](auto& x) { this->issue_translation(x); });
   std::for_each(std::begin(translation_stash), std::end(translation_stash), [this](auto& x) { this->issue_translation(x); });
 
@@ -597,13 +502,9 @@ long CACHE::operate()
   progress += std::distance(last_not_missed, std::end(inflight_tag_check));
   inflight_tag_check.erase(last_not_missed, std::end(inflight_tag_check));
 
-  // 从这里开始，inflight_tag_check中已经没有未翻译的请求了
-  // Perform tag checks
-  // match_offset_bits是cache的属性，表示是否需要匹配offset bits；例如普通cache就需要，TLB则不需要
-  // 所以普通cache必须通过handle_miss()函数处理这一层产生的读写预取的miss
   auto do_handle_miss = [this](const auto& pkt) {
     if (pkt.type == access_type::WRITE && !this->match_offset_bits) {
-      return this->handle_write(pkt); // Treat writes (that is, writebacks) like fills (意思是，handle_write函数中会把请求写入inflight_writes，而这个队列在Perform fills部分完成)
+      return this->handle_write(pkt); // Treat writes (that is, writebacks) like fills
     }
     return this->handle_miss(pkt); // Treat writes (that is, stores) like reads
   };
@@ -612,7 +513,7 @@ long CACHE::operate()
       champsim::get_span_p(std::begin(inflight_tag_check), std::end(inflight_tag_check), tag_check_bw,
                            [is_ready, is_translated](const auto& pkt) { return is_ready(pkt) && is_translated(pkt); });
   auto hits_end = std::stable_partition(tag_check_ready_begin, tag_check_ready_end, [this](const auto& pkt) { return this->try_hit(pkt); });
-  auto finish_tag_check_end = std::stable_partition(hits_end, tag_check_ready_end, do_handle_miss); // hit miss的请求需要调用handle_miss()函数
+  auto finish_tag_check_end = std::stable_partition(hits_end, tag_check_ready_end, do_handle_miss);
   tag_check_bw.consume(std::distance(tag_check_ready_begin, finish_tag_check_end));
   inflight_tag_check.erase(tag_check_ready_begin, finish_tag_check_end);
 
@@ -648,7 +549,6 @@ auto CACHE::get_set_span(champsim::address address) -> std::pair<set_type::itera
   return get_span(std::begin(block), static_cast<set_type::difference_type>(set_idx), NUM_WAY); // safe cast because of prior assert
 }
 
-// 根据地址返回该地址所属的set中的cache lines迭代器范围
 auto CACHE::get_set_span(champsim::address address) const -> std::pair<set_type::const_iterator, set_type::const_iterator>
 {
   const auto set_idx = get_set_index(address);
@@ -714,9 +614,6 @@ bool CACHE::prefetch_line(uint64_t /*deprecated*/, uint64_t /*deprecated*/, uint
 void CACHE::finish_packet(const response_type& packet)
 {
   // check MSHR information
-  // MSHR保存了所有从CPU端向cache：发出、产生miss、未完成的访存请求
-  // 所以这里，从lower level返回至upper level的packet，一定是因为miss，需要从lower level写回数据，因此
-  // 这个请求一定存在于MSHR队列中
   auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(packet.address));
   auto first_unreturned = std::find_if(MSHR.begin(), MSHR.end(), [](auto x) { return x.data_promise.has_unknown_readiness(); });
 
@@ -727,7 +624,6 @@ void CACHE::finish_packet(const response_type& packet)
   }
 
   // MSHR holds the most updated information about this request
-  // 更新MSHR中这个条目的data_promise，标记为waitable
   mshr_type::returned_value finished_value{packet.data, packet.pf_metadata};
   mshr_entry->data_promise = champsim::waitable{finished_value, current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY)};
   if constexpr (champsim::debug_print) {
@@ -737,20 +633,16 @@ void CACHE::finish_packet(const response_type& packet)
 
   // Order this entry after previously-returned entries, but before non-returned
   // entries
-  // 将这个条目放在第一个未返回的条目前
   std::iter_swap(mshr_entry, first_unreturned);
 }
 
 void CACHE::finish_translation(const response_type& packet)
 {
   auto matches_vpage = [page_num = champsim::page_number{packet.v_address}](const auto& entry) {
-    // 我猜，==在这里是被重载过的，会根据v_address转换成对应的page_num
     return (champsim::page_number{entry.v_address} == page_num) && !entry.is_translated;
   };
-  // 注意这种情况下的cache只会是TLB，所以packet.data是physical page number（即缺少offset的物理页）
   auto mark_translated = [p_page = champsim::page_number{packet.data}, this](auto& entry) {
     [[maybe_unused]] auto old_address = entry.address;
-    // 将虚拟地址提取出offset，和p_page合并得到完整的物理地址
     entry.address = champsim::address{champsim::splice(p_page, champsim::page_offset{entry.v_address})}; // translated address
     entry.is_translated = true;                                                                          // This entry is now translated
 
@@ -761,13 +653,11 @@ void CACHE::finish_translation(const response_type& packet)
   };
 
   // Restart stashed translations
-  // 从translation stash中找到需要被翻译的，将其entry的address成员变量设置为物理地址
   auto finish_begin = std::find_if_not(std::begin(translation_stash), std::end(translation_stash), [](const auto& x) { return x.is_translated; });
   auto finish_end = std::stable_partition(finish_begin, std::end(translation_stash), matches_vpage);
   std::for_each(finish_begin, finish_end, mark_translated);
 
   // Find all packets that match the page of the returned packet
-  // 作用于stash的事情也作用于infligth_tag_check队列
   for (auto& entry : inflight_tag_check) {
     if (matches_vpage(entry)) {
       mark_translated(entry);

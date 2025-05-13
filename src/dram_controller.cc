@@ -28,26 +28,18 @@
 #include "util/units.h"
 
 MEMORY_CONTROLLER::MEMORY_CONTROLLER(champsim::chrono::picoseconds dbus_period, champsim::chrono::picoseconds mc_period, std::size_t t_rp, std::size_t t_rcd,
-                                     std::size_t t_cas, std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::vector<channel_type*>&& ul,  // 有意思的点：dram应该有两个ul分别是LLC和PTW，但是配置文件只有一个LLC；但是配置文件让LLC和PTW使用不同的channel连接到dram
+                                     std::size_t t_cas, std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::vector<channel_type*>&& ul,
                                      std::size_t rq_size, std::size_t wq_size, std::size_t chans, champsim::data::bytes chan_width, std::size_t rows,
                                      std::size_t columns, std::size_t ranks, std::size_t bankgroups, std::size_t banks, std::size_t refreshes_per_period)
     : champsim::operable(mc_period), queues(std::move(ul)), channel_width(chan_width),
       address_mapping(chan_width, BLOCK_SIZE / chan_width.count(), chans, bankgroups, banks, columns, ranks, rows), data_bus_period(dbus_period)
 {
-  // 内存控制器的初始化，以及初始化控制器管理的多个内存通道
   for (std::size_t i{0}; i < chans; ++i) {
     channels.emplace_back(dbus_period, mc_period, t_rp, t_rcd, t_cas, t_ras, refresh_period, refreshes_per_period, chan_width, rq_size, wq_size,
                           address_mapping);
   }
 }
 
-// mc_period: 因为是同步DRAM所以由memory controller提供时钟，mc_period是时钟周期
-// 一些size_t类型参数是周期数
-// DRAM_ROWS_PER_REFRESH:
-// tREF: 也称为tREFI，指两次刷新指令之间的时间间隔（比如规定一tRFC个cell 64ms刷新一次，bank有8192行，那么tREFI= 64ms/8192=7.8us，经过该时间，从n行刷新变为n+1行）
-// 所以refresh_period指的是一个cell需要经过多久被再次刷新
-// DRAM_ROWS_PER_REFRESH = rows / refreshes_per_period表明模拟器支持每次刷新指令可以刷新多行
-// tRFC: Refresh Cycle Time。指一行经过刷新后需要多久才能恢复正常读写；模拟器根据dram的密度来计算，是因为tRFC和DRAM的密度正相关  
 DRAM_CHANNEL::DRAM_CHANNEL(champsim::chrono::picoseconds dbus_period, champsim::chrono::picoseconds mc_period, std::size_t t_rp, std::size_t t_rcd,
                            std::size_t t_cas, std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::size_t refreshes_per_period,
                            champsim::data::bytes width, std::size_t rq_size, std::size_t wq_size, DRAM_ADDRESS_MAPPING addr_mapper)
@@ -56,15 +48,12 @@ DRAM_CHANNEL::DRAM_CHANNEL(champsim::chrono::picoseconds dbus_period, champsim::
       tRAS(t_ras * mc_period), tREF(refresh_period / refreshes_per_period),
       tRFC(std::chrono::duration_cast<champsim::chrono::clock::duration>(
           std::sqrt(champsim::data::bits_per_byte * (double)champsim::data::gibibytes{density()}.count()) * mc_period * t_ras)),
-      // DBUS的一些延迟参数
       DRAM_DBUS_TURN_AROUND_TIME(tRAS),
       DRAM_DBUS_RETURN_TIME(std::chrono::duration_cast<champsim::chrono::clock::duration>(dbus_period * address_mapping.prefetch_size)),
       DRAM_DBUS_BANKGROUP_STALL(
           std::chrono::duration_cast<champsim::chrono::clock::duration>((dbus_period * std::max(address_mapping.prefetch_size / 3, std::size_t{1})))),
       data_bus_period(dbus_period)
 {
-  // 这里的数值都是在单个上层模块中的数值，例如banks指的是单个bankgroups中的bank的数量
-  // 因为dram这部分并没有涉及DIMM也就是module，所以默认.ranks()表示一个channel中ranks的数量
   request_array_type br(address_mapping.ranks() * address_mapping.banks() * address_mapping.bankgroups());
   bank_request = br;
   active_request = std::end(bank_request);
@@ -76,7 +65,7 @@ DRAM_ADDRESS_MAPPING::DRAM_ADDRESS_MAPPING(champsim::data::bytes channel_width_,
 {
   // assert prefetch size is not zero
   assert(prefetch_size != 0);
-  // assert prefetch size is multiple of block size（此处prefetch_size指的是以每次获取8字节为单位，可以预取几个单位）
+  // assert prefetch size is multiple of block size
   assert((channel_width_.count() * prefetch_size) % BLOCK_SIZE == 0);
 
   // mapping sanity check
@@ -93,13 +82,11 @@ auto DRAM_ADDRESS_MAPPING::make_slicer(champsim::data::bytes channel_width, std:
 {
   std::array<std::size_t, slicer_type::size()> params{};
   params.at(SLICER_ROW_IDX) = rows;
-  // TODO: 为什么处以pref_size
   params.at(SLICER_COLUMN_IDX) = columns / pref_size;
   params.at(SLICER_RANK_IDX) = ranks;
   params.at(SLICER_BANK_IDX) = banks;
   params.at(SLICER_BANKGROUP_IDX) = bankgroups;
   params.at(SLICER_CHANNEL_IDX) = channels;
-  // TODO: 什么是offset
   params.at(SLICER_OFFSET_IDX) = channel_width.count() * pref_size;
   return std::apply([](auto... p) { return champsim::make_contiguous_extent_set(0, champsim::lg2(p)...); }, params);
 }
@@ -108,11 +95,9 @@ long MEMORY_CONTROLLER::operate()
 {
   long progress{0};
 
-  // 处理上层请求
   initiate_requests();
 
   for (auto& channel : channels) {
-    // 调用每个channel的operate
     progress += channel._operate();
   }
 
@@ -144,13 +129,12 @@ long DRAM_CHANNEL::operate()
     }
   }
 
-  // TODO
   check_write_collision();
   check_read_collision();
-  progress += finish_dbus_request();  // 第二阶段：数据总线 -> 上层接收者
+  progress += finish_dbus_request();
   swap_write_mode();
   progress += schedule_refresh();
-  progress += populate_dbus();  // 第一阶段：bank -> 数据总线
+  progress += populate_dbus();
   progress += service_packet(schedule_packet());
 
   return progress;
@@ -177,11 +161,6 @@ long DRAM_CHANNEL::finish_dbus_request()
   return progress;
 }
 
-// 实际硬件是以row为单位的刷新，模拟器中以bank为单位刷新，要求：
-// 1. 只有bank为空闲时可以开始刷新
-// 2. 经过刷新，bank的row buffer为空；下一次读取数据需要重新activate某一行
-// 这段代码的效果是：每个周期检查刷新间隔时间是否到达，如果到达，则根据bank是否被访问
-// 如果空闲就开始刷新，如果被访问则下个周期再检查，直到空闲开启刷新；有的bank先完成刷新后，row buffer被重置
 long DRAM_CHANNEL::schedule_refresh()
 {
   long progress = {0};
@@ -189,7 +168,6 @@ long DRAM_CHANNEL::schedule_refresh()
 
   bool schedule_refresh = current_time >= last_refresh + tREF;
   // if so, record stats
-  // 每次刷新DRAM_ROWS_PER_REFRESH行，refresh_row记录当前刷新到第几行
   if (schedule_refresh) {
     last_refresh = current_time;
     refresh_row += DRAM_ROWS_PER_REFRESH;
@@ -224,18 +202,6 @@ long DRAM_CHANNEL::schedule_refresh()
   return (progress);
 }
 
-// 数据总线方向切换
-//  DRAM数据总线是双向的，但同一时刻只能进行读或写
-//  切换方向需要一定时间（DRAM_DBUS_TURN_AROUND_TIME）
-//  这反映了实际硬件中数据总线信号稳定所需的时间
-// 批量访问优化
-//  使用水位线机制（7/8, 6/8）来批量处理写请求
-//  减少读写切换的频率，因为每次切换都有开销
-//  这是对实际DRAM硬件常用的优化策略
-// 行缓冲区管理
-//  在切换模式时维护bank的行缓冲区状态
-//  保持已激活的行（如果时间允许），避免不必要的预充电
-//  这反映了DRAM的行缓冲区特性
 void DRAM_CHANNEL::swap_write_mode()
 {
   // these values control when to send out a burst of writes
@@ -248,7 +214,6 @@ void DRAM_CHANNEL::swap_write_mode()
   auto rq_occu = static_cast<std::size_t>(std::count_if(std::begin(RQ), std::end(RQ), [](const auto& x) { return x.has_value(); }));
 
   // Change modes if the queues are unbalanced
-  // 根据读写队列和阈值的比较，如果unbalanced就切换到另一种模式
   if ((!write_mode && (wq_occu >= DRAM_WRITE_HIGH_WM || (rq_occu == 0 && wq_occu > 0)))
       || (write_mode && (wq_occu == 0 || (rq_occu > 0 && wq_occu < DRAM_WRITE_LOW_WM)))) {
     // Reset scheduled requests
@@ -280,17 +245,10 @@ void DRAM_CHANNEL::swap_write_mode()
 }
 
 // Look for requests to put on the bus
-// 1. 从所有bank请求中找出最早准备好的请求
-// 2. 检查该请求是否可以开始传输（时间到达）
-// 3. 检查数据总线是否空闲
-// 4. 考虑bankgroup延迟
-// 5. 设置传输完成时间
-// 6. 更新统计信息
 long DRAM_CHANNEL::populate_dbus()
 {
   long progress{0};
 
-  // 找到下一个应该使用数据总线的bank请求
   auto iter_next_process = std::min_element(std::begin(bank_request), std::end(bank_request),
                                             [](const auto& lhs, const auto& rhs) { return !rhs.valid || (lhs.valid && lhs.ready_time < rhs.ready_time); });
   if (iter_next_process->valid && iter_next_process->ready_time <= current_time) {
@@ -313,7 +271,6 @@ long DRAM_CHANNEL::populate_dbus()
       // set when bankgroup dbus will be next ready
       bankgroup_readytime[op_bankgroup] = current_time + DRAM_DBUS_RETURN_TIME + DRAM_DBUS_BANKGROUP_STALL;
 
-      // 统计row buffer命中/未命中
       if (iter_next_process->row_buffer_hit) {
         if (write_mode) {
           ++sim_stats.WQ_ROW_BUFFER_HIT;
@@ -388,16 +345,13 @@ long DRAM_CHANNEL::service_packet(DRAM_CHANNEL::queue_type::iterator pkt)
 {
   long progress{0};
   if (pkt->has_value() && pkt->value().ready_time <= current_time) {
-    // 获取行地址和bank索引
     auto op_row = address_mapping.get_row(pkt->value().address);
     auto op_idx = bank_request_index(pkt->value().address);
 
-    // 如果bank空闲且不在刷新
     if (!bank_request[op_idx].valid && !bank_request[op_idx].under_refresh) {
       bool row_buffer_hit = (bank_request[op_idx].open_row.has_value() && *(bank_request[op_idx].open_row) == op_row);
 
       // this bank is now busy
-      // row_charge_delay指如果row buffer未命中，需要的额外时间（行激活+如果有旧行则预充电）
       auto row_charge_delay = champsim::chrono::clock::duration{bank_request[op_idx].open_row.has_value() ? tRP + tRCD : tRCD};
       bank_request[op_idx] = {true,  row_buffer_hit,        false,
                               false, std::optional{op_row}, current_time + tCAS + (row_buffer_hit ? champsim::chrono::clock::duration{} : row_charge_delay),
@@ -468,7 +422,6 @@ bool DRAM_ADDRESS_MAPPING::is_collision(champsim::address a, champsim::address b
   return (a.slice_upper(offset_bits) == b.slice_upper(offset_bits));
 }
 
-// 合并WQ中相同的请求
 void DRAM_CHANNEL::check_write_collision()
 {
   for (auto wq_it = std::begin(WQ); wq_it != std::end(WQ); ++wq_it) {
@@ -483,20 +436,14 @@ void DRAM_CHANNEL::check_write_collision()
       }
 
       if (found != std::end(WQ)) {
-        wq_it->reset(); // 对于相同的请求，删除
+        wq_it->reset();
       } else {
         wq_it->value().forward_checked = true;
       }
     }
   }
 }
-// 1. 首先检查WQ（读写碰撞）
-// 如果找到写请求，直接返回写请求的数据
-// 这实现了读写依赖（Read After Write）
-// 2. 然后检查RQ中较早的请求（向前）
-// 合并到已有请求中
-// 3. 最后检查RQ中较晚的请求（向后）
-// 同样进行合并
+
 void DRAM_CHANNEL::check_read_collision()
 {
   for (auto rq_it = std::begin(RQ); rq_it != std::end(RQ); ++rq_it) {
@@ -505,7 +452,6 @@ void DRAM_CHANNEL::check_read_collision()
         return x.has_value() && addr_map.is_collision(x.value().address, check_val);
       };
       // write forward
-      // 如果一个读操作和一个写操作相同，读操作可以直接返回写操作的内容并删除；但写操作要保留
       if (auto wq_it = std::find_if(std::begin(WQ), std::end(WQ), checker); wq_it != std::end(WQ)) {
         response_type response{rq_it->value().address, rq_it->value().v_address, wq_it->value().data, rq_it->value().pf_metadata,
                                rq_it->value().instr_depend_on_me};
@@ -549,7 +495,7 @@ void DRAM_CHANNEL::check_read_collision()
 
 void MEMORY_CONTROLLER::initiate_requests()
 {
-  // Initiate read requests (来自上层的read请求和prefetch请求都存入RQ)
+  // Initiate read requests
   for (auto* ul : queues) {
     for (auto q : {std::ref(ul->RQ), std::ref(ul->PQ)}) {
       auto [begin, end] = champsim::get_span_p(std::cbegin(q.get()), std::cend(q.get()), [ul, this](const auto& pkt) { return this->add_rq(pkt, ul); });
