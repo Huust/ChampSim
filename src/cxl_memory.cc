@@ -1,336 +1,217 @@
 #include "cxl_memory.h"
+
 #include <algorithm>
-#include "champsim_constants.h"
-#include "util.h"
-#include "cache.h"
+#include <cfenv>
+#include <cmath>
+#include <fmt/core.h>
 
-extern uint8_t all_warmup_complete;
+#include "champsim.h"
+#include "deadlock.h"
+#include "instruction.h"
+#include "operable.h"
+#include "util/bits.h"
+#include "util/span.h"
+#include "util/units.h"
 
-int CXL_MEMORY::add_rq(PACKET* packet) 
+CXL_CONTROLLER::CXL_CONTROLLER(champsim::chrono::picoseconds cxl_io_period, std::size_t t_cxl,
+                               std::vector<channel_type*>&& ul, std::size_t rq_size, std::size_t wq_size,
+                               champsim::data::bytes chan_width, double rx_bw, double tx_bw)
+  : champsim::operable(cxl_io_period), queues(std::move(ul)), channel_width(chan_width),
 {
-    RQ_ACCESS++;
-    if (all_warmup_complete < NUM_CPUS) {
-        // #if ALLOW_PAM
-        //     if(packet->l2_parallel_access){
-        //         //dbg
-        //         std::cout<<"l2_pam seen at CXL_MEMORY add_rq, to_return.size: "<< packet->to_return.size()<<std::endl;
-        //         for (auto ret : packet->to_return)
-        //             std::cout<<((CACHE*)ret)->NAME<<std::endl;
-        //         //dbgend
-        //         uint64_t n_returns = packet->to_return.size();
-        //         if(n_returns!=2){std::cout<<"MEM(CXL_MEMORY): to return destinations for PA is not 2 but: "<<n_returns <<std::endl;}
-        //     }
-        // #endif
-        for (auto ret : packet->to_return)
-            ret->return_data(packet);
-
-        return -1; // Fast-forward
-    }
-
-    auto& channel = channels[get_channel(packet->address)];
-
-    channel.s_reads++;
-
-    // check for the latest writebacks in the write queue
-    auto found_wq = std::find_if(channel.WQ.begin(), channel.WQ.end(), 
-                                eq_addr<PACKET>(packet->address, LOG2_BLOCK_SIZE));
-    if (found_wq != channel.WQ.end()) {
-        packet->ret_from_mem=true;
-        channel.s_rd_to_wr_forward++;
-        packet->data = found_wq->data;
-        for (auto ret : packet->to_return)
-        ret->return_data(packet);
-        return -1;
-    }
-
-    // check for duplicates in the read queue
-    auto found_rq = std::find_if(std::begin(channel.RQ), std::end(channel.RQ), 
-                                eq_addr<PACKET>(packet->address, LOG2_BLOCK_SIZE));
-    if (found_rq != std::end(channel.RQ)) {
-        channel.s_read_dup_merged++;
-        packet_dep_merge(found_rq->lq_index_depend_on_me, packet->lq_index_depend_on_me);
-        packet_dep_merge(found_rq->sq_index_depend_on_me, packet->sq_index_depend_on_me);
-        packet_dep_merge(found_rq->instr_depend_on_me, packet->instr_depend_on_me);
-        packet_dep_merge(found_rq->to_return, packet->to_return);
-
-        return 0; // merged index
-    }
-
-    if (channel.RQ.full()) {
-        channel.s_rq_full++;
-        return -2;
-    }
-
-    channel.RQ.push_back(*packet);
-    return channel.RQ.occupancy();
+  channel = CXL_CHANNEL(cxl_io_period, t_cxl, chan_width, rq_size, wq_size, rx_bw, tx_bw);
 }
 
-int CXL_MEMORY::add_wq(PACKET* packet) 
+CXL_CHANNEL::CXL_CHANNEL(champsim::chrono::picoseconds cxl_io_period, std::size_t t_cxl, champsim::data::bytes width,
+                         std::size_t rq_size, std::size_t wq_size, double rx_bw, double tx_bw)
+  : champsim::operable(cxl_io_period), channel_width(width), WQ{wq_size}, RQ{rq_size},
+    tCXL(t_cxl), tRD(static_cast<champsim::chrono::picoseconds>((1000 * (BLOCK_SIZE * 8/ (rx_bw * 8 * width))))),
+    tWR(static_cast<champsim::chrono::picoseconds>((1000 * (BLOCK_SIZE * 8/ (tx_bw * 8 * width))))),
+    // rx_bw and tx_bw is based on GB/s, width is based on bytes, tWR and tRD (clock::duration) is based on picoseconds
 {
-    if (all_warmup_complete < NUM_CPUS)
-        return -1; // Fast-forward
+
+}
+
+long CXL_CONTROLLER::operate() {
+  long progress{0};
+  initiate_requests();
+  progress += channel._operate();
+  return progress;
+}
+
+long CXL_CHANNEL::operate() {
+  long progress{0};
+
+  if (warmup) {
+    for (auto& entry : RQ) {
+      if (entry.has_value()) {
+        response_type response{entry->address, entry->v_address, entry->data, entry->pf_metadata, entry->instr_depend_on_me};
+        for (auto* ret : entry.value().to_return) {
+          ret->push_back(response);
+        }
+
+        ++progress;
+        entry.reset();
+      }
+    }
+
+    for (auto& entry : WQ) {
+      if (entry.has_value()) {
+        ++progress;
+      }
+      entry.reset();
+    }
+  }
+
+  check_collision();
+  progress += finish_dbus_request();
+  progress += schedule_refresh();
+  progress += populate_dbus();
+  progress += service_packet(schedule_packet());
+
+  return progress;
+}
+
+void CXL_CONTROLLER::initiate_requests() {
+  for (auto* ul : queues) {
+    for (auto q : {std::ref(ul->RQ), std::ref(ul->PQ)}) {
+      auto [begin, end] = champsim::get_span_p(std::cbegin(q.get()), std::cend(q.get()), [ul, this](const auto& pkt) { return this->add_rq(pkt, ul); });
+      q.get().erase(begin, end);
+    }
+
+    // Initiate write requests
+    auto [wq_begin, wq_end] = champsim::get_span_p(std::cbegin(ul->WQ), std::cend(ul->WQ), [this](const auto& pkt) { return this->add_wq(pkt); });
+    ul->WQ.erase(wq_begin, wq_end);
+  }
+}
+
+bool CXL_CONTROLLER::add_rq(const auto& pkt, channel_type* ul) {
+  // TODO: In future we may have more than one cxl channel,
+  // so here leaves room for addressing corresponding cxl channel
+  if (auto rq_it = std::find_if_not(std::begin(channel.RQ), std::end(channel.RQ), [this](const auto &pkt){ return pkt.has_value(); });
+      rq_it != std::end(channel.RQ)) {
+    *rq_it = DRAM_CHANNEL::request_type{pkt}; 
+    rq_it->value().forward_checked = false;
+    rq_it->value().finished = false;
+    rq_it->value().ready_time = current_time;
+    if (packet.response_requested)
+      rq_it->value().to_return = {&ul->returned};
+
+    return true; 
+  }
+
+  return false;
+}
+
+bool CXL_CONTROLLER::add_wq(const auto& pkt) {
+  if (auto wq_it = std::find_if_not(std::begin(channel.WQ), std::end(channel.WQ), [this](const auto &pkt){ return pkt.has_value(); });
+      wq_it != std::end(channel.WQ)) {
+    *wq_it = DRAM_CHANNEL::request_type{pkt}; 
+    wq_it->value().forward_checked = false;
+    wq_it->value().finished = false;
+    wq_it->value().ready_time = current_time;
+
+    return true; 
+  }
+
+  return false;
+}
+
+void CXL_CHANNEL::check_collision()
+{
+  auto is_collision = [](champsim::address a, champsim::address b) {
+    // collision if everything but offset matches
+    // TODO: Offset is 6 bits?
+    champsim::data::bits offset_bits = champsim::data::bits{6};
+    return a.slice_upper(offset_bits) == b.slice_upper(offset_bits);
+  };
+  auto checker = [addr_map = address_mapping, check_val = wq_it->value().address](const auto& pkt) {
+        return pkt.has_value() && is_collision(check_val, pkt.value().address);
+  };
+
+  // Write Collision
+  for (auto wq_it = std::begin(WQ); wq_it != std::end(WQ); ++wq_it) {
+    if (wq_it->has_value() && !wq_it->value().forward_checked) {
+      auto found = std::find_if(std::begin(WQ), wq_it, checker); // Forward check
+      if (found == wq_it) {
+        found = std::find_if(std::next(wq_it), std::end(WQ), checker); // Backward check
+      }
+
+      if (found != std::end(WQ)) {
+        wq_it->reset();
+      } else {
+        wq_it->value().forward_checked = true;
+      }
+    }
+  }
+
+  // Read Collision
+  for (auto rq_it = std::begin(RQ); rq_it != std::end(RQ); ++rq_it) {
+    if (rq_it->has_value() && !rq_it->value().forward_checked) {
+      // write forwarding
+      if (auto wq_it = std::find_if(std::begin(WQ), std::end(WQ), checker); wq_it != std::end(WQ)) {
+        response_type response{rq_it->value().address, rq_it->value().v_address, wq_it->value().data, rq_it->value().pf_metadata,
+                               rq_it->value().instr_depend_on_me};
+        for (auto* ret : rq_it->value().to_return) {
+          ret->push_back(response);
+        }
+
+        rq_it->reset();
+      }
+      // backwards check
+      else if (auto found = std::find_if(std::begin(RQ), rq_it, checker); found != rq_it) {
+        auto instr_copy = std::move(found->value().instr_depend_on_me);
+        auto ret_copy = std::move(found->value().to_return);
+
+        std::set_union(std::begin(instr_copy), std::end(instr_copy), std::begin(rq_it->value().instr_depend_on_me), std::end(rq_it->value().instr_depend_on_me),
+                       std::back_inserter(found->value().instr_depend_on_me));
+        std::set_union(std::begin(ret_copy), std::end(ret_copy), std::begin(rq_it->value().to_return), std::end(rq_it->value().to_return),
+                       std::back_inserter(found->value().to_return));
+
+        rq_it->reset();
+
+      }
+      // forwards check
+      else if (found = std::find_if(std::next(rq_it), std::end(RQ), checker); found != std::end(RQ)) {
+        auto instr_copy = std::move(found->value().instr_depend_on_me);
+        auto ret_copy = std::move(found->value().to_return);
+
+        std::set_union(std::begin(instr_copy), std::end(instr_copy), std::begin(rq_it->value().instr_depend_on_me), std::end(rq_it->value().instr_depend_on_me),
+                       std::back_inserter(found->value().instr_depend_on_me));
+        std::set_union(std::begin(ret_copy), std::end(ret_copy), std::begin(rq_it->value().to_return), std::end(rq_it->value().to_return),
+                       std::back_inserter(found->value().to_return));
+
+        rq_it->reset();
+      } else {
+        rq_it->value().forward_checked = true;
+      }
+    }
+  }
+}
+
+// Operate bus for CXL/PCIe interface, dual direction
+long CXL_CHANNEL::finish_pcie_transfer() {
+  long progress{0};
+  // finish read response transfer  
+  if (active_rd_resp_on_bus != std::end(RespQ) && active_rd_resp_on_bus->value().ready_time <= current_time) {
+    response_type response{active_rd_resp_on_bus->value().address, active_rd_resp_on_bus->value().v_address, active_rd_resp_on_bus->value().data,
+                           active_rd_resp_on_bus->value().pf_metadata, active_rd_resp_on_bus->value().instr_depend_on_me};
+
+    for (auto* ret : active_rd_resp_on_bus->value().to_return) {
+      ret->push_back(response);
+    }
     
-    auto& channel = channels[get_channel(packet->address)];
-    channel.s_writes++;
+    active_rd_resp_on_bus->reset();
+    active_rd_resp_on_bus = std::end(RespQ);
+    ++progress;
+  }
+      
+  // finish write request transfer 
+  if (active_wr_req_on_bus != std::end(WQ) && active_wr_req_on_bus->value().ready_time <= current_time) {
+    active_wr_req_on_bus->value().finished = true;
+    active_wr_req_on_bus = std::end(RespQ);
+    ++progress;
+  } 
 
-    // check for duplicates in the write queue
-    auto found_wq = std::find_if(channel.WQ.begin(), channel.WQ.end(), 
-                                eq_addr<PACKET>(packet->address, LOG2_BLOCK_SIZE));
-    if (found_wq != channel.WQ.end()) {
-        channel.s_wr_dup_merged++;
-        return 0; // merged index
-    }
-
-    // Check for room in the queue
-    if (channel.WQ.full()) {
-        channel.s_wq_full++;
-        return -2;
-    }
-
-    packet->event_cycle = current_cycle;
-    channel.WQ.push_back(*packet);
-
-    return channel.WQ.occupancy();
+  return progress;
 }
 
-int CXL_MEMORY::add_pq(PACKET* packet) { return add_rq(packet); }
-
-void CXL_MEMORY::return_data(PACKET* packet)
-{
-    auto& channel = channels[get_channel(packet->address)];
-    if (channel.RespQ.full()) {
-        std::cout << "[PANIC] CXL RespQ full! Exiting..." << std::endl;
-        assert(0);
-    }
-    packet->event_cycle = current_cycle;
-    // Restore callback to LLC
-    packet->to_return = packet->on_return_to_cxl;
-    packet->ret_from_mem=true;
-    channel.s_resps++;
-    channel.RespQ.push_back(*packet);
-}
-
-void CXL_MEMORY::operate() 
-{
-    s_cycles++;
-    operate_bus();
-    operate_channel();
-}
-
-void CXL_MEMORY::operate_bus() 
-{
-    handle_responses();
-    handle_writes();
-    
-    for (auto& channel: channels) {
-        channel.RespQ.operate();
-        channel.WQ.operate();
-    }
-}
-
-void CXL_MEMORY::operate_channel()
-{
-    handle_reads();
-
-    for (auto& channel: channels) {
-        channel.RQ.operate();
-    }
-}
-
-void CXL_MEMORY::handle_responses()
-{
-    for (auto& channel: channels) {
-        if (channel.bus.rd_pkt_valid) {
-            channel.s_rdbus_cycles_occ++;
-        }
-        // Send completed response on read bus to LLC
-        if (channel.bus.rd_pkt_valid && channel.bus.rd_bus_cycle_available <= current_cycle) {
-            //dbg
-            // #if ALLOW_PAM
-            // if(channel.bus.active_rd_resp_on_bus->l2_parallel_access){
-            //     uint64_t n_returns = channel.bus.active_rd_resp_on_bus->to_return.size();
-            //     if(n_returns!=2){std::cout<<"MEM(CXL_MEMORY): to return destinations for PA is not 2 but: "<<n_returns <<std::endl;}
-            // }
-            // #endif
-            //std::cout<<"AFter warmup - 2_pam seen at CXL_MEMORY add_rq, to_return.size: "<< channel.bus.active_rd_resp_on_bus->to_return.size()<<std::endl;
-            // for (auto ret : channel.bus.active_rd_resp_on_bus->to_return)
-            //         std::cout<<((CACHE*)ret)->NAME<<std::endl;
-
-            channel.bus.active_rd_resp_on_bus->ret_from_mem=true;
-            for (auto ret : channel.bus.active_rd_resp_on_bus->to_return) {
-                ret->return_data(&(*channel.bus.active_rd_resp_on_bus));
-            }
-            channel.bus.rd_pkt_valid = false;
-            channel.RespQ.pop_front();
-        }
-        // Put a new resp on bus if bus is free and respQ has new ready resp
-        if (!channel.bus.rd_pkt_valid && channel.RespQ.has_ready()) {
-            channel.bus.active_rd_resp_on_bus = &channel.RespQ.front();
-            channel.s_rd_tot_qdelay += 
-                    current_cycle - channel.bus.active_rd_resp_on_bus->event_cycle - tCXL;
-            channel.bus.rd_pkt_valid = true;
-            channel.bus.rd_bus_cycle_available = current_cycle + tRD;
-        }
-        else if (channel.RespQ.has_ready() && ((channel.bus.active_rd_resp_on_bus->address 
-                >> LOG2_BLOCK_SIZE)) != (channel.RespQ.front().address >> LOG2_BLOCK_SIZE)) {
-            // RespQ has ready resp but bus is busy
-            channel.s_rdbus_cycles_congested++;
-        }
-    }
-}
-
-void CXL_MEMORY::handle_writes()
-{
-    for (auto& channel: channels) {
-        if (channel.bus.wr_pkt_valid) {
-            channel.s_wrbus_cycles_occ++;
-        }
-        // Send completed req on write bus to DRAM
-        if (channel.bus.wr_pkt_valid && channel.bus.wr_bus_cycle_available <= current_cycle) {
-            if (lower_level->get_occupancy(2, channel.bus.active_wr_req_on_bus->address)
-                == lower_level->get_size(2, channel.bus.active_wr_req_on_bus->address)) {
-                // DRAM's write queue is full, will retry next cycle
-                channel.s_wr_dram_wq_full_retry++;
-                continue;
-            }
-            else {
-                // Add Write req to DRAM's WQ
-                PACKET& handle_pkt = channel.WQ.front();
-                lower_level->add_wq(&handle_pkt);
-                channel.bus.wr_pkt_valid = false;
-                channel.WQ.pop_front();
-            }
-        }
-        // Put a new req on bus if bus is free and WQ has new ready req
-        if (!channel.bus.wr_pkt_valid && channel.WQ.has_ready()) {
-            channel.bus.active_wr_req_on_bus = &channel.WQ.front();
-            channel.s_wr_tot_qdelay += 
-                current_cycle - channel.bus.active_wr_req_on_bus->event_cycle - tCXL;
-            channel.bus.wr_pkt_valid = true;
-            channel.bus.wr_bus_cycle_available = current_cycle + tWR;
-        }
-        else if (channel.WQ.has_ready() && ((channel.bus.active_wr_req_on_bus->address 
-                >> LOG2_BLOCK_SIZE)) != (channel.WQ.front().address >> LOG2_BLOCK_SIZE)) {
-            // WQ has ready req but bus is busy
-            channel.s_wrbus_cycles_congested++;
-        }
-    }
-}
-
-void CXL_MEMORY::handle_reads()
-{
-    for (auto& channel: channels) {
-        while (channel.RQ.has_ready()) {
-            PACKET& handle_pkt = channel.RQ.front();
-            if (lower_level->get_occupancy(1, handle_pkt.address) 
-                == lower_level->get_size(1, handle_pkt.address)) {
-                // DRAM's read queue is full, will retry next cycle
-                channel.s_rd_dram_rq_full_retry++;
-                break;
-            }
-            else {
-                // Ensure CXL intercepts the response to add delay
-                handle_pkt.on_return_to_cxl = handle_pkt.to_return;
-                handle_pkt.to_return = {this};
-                // Add Read req to DRAM's RQ
-                lower_level->add_rq(&handle_pkt);
-                channel.RQ.pop_front();
-            }
-        }
-    }
-}
-
-uint32_t CXL_MEMORY::get_occupancy(uint8_t queue_type, uint64_t address) {
-    auto& channel = channels[get_channel(address)];
-    if (queue_type == 1)
-        return channel.RQ.occupancy();
-    else if (queue_type == 2)
-        return channel.WQ.occupancy();
-    else if (queue_type == 3)
-        return channel.RQ.occupancy();
-    
-    return -1;
-}
-
-uint32_t CXL_MEMORY::get_size(uint8_t queue_type, uint64_t address)
-{
-    auto& channel = channels[get_channel(address)];
-    if (queue_type == 1)
-        return channel.RQ.size();
-    else if (queue_type == 2)
-        return channel.WQ.size();
-    else if (queue_type == 3)
-        return channel.RQ.size();
-
-    return -1;
-}
-
-uint32_t CXL_MEMORY::get_channel(uint64_t address) {
-    // We want 2 consecutive lines to go to same CXL channel 
-    // Note that each DDR5 channel contains 2 sub-channels
-    // So in configuration json file, 4 cxl channels are matched with 8 physical memory channels 
-    return (((address >> LOG2_BLOCK_SIZE)/2)%CXL_CHANNELS);
-}
-
-void CXL_MEMORY::ResetStats() {
-    s_cycles = 0;
-    for (auto& channel: channels) {
-        channel.s_reads = 0, channel.s_writes = 0, channel.s_resps = 0, 
-        channel.s_read_dup_merged = 0, channel.s_rd_to_wr_forward = 0,
-        channel.s_rq_full = 0, channel.s_wr_dup_merged = 0, channel.s_wq_full = 0, 
-        channel.s_rdbus_cycles_congested = 0, channel.s_rdbus_cycles_occ = 0, 
-        channel.s_wr_dram_wq_full_retry = 0, channel.s_wrbus_cycles_occ = 0,
-        channel.s_wrbus_cycles_congested = 0, channel.s_rd_dram_rq_full_retry = 0, 
-        channel.s_rd_tot_qdelay = 0, channel.s_wr_tot_qdelay = 0;
-    }
-}
-
-void CXL_MEMORY::PrintStats() {
-    std::cout << std::endl;
-    std::cout << "CXL-PCIe Stats" << std::endl;
-    std::cout << "CXL_CYCLES " << s_cycles << std::endl;
-    std::cout << "CUMULATIVE_STATS_OVER_ALL_CHANNELS" << std::endl;
-    uint64_t cum_stats[16] = {0};
-    std::string stat_prefix = "CXL_";
-    std::string statnames[16] = {"READS", "WRITES", "RESPONSES", "DUP_READS_MERGED", "RD_TO_WR_FORWARDS",
-            "CXL_RQ_FULL", "DUP_WRITES_MERGED", "CXL_WQ_FULL", "RDBUS_CYCLES_CONGESTED", 
-            "RDBUS_CYCLES_OCC", "DRAM_WQ_FULL_RETRY", "WRBUS_CYCLES_OCC", "WRBUS_CYCLES_CONGESTED",
-            "DRAM_RQ_FULL_RETRY", "READS_CXL_TOT_QDELAY", "WRITES_CXL_TOT_QDELAY"};
-    for (auto& channel: channels) {
-        cum_stats[0] += channel.s_reads;
-        cum_stats[1] += channel.s_writes;
-        cum_stats[2] += channel.s_resps;
-        cum_stats[3] += channel.s_read_dup_merged;
-        cum_stats[4] += channel.s_rd_to_wr_forward;
-        cum_stats[5] += channel.s_rq_full;
-        cum_stats[6] += channel.s_wr_dup_merged;
-        cum_stats[7] += channel.s_wq_full;
-        cum_stats[8] += channel.s_rdbus_cycles_congested;
-        cum_stats[9] += channel.s_rdbus_cycles_occ;
-        cum_stats[10] += channel.s_wr_dram_wq_full_retry;
-        cum_stats[11] += channel.s_wrbus_cycles_occ;
-        cum_stats[12] += channel.s_wrbus_cycles_congested;
-        cum_stats[13] += channel.s_rd_dram_rq_full_retry;
-        cum_stats[14] += channel.s_rd_tot_qdelay;
-        cum_stats[15] += channel.s_wr_tot_qdelay;
-    }
-    for (int i = 0; i < 16; i++) {
-        std::cout << stat_prefix << statnames[i] << " " << cum_stats[i] << std::endl;
-    }
-    std::cout << std::endl;
-    std::cout << "AVERAGED_OUT_OR_RATIO_STATS" << std::endl;
-    float rd_avg_qdelay_ns = ((1.0*cum_stats[14])/(CXL_IO_FREQ/1000.0))/cum_stats[2];
-    float wr_avg_qdelay_ns = ((1.0*cum_stats[15])/(CXL_IO_FREQ/1000.0))/cum_stats[1];
-    float rd_bus_util = (1.0*cum_stats[9])/(1.0*CXL_CHANNELS*s_cycles);
-    float wr_bus_util = (1.0*cum_stats[11])/(1.0*CXL_CHANNELS*s_cycles);
-    float rd_bus_congested = (1.0*cum_stats[8])/(1.0*CXL_CHANNELS*s_cycles);
-    float wr_bus_congested = (1.0*cum_stats[12])/(1.0*CXL_CHANNELS*s_cycles);
-
-    std::cout << stat_prefix << "READS_QDELAY_NS " << rd_avg_qdelay_ns << std::endl;
-    std::cout << stat_prefix << "WRITES_QDELAY_NS " << wr_avg_qdelay_ns << std::endl;
-    std::cout << stat_prefix << "RDBUS_UTILIZATION " << rd_bus_util << std::endl;
-    std::cout << stat_prefix << "WRBUS_UTILIZATION " << wr_bus_util << std::endl;
-    std::cout << stat_prefix << "RDBUS_CONGESTED " << rd_bus_congested << std::endl;
-    std::cout << stat_prefix << "WRBUS_CONGESTED " << wr_bus_congested << std::endl;
-    std::cout << std::endl;
-}
