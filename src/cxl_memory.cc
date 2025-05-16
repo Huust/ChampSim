@@ -63,10 +63,7 @@ long CXL_CHANNEL::operate() {
   }
 
   check_collision();
-  progress += finish_dbus_request();
-  progress += schedule_refresh();
-  progress += populate_dbus();
-  progress += service_packet(schedule_packet());
+  progress += finish_pcie_transfer();
 
   return progress;
 }
@@ -89,10 +86,10 @@ bool CXL_CONTROLLER::add_rq(const auto& pkt, channel_type* ul) {
   // so here leaves room for addressing corresponding cxl channel
   if (auto rq_it = std::find_if_not(std::begin(channel.RQ), std::end(channel.RQ), [this](const auto &pkt){ return pkt.has_value(); });
       rq_it != std::end(channel.RQ)) {
-    *rq_it = DRAM_CHANNEL::request_type{pkt}; 
+    *rq_it = CXL_CHANNEL::request_type{pkt}; 
     rq_it->value().forward_checked = false;
     rq_it->value().finished = false;
-    rq_it->value().ready_time = current_time;
+    rq_it->value().ready_time = current_time + tCXL;
     if (packet.response_requested)
       rq_it->value().to_return = {&ul->returned};
 
@@ -105,10 +102,10 @@ bool CXL_CONTROLLER::add_rq(const auto& pkt, channel_type* ul) {
 bool CXL_CONTROLLER::add_wq(const auto& pkt) {
   if (auto wq_it = std::find_if_not(std::begin(channel.WQ), std::end(channel.WQ), [this](const auto &pkt){ return pkt.has_value(); });
       wq_it != std::end(channel.WQ)) {
-    *wq_it = DRAM_CHANNEL::request_type{pkt}; 
+    *wq_it = CXL_CHANNEL::request_type{pkt};
     wq_it->value().forward_checked = false;
     wq_it->value().finished = false;
-    wq_it->value().ready_time = current_time;
+    wq_it->value().ready_time = current_time + tCXL;
 
     return true; 
   }
@@ -206,12 +203,125 @@ long CXL_CHANNEL::finish_pcie_transfer() {
   }
       
   // finish write request transfer 
-  if (active_wr_req_on_bus != std::end(WQ) && active_wr_req_on_bus->value().ready_time <= current_time) {
-    active_wr_req_on_bus->value().finished = true;
-    active_wr_req_on_bus = std::end(RespQ);
-    ++progress;
-  } 
+  handle_writes(); 
 
   return progress;
 }
 
+// 1. If a request is on write bus and satisfies ready_time, we move it from dbus into channel between cxl controller and dram 
+// 2. Then we choose another write request (which is already in WQ and goes through tCXL latency) and set its ready_time as current_time + tWR
+void CXL_CHANNEL::handle_writes() {
+  if (active_wr_req_on_bus != std::end(WQ) && active_wr_req_on_bus->value().ready_time <= current_time) {
+    auto pkt = champsim::request_type{*active_wr_req_on_bus};
+    ll->add_wq(pkt);
+    active_wr_req_on_bus->reset();
+    active_wr_req_on_bus = std::end(WQ);
+  }
+
+  if (active_wr_req_on_bus == std::end(WQ)) {
+    // find a suitable write request in WQ and put it on the bus
+    // rule: has_value(), FCFS, tCXL satisfied
+    auto next_to_write = [this](const auto& lhs, const auto& rhs) {
+      if (!lhs->has_value() || current_time > wr_bus_cycle_available)
+        return false;
+      if (!rhs->has_value() || current_time > wr_bus_cycle_available)
+        return true;
+
+      return lhs->value().ready_time < rhs->value().ready_time;
+    }
+
+    if (queue_type::iterator iter_next_to_write = std::min_element(std::begin(WQ), std::end(WQ), next_to_write);
+        iter_next_to_write != std::end(WQ)) {
+      wr_bus_cycle_available = current_time + tWR;
+      active_wr_req_on_bus = std::move(iter_next_to_write);
+    }
+  }
+}
+
+void CXL_CHANNEL::handle_reads() {
+  auto next_to_read = [this](const auto& lhs, const auto& rhs) {
+    if (!lhs->has_value() || lhs->value().ready_time > current_time)
+      return false;
+    if (!rhs->has_value() || rhs->value().ready_time > current_time)
+      return true;
+
+    return lhs->value().ready_time < rhs->value().ready_time;
+  }
+
+  if (queue_type::iterator iter_next_to_read = std::min_element(std::begin(RQ), std::end(RQ), next_to_read);
+    iter_next_to_read != std::end(RQ)) {
+      auto pkt = champsim::request_type{*iter_next_to_read};
+      ll->add_rq(pkt);
+      iter_next_to_read->reset();
+  }
+}
+
+
+// Inherit from operable
+void CXL_CONTROLLER::initialize() {
+  using namespace champsim::data::data_literals;
+  using namespace std::literals::chrono_literals;
+  // auto sz = this->size();
+  // if (champsim::data::gibibytes gb_sz{sz}; gb_sz > 1_gib) {
+  //   fmt::print("off-chip dram size: {}", gb_sz);
+  // } else if (champsim::data::mebibytes mb_sz{sz}; mb_sz > 1_mib) {
+  //   fmt::print("off-chip dram size: {}", mb_sz);
+  // } else if (champsim::data::kibibytes kb_sz{sz}; kb_sz > 1_kib) {
+  //   fmt::print("off-chip dram size: {}", kb_sz);
+  // } else {
+  //   fmt::print("off-chip dram size: {}", sz);
+  // }
+  // fmt::print(" channels: {} width: {}-bit data rate: {} mt/s\n", std::size(channels), champsim::data::bits_per_byte * channel_width.count(),
+             // 1us / (data_bus_period));
+}
+
+void CXL_CHANNEL::initialize() {}
+
+void CXL_CONTROLLER::begin_phase()
+{
+  std::size_t chan_idx = 0;
+
+  DRAM_CHANNEL::stats_type new_stats;
+  new_stats.name = "Channel " + std::to_string(chan_idx);
+  channel.sim_stats = new_stats;
+  channel.warmup = warmup;
+
+  for (auto* ul : queues) {
+    channel_type::stats_type ul_new_roi_stats;
+    channel_type::stats_type ul_new_sim_stats;
+    ul->roi_stats = ul_new_roi_stats;
+    ul->sim_stats = ul_new_sim_stats;
+  }
+}
+
+void CXL_CHANNEL::begin_phase() {}
+
+void CXL_CONTROLLER::end_phase(unsigned cpu)
+{
+  channel.end_phase(cpu);
+}
+
+void DRAM_CHANNEL::end_phase(unsigned /*cpu*/) { roi_stats = sim_stats; }
+
+void CXL_CONTROLLER::print_deadlock() {
+  int j = 0;
+  fmt::print("DRAM Channel {}\n", j);
+  channel.print_deadlock();
+}
+
+void DRAM_CHANNEL::print_deadlock() {
+  std::string_view q_writer{"address: {} forward_checked: {} finished: {}"};
+  auto q_entry_pack = [](const auto& entry) {
+    return std::tuple{entry->address, entry->forward_checked, entry->finished};
+  };
+
+  champsim::range_print_deadlock(RQ, "RQ", q_writer, q_entry_pack);
+  champsim::range_print_deadlock(WQ, "WQ", q_writer, q_entry_pack);
+}
+
+CXL_CHANNEL::request_type::request_type(const typename champsim::channel::request_type& req)
+  : pf_metadata(req.pf_metadata), address(req.address), v_address(req.address),
+    data(req.data), instr_depend_on_me(req.instr_depend_on_me) {
+  asid[0] = req.asid[0];
+  asid[1] = req.asid[1];
+}

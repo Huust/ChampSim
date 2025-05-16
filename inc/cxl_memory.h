@@ -54,6 +54,9 @@ struct CXL_CHANNEL final: public champsim::operable {
   queue_type::iterator active_rd_resp_on_bus;
   queue_type::iterator active_wr_req_on_bus;
 
+  champsim::chrono::clock::time_point rd_bus_cycle_available{};
+  champsim::chrono::clock::time_point wr_bus_cycle_available{};
+
   champsim::data::bytes channel_width;
   
   const champsim::chrono::clock::duration tCXL, tRD, tWR;
@@ -62,12 +65,9 @@ struct CXL_CHANNEL final: public champsim::operable {
               std::size_t rq_size, std::size_t wq_size, double rx_bw, double tx_bw);
 
   void check_collision();
-  long finish_pcie_transfer();
-  long schedule_refresh();
-  void swap_write_mode();
-  long populate_dbus();
-  queue_type::iterator schedule_packet();
-  long service_packet(queue_type::iterator pkt);
+  long finish_pcie_transfer();  // handle responses + handle_writes()
+  void handle_writes();
+  void handle_reads();
 
   void initialize();
   long operate();
@@ -82,6 +82,7 @@ class CXL_CONTROLLER final: public champsim::operable {
   using response_type = champsim::channel::response_type;
 
   std::vector<channel_type*> queues;  // upper level (more than one in some case)
+  channel_type *ll; // lower level points to channel between cxl controller and dram
   const champsim::data::bytes channel_width;  // at least pciex8, which is 8bits(1byte) width for uni-direction
 
   champsim::chrono::picoseconds cxl_io_period{};  // CXL_IO_FREQ
