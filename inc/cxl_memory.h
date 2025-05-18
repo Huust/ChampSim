@@ -1,22 +1,15 @@
-#include "cxl_memory.h"
-
 #ifndef CXL_H
 #define CXL_H
-#include <array>
-#include <cmath>
+
 #include <cstddef>  // for size_t
 #include <cstdint>  // for uint64_t, uint32_t, uint8_t
 #include <deque>    // for deque
-#include <iterator> // for end
 #include <limits>
 #include <optional>
-#include <string>
 
 #include "address.h"
 #include "channel.h"
 #include "chrono.h"
-#include "dram_stats.h"
-#include "extent_set.h"
 #include "operable.h"
 
 // CXL_CHANNEL simulates PCIe BUS between Host and Device CXL/PCIe interface
@@ -42,6 +35,11 @@ struct CXL_CHANNEL final: public champsim::operable {
 
     std::vector<uint64_t> instr_depend_on_me{};
     std::vector<std::deque<response_type>*> to_return{};
+    
+    // read/write requests from upper level (LLC) needs to convert from
+    // champsim::channel::request_type -> CXL_CHANNEL::request_type -> champsim::channel::request_type
+    // so reserve request from upper level
+    champsim::channel::request_type raw_req;
 
     explicit request_type(const typename champsim::channel::request_type& req);
   };
@@ -54,26 +52,32 @@ struct CXL_CHANNEL final: public champsim::operable {
   queue_type::iterator active_rd_resp_on_bus;
   queue_type::iterator active_wr_req_on_bus;
 
-  champsim::chrono::clock::time_point rd_bus_cycle_available{};
-  champsim::chrono::clock::time_point wr_bus_cycle_available{};
+  // champsim::chrono::clock::time_point rd_bus_cycle_available{};
+  // champsim::chrono::clock::time_point wr_bus_cycle_available{};
+
+  champsim::channel *lower_level; // lower level points to channel between cxl controller and dram
 
   champsim::data::bytes channel_width;
   
   const champsim::chrono::clock::duration tCXL, tRD, tWR;
   
-  CXL_CHANNEL(champsim::chrono::picoseconds cxl_io_period, std::size_t t_cxl, champsim::data::bytes width,
-              std::size_t rq_size, std::size_t wq_size, double rx_bw, double tx_bw);
-
   void check_collision();
   long finish_pcie_transfer();  // handle responses + handle_writes()
-  void handle_writes();
-  void handle_reads();
+  long handle_writes();
+  long handle_reads();
+  long handle_responses();
+  long populate_responses();
 
   void initialize();
   long operate();
   void begin_phase();
   void end_phase(unsigned cpu);
   void print_deadlock();
+
+public:
+  CXL_CHANNEL(champsim::chrono::picoseconds cxl_io_period, std::size_t t_cxl,
+              std::size_t rq_size, std::size_t wq_size, 
+              double rx_bw, double tx_bw, champsim::channel *ll, champsim::data::bytes width);
 };
 
 class CXL_CONTROLLER final: public champsim::operable {
@@ -82,7 +86,6 @@ class CXL_CONTROLLER final: public champsim::operable {
   using response_type = champsim::channel::response_type;
 
   std::vector<channel_type*> queues;  // upper level (more than one in some case)
-  channel_type *ll; // lower level points to channel between cxl controller and dram
   const champsim::data::bytes channel_width;  // at least pciex8, which is 8bits(1byte) width for uni-direction
 
   champsim::chrono::picoseconds cxl_io_period{};  // CXL_IO_FREQ
@@ -92,7 +95,7 @@ public:
   
   CXL_CONTROLLER(champsim::chrono::picoseconds cxl_io_period, std::size_t t_cxl,
                  std::vector<channel_type*>&& ul, std::size_t rq_size, std::size_t wq_size,
-                 champsim::data::bytes chan_width, double rx_bw, double tx_bw);
+                 champsim::data::bytes chan_width, double rx_bw, double tx_bw, champsim::channel *ll);
 
   // inherit from operable
   void initialize();
@@ -100,7 +103,10 @@ public:
   void begin_phase();
   void end_phase(unsigned cpu);
   void print_deadlock();
-  long initiate_requests();
+
+  void initiate_requests();
+  bool add_rq(const request_type& pkt, channel_type* ul);
+  bool add_wq(const request_type& pkt);
 };
 
 #endif
