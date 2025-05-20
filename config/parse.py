@@ -279,23 +279,25 @@ class NormalizedConfiguration:
         self.pmem = config_file.get('physical_memory', {})
 
         self.cxl = config_file.get('cxl_memory', {})
-        
-        #this allows frequency to be specified instead of data rate or vice-versa for DRAM
+        self.cxl_dram = self.cxl.get('dram', {})
+
+        # this allows frequency to be specified instead of data rate or vice-versa for DRAM
         if('frequency' in self.pmem.keys()):
             self.pmem['data_rate'] = self.pmem['frequency']
             self.pmem['frequency'] = self.pmem['frequency']/2
         elif('data_rate' in self.pmem.keys()):
             self.pmem['frequency'] = self.pmem['data_rate']/2
 
-        if('frequency' in self.cxl.keys()):
-            self.cxl['data_rate'] = self.cxl['frequency']
-            self.cxl['frequency'] = self.cxl['frequency']/2
-        elif('data_rate' in self.cxl.keys()):
-            self.cxl['frequency'] = self.cxl['data_rate']/2 
+        if('frequency' in self.cxl_dram.keys()):
+            self.pmem['data_rate'] = self.pmem['frequency']
+            self.pmem['frequency'] = self.pmem['frequency']/2
+        elif('data_rate' in self.cxl_dram.keys()):
+            self.pmem['frequency'] = self.pmem['data_rate']/2
 
         if verbose:
             print('P: pmem', list(self.pmem.keys()))
             print('P: cxl', list(self.cxl.keys()))
+            print('P: cxl_dram', list(self.cxl_dram.keys()))
 
         self.vmem = config_file.get('virtual_memory', {})
 
@@ -311,7 +313,6 @@ class NormalizedConfiguration:
         self.cores = list(itertools.starmap(util.chain, itertools.zip_longest(self.cores, rhs.cores, fillvalue={})))
         self.caches = util.chain(self.caches, rhs.caches)
         self.ptws = util.chain(self.ptws, rhs.ptws)
-        self.cxl = util.chain(self.cxl, rhs.cxl)
         self.pmem = util.chain(self.pmem, rhs.pmem)
         self.vmem = util.chain(self.vmem, rhs.vmem)
         self.root = util.chain(self.root, rhs.root)
@@ -347,18 +348,17 @@ class NormalizedConfiguration:
         pmem = util.chain(pmem,(do_deprecation(pmem, pmem_deprecation_keys,pmem_deprecation_warnings)))
 
         cxl = util.chain(self.cxl, {
-            "name" : 'CXL',
-            "frequency" : 2000,
-            "data_rate" : 4000,
-            "channels" : 2,
-            "rq_size": 1024,
-            "wq_size": 1024,
-            "tCXL" : 25,
-            "RD_BW" : 25.7,
-            "WR_BW" : 12.7,
-            "RD_Ch_width_bits" : 8,
-            "WR_Ch_width_bits" : 8
+            'name': 'CXL', "cxl_io_frequency" : 2000, "channels" : 1, "rq_size": 1024, "wq_size": 1024,
+            "tCXL" : 50, "RD_BW" : 25.7, "WR_BW" : 12.7, "channel_width": 8
         })
+
+        cxl_dram = util.chain(self.cxl_dram, {
+            'name': 'CXL_DRAM', 'data_rate': 3200, 'frequency': 1600, 'channels': 1, 'ranks': 1, 'bankgroups': 8, 'banks': 4, 'bank_rows': 65536, 'bank_columns': 1024,
+            'channel_width': 8, 'wq_size': 64, 'rq_size': 64, 'tRP': 24, 'tRCD': 24, 'tCAS': 24, 'tRAS' : 52,
+            'refresh_period': 32, 'refreshes_per_period': 8192
+        })
+        # Reuse deprecation detection from pmem for cxl dram
+        cxl_dram = util.chain(cxl_dram,(do_deprecation(cxl_dram, pmem_deprecation_keys,pmem_deprecation_warnings)))
         
         #convert vmem boolean to string
         vmem = util.chain(
@@ -408,8 +408,6 @@ class NormalizedConfiguration:
 
             caches.values(),
 
-
-
             ## DEPRECATION
             # The listed keys are deprecated. For now, permit them but print a warning
             (do_deprecation(cache, cache_deprecation_keys) for cache in caches.values()),
@@ -419,9 +417,7 @@ class NormalizedConfiguration:
 
             # The end of the data path is the physical memory
             *((
-                path_end_in(util.iter_system(caches, cpu['L1I']), 'CXL', 'lower_level_cxl'),
                 path_end_in(util.iter_system(caches, cpu['L1I']), 'DRAM'),
-                path_end_in(util.iter_system(caches, cpu['L1I']), 'CXL', 'lower_level_cxl'),
                 path_end_in(util.iter_system(caches, cpu['L1D']), 'DRAM'),
                 path_end_in(util.iter_system(caches, cpu['ITLB']), cpu['PTW']),
                 path_end_in(util.iter_system(caches, cpu['DTLB']), cpu['PTW'])
@@ -436,7 +432,7 @@ class NormalizedConfiguration:
                '_prefetcher_data': [*map(functools.partial(prefetcher_parse, cache=cache), util.wrap_list(cache.get('prefetcher', 'no')))]
             } for k,cache in caches.items())
         )
-
+        
         ptws = util.combine_named(
             ptws.values(),
 
@@ -462,10 +458,14 @@ class NormalizedConfiguration:
             'cores': cores,
             'caches': tuple(caches.values()),
             'ptws': tuple(ptws.values()),
-            'cxl': cxl,
             'pmem': pmem,
+            'cxl': (cxl, ), # tuple(dict) fetch all the keys in the dict and build up a tuple
+                            # If you pprint ptws, you would find difference in structure compared with cxl
+                            # Here (cxl, ) returns a dict wrapped in a tuple, the same with tuple(ptws.value())
+            'cxl_dram': cxl_dram,
             'vmem': vmem
         }
+
         module_info = {
             'repl': util.combine_named(*(c['_replacement_data'] for c in caches.values()), replacement_context.find_all()),
             'pref': util.combine_named(*(c['_prefetcher_data'] for c in caches.values()), prefetcher_context.find_all()),

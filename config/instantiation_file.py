@@ -24,7 +24,8 @@ from . import util
 from . import cxx
 
 pmem_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
-cxl_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
+cxl_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_cxl_io}}}, std::size_t{{{_tCXL}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, champsim::data::bytes{{{channel_width}}}, {RD_BW}, {WR_BW}, {{{_llptr}}}'
+cxl_dram_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
 vmem_fmtstr = 'champsim::data::bytes{{{pte_page_size}}}, {num_levels}, champsim::chrono::picoseconds{{{clock_period}*{minor_fault_penalty}}}, {dram_name}, {_randomization}'
 
 queue_fmtstr = '{rq_size}, {pq_size}, {wq_size}, champsim::data::bits{{{_offset_bits}}}, {_queue_check_full_addr:b}'
@@ -266,15 +267,16 @@ def ptw_queue_defaults(ptw):
         '_queue_check_full_addr': False
     }
 
-def get_upper_levels(cores, caches, ptws):
+def get_upper_levels(cores, caches, ptws, cxl):
     ''' Get a sequence of (lower_name, upper_name) for the given elements. '''
     def named_selector(elem, key):
         return elem.get(key), elem.get('name')
+    
 
     return list(filter(lambda x: x[0] is not None, itertools.chain(
+        map(functools.partial(named_selector, key='lower_level'), cxl),
         map(functools.partial(named_selector, key='lower_level'), ptws),
         map(functools.partial(named_selector, key='lower_level'), caches),
-        map(functools.partial(named_selector, key='lower_level_cxl'), caches), # get lower level cxl from llc
         map(functools.partial(named_selector, key='lower_translate'), caches),
         map(functools.partial(named_selector, key='L1I'), cores),
         map(functools.partial(named_selector, key='L1D'), cores)
@@ -298,7 +300,7 @@ def module_include_files(datas):
 
     yield from (f'#include "{f}"' for _,f in candidates)
 
-def decorate_queues(caches, ptws, pmem, cxl):
+def decorate_queues(caches, ptws, pmem, cxl_dram):
     return util.chain(
             *({c['name']: cache_queue_defaults(c)} for c in caches),
             *({p['name']: ptw_queue_defaults(p)} for p in ptws),
@@ -310,7 +312,7 @@ def decorate_queues(caches, ptws, pmem, cxl):
                     '_queue_check_full_addr':False
                 }
             },
-            {cxl['name']: {
+            {cxl_dram['name']: {
                     'rq_size':'std::numeric_limits<std::size_t>::max()',
                     'wq_size':'std::numeric_limits<std::size_t>::max()',
                     'pq_size':'std::numeric_limits<std::size_t>::max()',
@@ -323,13 +325,13 @@ def decorate_queues(caches, ptws, pmem, cxl):
 def get_queue_info(ul_pairs, decoration):
     return [decoration.get(ll) for ll,_ in ul_pairs]
 
-def get_instantiation_lines(cores, caches, ptws, cxl, pmem, vmem, build_id):
+def get_instantiation_lines(cores, caches, ptws, pmem, cxl, cxl_dram, vmem, build_id):
     '''
     Generate the lines for a C++ file that instantiates a configuration.
     '''
     classname = f'champsim::configured::generated_environment<0x{build_id}>'
-    ul_pairs = get_upper_levels(cores, caches, ptws)
-    queues = get_queue_info(ul_pairs, decorate_queues(caches, ptws, cxl, pmem))
+    ul_pairs = get_upper_levels(cores, caches, ptws, cxl)
+    queues = get_queue_info(ul_pairs, decorate_queues(caches, ptws, pmem, cxl_dram))
 
     datas = itertools.filterfalse(operator.methodcaller('get', 'legacy', False), itertools.chain(
         *(c['_branch_predictor_data'] for c in cores),
@@ -363,21 +365,33 @@ def get_instantiation_lines(cores, caches, ptws, cxl, pmem, vmem, build_id):
         '},'
     )
 
+    cxl = cxl[0]
     cxl_instantiation_body = (
         'CXL{',
         cxl_fmtstr.format(
-            clock_period_dbus=int(1000000/pmem['data_rate']),
-            clock_period_mc=int(1000000/pmem['frequency']),
-            _tRP=int(pmem['tRP']),
-            _tRCD=int(pmem['tRCD']),
-            _tCAS=int(pmem['tCAS']),
-            _tRAS=int(pmem['tRAS']),
-            _bank_rows=int(pmem['bank_rows']), #added for supporting old configs, mainly column size change
-            _bank_columns=int(pmem['columns']*8 if 'columns' in pmem else pmem['bank_columns']),
-            _refresh_period=int(1000*pmem['refresh_period']),
-            _refreshes_per_period=int(pmem['refreshes_per_period']),
+            clock_period_cxl_io=int(1000000/cxl['cxl_io_frequency']),
+            _tCXL=int(cxl['tCXL']),
             _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == pmem['name']),
-            **pmem),
+            _llptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == cxl_dram['name']),
+            **cxl),
+        '},'
+    )
+
+    cxl_dram_instantiation_body = (
+        'CXL_DRAM{',
+        cxl_dram_fmtstr.format(
+            clock_period_dbus=int(1000000/cxl_dram['data_rate']),
+            clock_period_mc=int(1000000/cxl_dram['frequency']),
+            _tRP=int(cxl_dram['tRP']),
+            _tRCD=int(cxl_dram['tRCD']),
+            _tCAS=int(cxl_dram['tCAS']),
+            _tRAS=int(cxl_dram['tRAS']),
+            _bank_rows=int(cxl_dram['bank_rows']), #added for supporting old configs, mainly column size change
+            _bank_columns=int(cxl_dram['columns']*8 if 'columns' in cxl_dram else cxl_dram['bank_columns']),
+            _refresh_period=int(1000*cxl_dram['refresh_period']),
+            _refreshes_per_period=int(cxl_dram['refreshes_per_period']),
+            _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == cxl_dram['name']),
+            **cxl_dram),
         '},'
     )
 
@@ -416,6 +430,7 @@ def get_instantiation_lines(cores, caches, ptws, cxl, pmem, vmem, build_id):
     yield from channel_instantiation_body
     yield from pmem_instantiation_body
     yield from cxl_instantiation_body
+    yield from cxl_dram_instantiation_body
     yield from vmem_instantiation_body
     yield from ptw_instantiation_body
     yield from cache_instantiation_body
@@ -440,13 +455,15 @@ def get_instantiation_lines(cores, caches, ptws, cxl, pmem, vmem, build_id):
         'std::transform(std::begin(caches), std::end(caches), std::back_inserter(retval), make_ref);',
         'std::transform(std::begin(ptws), std::end(ptws), std::back_inserter(retval), make_ref);',
         'retval.push_back(std::ref<champsim::operable>(DRAM));',
+        'retval.push_back(std::ref<champsim::operable>(CXL));',
+        'retval.push_back(std::ref<champsim::operable>(CXL_DRAM));',
         'return retval;'
     ), rtype='std::vector<std::reference_wrapper<champsim::operable>>')
     yield ''
 
     yield from cxx.function(f'{classname}::dram_view', [f'return {pmem["name"]};'], rtype='MEMORY_CONTROLLER&')
-    yield ''
     yield from cxx.function(f'{classname}::cxl_view', [f'return {cxl["name"]};'], rtype='CXL_CONTROLLER&')
+    yield from cxx.function(f'{classname}::cxl_dram_view', [f'return {cxl_dram["name"]};'], rtype='MEMORY_CONTROLLER&')
     yield ''
 
 def get_instantiation_header(num_cpus, env, build_id):
@@ -459,6 +476,7 @@ def get_instantiation_header(num_cpus, env, build_id):
         'std::vector<champsim::channel> channels;',
         'MEMORY_CONTROLLER DRAM;',
         'CXL_CONTROLLER CXL;',
+        'MEMORY_CONTROLLER CXL_DRAM;',
         'VirtualMemory vmem;',
         'std::forward_list<PageTableWalker> ptws;',
         'std::forward_list<CACHE> caches;',
@@ -475,6 +493,7 @@ def get_instantiation_header(num_cpus, env, build_id):
         'std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() final;',
         'MEMORY_CONTROLLER& dram_view() final;',
         'CXL_CONTROLLER& cxl_view() final;',
+        'MEMORY_CONTROLLER& cxl_dram_view() final;',
         'std::vector<std::reference_wrapper<operable>> operable_view() final;'
     )
     struct_name = f'champsim::configured::generated_environment<0x{build_id}> final'
