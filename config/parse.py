@@ -276,6 +276,8 @@ class NormalizedConfiguration:
         # The name 'DRAM' is reserved for the physical memory
         self.caches = {k:v for k,v in self.caches.items() if k != 'DRAM'}
 
+        self.router = config_file.get('shim_layer', {})
+
         self.pmem = config_file.get('physical_memory', {})
 
         self.cxl = config_file.get('cxl_memory', {})
@@ -295,6 +297,7 @@ class NormalizedConfiguration:
             self.pmem['frequency'] = self.pmem['data_rate']/2
 
         if verbose:
+            print('P: router', list(self.router.keys()))
             print('P: pmem', list(self.pmem.keys()))
             print('P: cxl', list(self.cxl.keys()))
             print('P: cxl_dram', list(self.cxl_dram.keys()))
@@ -339,6 +342,14 @@ class NormalizedConfiguration:
                 'page_size': int_or_prefixed_size("4kB")
             }
         )
+
+        # mode 1: DRAM-only
+        # mode 2: CXL-only
+        # mode 3: Hybrid
+        # default router mode: mode1
+        router = util.chain(self.router, {
+            'name': 'ROUTER', 'mode': 1
+        })
 
         pmem = util.chain(self.pmem, {
             'name': 'DRAM', 'data_rate': 3200, 'frequency': 1600, 'channels': 1, 'ranks': 1, 'bankgroups': 8, 'banks': 4, 'bank_rows': 65536, 'bank_columns': 1024,
@@ -417,8 +428,10 @@ class NormalizedConfiguration:
 
             # The end of the data path is the physical memory
             *((
-                path_end_in(util.iter_system(caches, cpu['L1I']), 'DRAM'),
-                path_end_in(util.iter_system(caches, cpu['L1D']), 'DRAM'),
+                # path_end_in(util.iter_system(caches, cpu['L1I']), 'DRAM'),
+                # path_end_in(util.iter_system(caches, cpu['L1D']), 'DRAM'),
+                path_end_in(util.iter_system(caches, cpu['L1I']), 'ROUTER'),
+                path_end_in(util.iter_system(caches, cpu['L1D']), 'ROUTER'),
                 path_end_in(util.iter_system(caches, cpu['ITLB']), cpu['PTW']),
                 path_end_in(util.iter_system(caches, cpu['DTLB']), cpu['PTW'])
              ) for cpu in cores),
@@ -458,6 +471,7 @@ class NormalizedConfiguration:
             'cores': cores,
             'caches': tuple(caches.values()),
             'ptws': tuple(ptws.values()),
+            'router': router,
             'pmem': pmem,
             'cxl': (cxl, ), # tuple(dict) fetch all the keys in the dict and build up a tuple
                             # If you pprint ptws, you would find difference in structure compared with cxl

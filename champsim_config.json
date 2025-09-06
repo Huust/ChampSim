@@ -159,6 +159,11 @@
         "replacement": "lru"
     },
 
+    "shim_layer": {
+        "cxl": 1,
+        "dram": 0
+    },
+
     "cxl_memory": {
         "cxl_io_frequency" : 2000,
         "channels" : 1,

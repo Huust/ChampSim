@@ -267,20 +267,65 @@ def ptw_queue_defaults(ptw):
         '_queue_check_full_addr': False
     }
 
-def get_upper_levels(cores, caches, ptws, cxl):
-    ''' Get a sequence of (lower_name, upper_name) for the given elements. '''
-    def named_selector(elem, key):
-        return elem.get(key), elem.get('name')
-    
+# def get_upper_levels(cores, caches, ptws, router, pmem, cxl):
+#     ''' Get a sequence of (lower_name, upper_name) for the given elements. '''
+#     def named_selector(elem, key):
+#         return elem.get(key), elem.get('name')
+#     
+#
+#     return list(filter(lambda x: x[0] is not None, itertools.chain(
+#         map(functools.partial(named_selector, key='lower_level'), cxl),
+#         map(functools.partial(named_selector, key='lower_level'), ptws),
+#         map(functools.partial(named_selector, key='lower_level'), caches),
+#         map(functools.partial(named_selector, key='lower_translate'), caches),
+#         map(functools.partial(named_selector, key='L1I'), cores),
+#         map(functools.partial(named_selector, key='L1D'), cores)
+#     )))
 
-    return list(filter(lambda x: x[0] is not None, itertools.chain(
-        map(functools.partial(named_selector, key='lower_level'), cxl),
-        map(functools.partial(named_selector, key='lower_level'), ptws),
-        map(functools.partial(named_selector, key='lower_level'), caches),
-        map(functools.partial(named_selector, key='lower_translate'), caches),
-        map(functools.partial(named_selector, key='L1I'), cores),
-        map(functools.partial(named_selector, key='L1D'), cores)
-    )))
+def get_upper_levels(cores, caches, ptws, router, pmem, cxl):
+    ''' 
+    根据给定的元素，获取一个 (lower_name, upper_name) 的序列。
+    这个版本会根据 router 的配置动态地添加连接。
+    '''
+    def named_selector(elem, key):
+        # 辅助函数：从一个字典元素中提取 (elem[key], elem['name'])
+        return elem.get(key), elem.get('name')
+
+    # 创建一个列表，用于逐步构建所有的连接关系
+    connections = []
+
+    # --- 1. 添加始终存在的、无条件的连接 ---
+    # 包括 ptws, caches, 和 cores 的层级关系
+    connections.extend(map(functools.partial(named_selector, key='lower_level'), ptws))
+    connections.extend(map(functools.partial(named_selector, key='lower_level'), caches))
+    connections.extend(map(functools.partial(named_selector, key='lower_translate'), caches))
+    connections.extend(map(functools.partial(named_selector, key='L1I'), cores))
+    connections.extend(map(functools.partial(named_selector, key='L1D'), cores))
+
+    # --- 2. 根据 router 配置，有条件地添加连接 ---
+
+    # 检查 'dram' 标志，如果为 1，则将 pmem 添加为 router 的 lower_level
+    # 这会生成一个 ('pmem_name', 'router_name') 的元组
+    if router.get('dram') >= 1:
+        connections.append((pmem.get('name'), router.get('name')))
+
+    # 检查 'cxl' 标志
+    if router.get('cxl') >= 1:
+        # (2a) 如果 cxl 启用，则将 CXL 的第一个组件 (cxl[0]) 添加为 router 的 lower_level
+        # 这会生成一个 ('cxl_controller_name', 'router_name') 的元组
+        connections.append((cxl[0].get('name'), router.get('name')))
+
+        # (2b) 同时，处理 CXL 内部的层级关系（CXL_DRAM -> CXL Controller）
+        # 这个 map 只在 cxl 启用时执行
+        connections.extend(map(functools.partial(named_selector, key='lower_level'), cxl))
+
+    # 如果都设置为0，则默认是为DRAM-only mode
+    if router.get('dram') < 1 and router.get('cxl') < 1:
+        connections.append((pmem.get('name'), router.get('name')))
+
+    # --- 3. 过滤掉无效连接并返回最终列表 ---
+    # 最后，和原函数一样，过滤掉所有第一个元素为 None 的元组
+    return list(filter(lambda x: x[0] is not None, connections))
 
 def module_include_files(datas):
     '''
@@ -300,38 +345,75 @@ def module_include_files(datas):
 
     yield from (f'#include "{f}"' for _,f in candidates)
 
-def decorate_queues(caches, ptws, pmem, cxl_dram):
-    return util.chain(
-            *({c['name']: cache_queue_defaults(c)} for c in caches),
-            *({p['name']: ptw_queue_defaults(p)} for p in ptws),
-            {pmem['name']: {
-                    'rq_size':'std::numeric_limits<std::size_t>::max()',
-                    'wq_size':'std::numeric_limits<std::size_t>::max()',
-                    'pq_size':'std::numeric_limits<std::size_t>::max()',
-                    '_offset_bits':'champsim::lg2(BLOCK_SIZE)',
-                    '_queue_check_full_addr':False
-                }
-            },
-            {cxl_dram['name']: {
-                    'rq_size':'std::numeric_limits<std::size_t>::max()',
-                    'wq_size':'std::numeric_limits<std::size_t>::max()',
-                    'pq_size':'std::numeric_limits<std::size_t>::max()',
-                    '_offset_bits':'champsim::lg2(BLOCK_SIZE)',
-                    '_queue_check_full_addr':False
-                }
-            }
-    )
+def decorate_queues(caches, ptws, router, pmem, cxl, cxl_dram):
+    """
+    Conditionally aggregates default queue settings for multiple modules based on the router's configuration.
+
+    This function uses the 'cxl' and 'dram' flags in the router module to decide whether to include
+    settings for the cxl, cxl_dram, and pmem modules. The settings for caches, ptws,
+    and the router itself are always included.
+
+    Returns:
+        An iterator that chains the queue configurations of all selected modules. 
+    """
+    elements_to_chain = [
+        *({c['name']: cache_queue_defaults(c)} for c in caches),
+        *({p['name']: ptw_queue_defaults(p)} for p in ptws),
+        {router['name']: {
+            'rq_size':'std::numeric_limits<std::size_t>::max()',
+            'wq_size':'std::numeric_limits<std::size_t>::max()',
+            'pq_size':'std::numeric_limits<std::size_t>::max()',
+            '_offset_bits':'champsim::lg2(BLOCK_SIZE)',
+            '_queue_check_full_addr':False
+        }}
+    ]
+
+    if router.get('dram') >= 1:
+        elements_to_chain.append({pmem['name']: {
+            'rq_size':'std::numeric_limits<std::size_t>::max()',
+            'wq_size':'std::numeric_limits<std::size_t>::max()',
+            'pq_size':'std::numeric_limits<std::size_t>::max()',
+            '_offset_bits':'champsim::lg2(BLOCK_SIZE)',
+            '_queue_check_full_addr':False
+        }})
+
+    if router.get('cxl') >= 1:
+        elements_to_chain.append({cxl[0]['name']: {
+            'rq_size':'std::numeric_limits<std::size_t>::max()',
+            'wq_size':'std::numeric_limits<std::size_t>::max()',
+            'pq_size':'std::numeric_limits<std::size_t>::max()',
+            '_offset_bits':'champsim::lg2(BLOCK_SIZE)',
+            '_queue_check_full_addr':False
+        }})
+        elements_to_chain.append({cxl_dram['name']: {
+            'rq_size':'std::numeric_limits<std::size_t>::max()',
+            'wq_size':'std::numeric_limits<std::size_t>::max()',
+            'pq_size':'std::numeric_limits<std::size_t>::max()',
+            '_offset_bits':'champsim::lg2(BLOCK_SIZE)',
+            '_queue_check_full_addr':False
+        }})
+
+    if router.get('dram') < 1 and router.get('cxl') < 1:
+        elements_to_chain.append({pmem['name']: {
+            'rq_size':'std::numeric_limits<std::size_t>::max()',
+            'wq_size':'std::numeric_limits<std::size_t>::max()',
+            'pq_size':'std::numeric_limits<std::size_t>::max()',
+            '_offset_bits':'champsim::lg2(BLOCK_SIZE)',
+            '_queue_check_full_addr':False
+        }})
+
+    return util.chain(*elements_to_chain)
 
 def get_queue_info(ul_pairs, decoration):
     return [decoration.get(ll) for ll,_ in ul_pairs]
 
-def get_instantiation_lines(cores, caches, ptws, pmem, cxl, cxl_dram, vmem, build_id):
+def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vmem, build_id):
     '''
     Generate the lines for a C++ file that instantiates a configuration.
     '''
     classname = f'champsim::configured::generated_environment<0x{build_id}>'
-    ul_pairs = get_upper_levels(cores, caches, ptws, cxl)
-    queues = get_queue_info(ul_pairs, decorate_queues(caches, ptws, pmem, cxl_dram))
+    ul_pairs = get_upper_levels(cores, caches, ptws, router, pmem, cxl)
+    queues = get_queue_info(ul_pairs, decorate_queues(caches, ptws, router, pmem, cxl, cxl_dram))
 
     datas = itertools.filterfalse(operator.methodcaller('get', 'legacy', False), itertools.chain(
         *(c['_branch_predictor_data'] for c in cores),
