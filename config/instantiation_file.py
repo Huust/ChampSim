@@ -23,6 +23,7 @@ import multiprocessing as mp
 from . import util
 from . import cxx
 
+shim_fmtstr = '{{{_llptr}}}, {rq_size}, {wq_size}, {{{_ulptr}}}, std::size_t{{{enable_dram}}}, std::size_t{{{enable_cxl}}}'
 pmem_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
 cxl_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_cxl_io}}}, std::size_t{{{_tCXL}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, champsim::data::bytes{{{channel_width}}}, {RD_BW}, {WR_BW}, {{{_llptr}}}'
 cxl_dram_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
@@ -429,6 +430,17 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     channels_head, channels_tail = util.cut((f'champsim::channel{{{queue_fmtstr.format(**v)}}}' for v in queues), n=-1)
     channel_instantiation_body = ('channels{', *(v+',' for v in channels_head), *channels_tail, '},')
 
+    shim_instantiation_body = (
+        'SHIM_LAYER{',
+        shim_fmtstr.format(
+            _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == router['name']),
+            _llptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[1] == router['name']),
+            enable_dram=int(router['dram']),
+            enable_cxl=int(router['cxl']),
+            **router),
+        '},'
+    )
+
     pmem_instantiation_body = (
         'DRAM{',
         pmem_fmtstr.format(
@@ -510,6 +522,7 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     yield from itertools.chain(
     )
     yield from channel_instantiation_body
+    yield from shim_instantiation_body
     yield from pmem_instantiation_body
     yield from cxl_instantiation_body
     yield from cxl_dram_instantiation_body
@@ -536,6 +549,7 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
         'std::transform(std::begin(cores), std::end(cores), std::back_inserter(retval), make_ref);',
         'std::transform(std::begin(caches), std::end(caches), std::back_inserter(retval), make_ref);',
         'std::transform(std::begin(ptws), std::end(ptws), std::back_inserter(retval), make_ref);',
+        'retval.push_back(std::ref<champsim::operable>(SHIM_LAYER));',
         'retval.push_back(std::ref<champsim::operable>(DRAM));',
         'retval.push_back(std::ref<champsim::operable>(CXL));',
         'retval.push_back(std::ref<champsim::operable>(CXL_DRAM));',
@@ -543,6 +557,7 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     ), rtype='std::vector<std::reference_wrapper<champsim::operable>>')
     yield ''
 
+    yield from cxx.function(f'{classname}::shim_layer_view', [f'return {router["name"]};'], rtype='SHIM_LAYER&')
     yield from cxx.function(f'{classname}::dram_view', [f'return {pmem["name"]};'], rtype='MEMORY_CONTROLLER&')
     yield from cxx.function(f'{classname}::cxl_view', [f'return {cxl["name"]};'], rtype='CXL_CONTROLLER&')
     yield from cxx.function(f'{classname}::cxl_dram_view', [f'return {cxl_dram["name"]};'], rtype='MEMORY_CONTROLLER&')
@@ -556,6 +571,7 @@ def get_instantiation_header(num_cpus, env, build_id):
     struct_body = (
         'private:',
         'std::vector<champsim::channel> channels;',
+        'SHIM_LAYER ROUTER;',
         'MEMORY_CONTROLLER DRAM;',
         'CXL_CONTROLLER CXL;',
         'MEMORY_CONTROLLER CXL_DRAM;',
@@ -573,6 +589,7 @@ def get_instantiation_header(num_cpus, env, build_id):
         'std::vector<std::reference_wrapper<O3_CPU>> cpu_view() final;',
         'std::vector<std::reference_wrapper<CACHE>> cache_view() final;',
         'std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() final;',
+        'SHIM_LAYER& router_view() final;',
         'MEMORY_CONTROLLER& dram_view() final;',
         'CXL_CONTROLLER& cxl_view() final;',
         'MEMORY_CONTROLLER& cxl_dram_view() final;',
