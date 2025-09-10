@@ -2,100 +2,205 @@
 
 #include <cfenv>
 #include <fmt/core.h>
-
+#include "deadlock.h"
 #include "util/bits.h"
 
-SHIM_LAYER::SHIM_LAYER(std::vector<channel_type*>&& ll, std::size_t rq_size,
-             std::size_t wq_size, champsim::channel *ul, std::size_t enable_dram, std::size_t enable_cxl)
-  :WQ(wq_size), RQ(rq_size), ul(ul), ll_queues(ll)
+SHIM_LAYER::SHIM_LAYER(champsim::channel *ul, std::vector<channel_type*>&& ll,
+                       std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
+                       bool is_dram_enabled, bool is_cxl_enabled)
+  :ul(ul), ll_queues(ll), WQ(wq_size), RQ(rq_size), PQ(pq_size)
 {
-  this->mode = get_operate_mode(enable_dram, enable_cxl);
+  this->mode = get_operate_mode(is_dram_enabled, is_cxl_enabled);
 }
 
-// 1. 将旧的responses从internal channel搬运到和LLC相连的champsim channel
-// 2. 从lower level搬运新的responses到internal channel
+// 1. Move the response from lower level's champsim channel (connected to potential memory) into local queue
+// 2. Move the response from local queue into upper level's champsim channel (connected with LLC)
 long SHIM_LAYER::handle_responses() {
   long progress{0};
-  // 1. Move the response from local queue into upper level's champsim channel
-  while (!RespQ.empty()) {
-    auto ret = RespQ.front();
+  // 1
+  for (auto* lower_level : ll_queues) {
+    for (auto& ret : lower_level->returned) {
+        RespQ.push_back(ret);
+        progress++;
+    }
+    lower_level->returned.clear();
+  }
+  
+  // 2
+  for (auto& ret : RespQ) {
     ul->returned.push_back(ret);
-    RespQ.pop_front();
+    progress++;
   }
-
-  // 2. Move the response from lower level's champsim channel into local queue
-  for (auto lower_level: ll_queues) {
-    auto ret = lower_level->returned.front();
-    RespQ.push_back(ret);
-    lower_level->returned.pop_front();
-  }
+  RespQ.clear(); 
 
   return progress;
 }
 
+// Route requests from internal channels into corresponding lower levels
 long SHIM_LAYER::route() {
   long progress{0};
-  // Propagate all requests into same (the only) lower level memory device
-  if (mode == SHIM_LAYER::MODE::DRAM_ONLY ||
-      mode == SHIM_LAYER::MODE::CXL_ONLY) {
-      auto lower_level = ll_queues.front();
-      auto drain_and_send = [&](auto& queue, auto add_method_ptr) {
-        while (!queue.empty()) {
-          (lower_level->*add_method_ptr)(queue.front());
-          queue.pop_front();
-        }
-      };
-      
-      drain_and_send(WQ, &channel_type::add_wq);
-      drain_and_send(RQ, &channel_type::add_rq);
-      drain_and_send(PQ, &channel_type::add_pq);
-  } else {
-      auto drain_and_send = [&](auto& queue, auto add_method_ptr) {
-        auto dram_ll = ll_queues[0];
-        auto cxl_ll = ll_queues[1];
-        while (!queue.empty()) {
-          if (queue.front().address.template to<uint64_t>() % 2 != 0)
-            (dram_ll->*add_method_ptr)(queue.front());
-          else
-            (cxl_ll->*add_method_ptr)(queue.front());
+  champsim::bandwidth lower_bw{LOWER_STREAM_BW};
 
-          queue.pop_front();
+  auto process_queue = [&](auto& queue, auto stats_func_dram, auto stats_func_cxl, char queue_type) {
+    for (auto it = std::begin(queue); it != std::end(queue); ++it) {
+      if (!it->has_value()) {
+        continue;
+      }
+
+      if (!lower_bw.has_remaining()) {
+        if (!warmup) {
+          sim_stats.lower_bw_congestion_cycles++;
         }
-      };
+        break;
+      }
+
+      auto& pkt = it->value();
+      bool is_cxl_address = pkt.address.template to<uint64_t>() >= 0x100000000ULL;  // cxl memory for address higher than 4GB
+      champsim::channel* dest_channel = is_cxl_address ? ll_queues[1] : ll_queues[0]; // 0 for dram, 1 for cxl
+      bool success = false;
       
-      drain_and_send(WQ, &channel_type::add_wq);
-      drain_and_send(RQ, &channel_type::add_rq);
-      drain_and_send(PQ, &channel_type::add_pq);
+      switch(queue_type) {
+        case 'R': success = dest_channel->add_rq(pkt); break;
+        case 'W': success = dest_channel->add_wq(pkt); break;
+        case 'P': success = dest_channel->add_pq(pkt); break;
+      }
+      
+      if (success) {
+        if (!warmup) {
+          if (is_cxl_address) {
+            stats_func_cxl();
+          } else {
+            stats_func_dram();
+          }
+        }
+        it->reset();
+        lower_bw.consume();
+        progress++;
+      }
     }
+  };
 
+  process_queue(RQ, [&]{ sim_stats.dram_requests_read++; sim_stats.dram_requests_total++; }, 
+                    [&]{ sim_stats.cxl_requests_read++; sim_stats.cxl_requests_total++; }, 'R');
+  process_queue(WQ, [&]{ sim_stats.dram_requests_write++; sim_stats.dram_requests_total++; }, 
+                    [&]{ sim_stats.cxl_requests_write++; sim_stats.cxl_requests_total++; }, 'W');
+  process_queue(PQ, [&]{ sim_stats.dram_requests_prefetch++; sim_stats.dram_requests_total++; }, 
+                    [&]{ sim_stats.cxl_requests_prefetch++; sim_stats.cxl_requests_total++; }, 'P');
+  
   return progress;
 }
 
 // Populate local queues with requests from upper level
 long SHIM_LAYER::populate_requests() {
   long progress{0};
+  champsim::bandwidth upper_bw{UPPER_STREAM_BW};
 
-  auto populate = [](auto queue){
-    while (!queue.empty()) {
-      auto request = queue.front();
-      queue.push_back(request);
-      queue.pop_front();
-    }
-  };
+  // RQ processing
+  auto rq_it = std::find_if_not(std::begin(RQ), std::end(RQ), [](const auto& pkt){ return pkt.has_value(); });
   
-  populate(ul->WQ);
-  populate(ul->RQ);
-  populate(ul->PQ);
+  while (!ul->RQ.empty()) {  // Still have upstream requests
+    // First check bandwidth limitation
+    if (!upper_bw.has_remaining()) {
+      // Bandwidth exhausted
+      if (!warmup) {
+        sim_stats.upper_bw_congestion_cycles++;  // Upper bandwidth congestion
+      }
+      break;
+    }
+    
+    // Then check internal buffer availability
+    if (rq_it == std::end(RQ)) {
+      // Internal RQ is full
+      if (!warmup) {
+        sim_stats.rq_full++;  // Buffer congestion
+      }
+      break;
+    }
+    
+    // Both conditions satisfied, transfer the request
+    *rq_it = ul->RQ.front();
+    ul->RQ.pop_front();
+    ++rq_it;
+    upper_bw.consume();
+    progress++;
+    
+    // Find next available slot
+    rq_it = std::find_if_not(rq_it, std::end(RQ), [](const auto& pkt){ return pkt.has_value(); });
+  }
+
+  // WQ processing
+  auto wq_it = std::find_if_not(std::begin(WQ), std::end(WQ), [](const auto& pkt){ return pkt.has_value(); });
+  
+  while (!ul->WQ.empty()) {  // Still have upstream requests
+    // First check bandwidth limitation
+    if (!upper_bw.has_remaining()) {
+      // Bandwidth exhausted
+      if (!warmup) {
+        sim_stats.upper_bw_congestion_cycles++;  // Upper bandwidth congestion
+      }
+      break;
+    }
+    
+    // Then check internal buffer availability
+    if (wq_it == std::end(WQ)) {
+      // Internal WQ is full
+      if (!warmup) {
+        sim_stats.wq_full++;  // Buffer congestion
+      }
+      break;
+    }
+    
+    // Both conditions satisfied, transfer the request
+    *wq_it = ul->WQ.front();
+    ul->WQ.pop_front();
+    ++wq_it;
+    upper_bw.consume();
+    progress++;
+    
+    // Find next available slot
+    wq_it = std::find_if_not(wq_it, std::end(WQ), [](const auto& pkt){ return pkt.has_value(); });
+  }
+  
+  // PQ processing
+  auto pq_it = std::find_if_not(std::begin(PQ), std::end(PQ), [](const auto& pkt){ return pkt.has_value(); });
+  
+  while (!ul->PQ.empty()) {  // Still have upstream requests
+    // First check bandwidth limitation
+    if (!upper_bw.has_remaining()) {
+      // Bandwidth exhausted
+      if (!warmup) {
+        sim_stats.upper_bw_congestion_cycles++;  // Upper bandwidth congestion
+      }
+      break;
+    }
+    
+    // Then check internal buffer availability
+    if (pq_it == std::end(PQ)) {
+      // Internal PQ is full
+      if (!warmup) {
+        sim_stats.pq_full++;  // Buffer congestion
+      }
+      break;
+    }
+    
+    // Both conditions satisfied, transfer the request
+    *pq_it = ul->PQ.front();
+    ul->PQ.pop_front();
+    ++pq_it;
+    upper_bw.consume();
+    progress++;
+    
+    // Find next available slot
+    pq_it = std::find_if_not(pq_it, std::end(PQ), [](const auto& pkt){ return pkt.has_value(); });
+  }
 
   return progress;
 }
 
-SHIM_LAYER::MODE SHIM_LAYER::get_operate_mode(std::size_t enable_dram, std::size_t enable_cxl) {
-  if (enable_dram >= 1 && enable_cxl >= 1)
+SHIM_LAYER::MODE SHIM_LAYER::get_operate_mode(bool is_dram_enabled, bool is_cxl_enabled) {
+  if (is_dram_enabled && is_cxl_enabled)
       return SHIM_LAYER::MODE::HYBRID;
-  else if (enable_dram >= 1 && enable_cxl < 1)
-      return SHIM_LAYER::MODE::DRAM_ONLY;
-  else if (enable_dram < 1 && enable_cxl >= 1)
+  else if (!is_dram_enabled && is_cxl_enabled)
       return SHIM_LAYER::MODE::CXL_ONLY;
   else return SHIM_LAYER::MODE::DRAM_ONLY;
 }
@@ -108,38 +213,55 @@ long SHIM_LAYER::operate() {
   return progress;
 }
 
+// print operating mode and queue size
 void SHIM_LAYER::initialize() {
-  using namespace champsim::data::data_literals;
-  using namespace std::literals::chrono_literals;
-  // auto sz = this->size();
-  // if (champsim::data::gibibytes gb_sz{sz}; gb_sz > 1_gib) {
-  //   fmt::print("off-chip dram size: {}", gb_sz);
-  // } else if (champsim::data::mebibytes mb_sz{sz}; mb_sz > 1_mib) {
-  //   fmt::print("off-chip dram size: {}", mb_sz);
-  // } else if (champsim::data::kibibytes kb_sz{sz}; kb_sz > 1_kib) {
-  //   fmt::print("off-chip dram size: {}", kb_sz);
-  // } else {
-  //   fmt::print("off-chip dram size: {}", sz);
-  // }
-  // fmt::print(" channels: {} width: {}-bit data rate: {} mt/s\n", std::size(channels), champsim::data::bits_per_byte * channel_width.count(),
-             // 1us / (data_bus_period));
+  fmt::print("address-based ROUTER, operating in ");
+  switch (mode) {
+    case SHIM_LAYER::MODE::DRAM_ONLY:
+      fmt::print("DRAM_ONLY mode.\n");
+      break;
+    case SHIM_LAYER::MODE::CXL_ONLY:
+      fmt::print("CXL_ONLY mode.\n");
+      break;
+    case SHIM_LAYER::MODE::HYBRID:
+      fmt::print("HYBRID mode.\n");
+      break;
+  }
+
+  fmt::print("ROUTER RQ size: {}, WQ size: {}, PQ size: {}, RespQ size: {}\n", std::size(RQ), std::size(WQ), std::size(PQ), std::size(RespQ));
 }
 void SHIM_LAYER::begin_phase() {
-  // std::size_t chan_idx = 0;
+  shim_stats new_roi_stats;
+  new_roi_stats.name = "router";
+  roi_stats = new_roi_stats;
 
-  // CXL_CHANNEL::stats_type new_stats;
-  // new_stats.name = "Channel " + std::to_string(chan_idx);
-  // channel.sim_stats = new_stats;
-  // channel.warmup = warmup;
-
-  channel_type::stats_type ul_new_roi_stats;
-  channel_type::stats_type ul_new_sim_stats;
-  ul->roi_stats = ul_new_roi_stats;
-  ul->sim_stats = ul_new_sim_stats;
+  // Update upper level's and lower levels' channel stats
+  for (auto levels : {std::vector{ul}, ll_queues}) {
+    for (auto l: levels) {
+      channel_type::stats_type new_level_roi_stats;
+      channel_type::stats_type new_level_sim_stats;
+      l->roi_stats = new_level_roi_stats;
+      l->sim_stats = new_level_sim_stats;
+    }
+  }
 }
 
 void SHIM_LAYER::end_phase(unsigned /*cpu*/) {
-  /* roi_stats = sim_stats; */ 
+  roi_stats = sim_stats;
 }
 
-void SHIM_LAYER::print_deadlock() {}
+void SHIM_LAYER::print_deadlock() {
+  // Generic printer
+  std::string_view q_writer{"instr_id: {} address: {:#x} v_addr: {:#x} type: {}"};
+  auto q_entry_pack = [](const auto& entry) {
+    return std::tuple{entry->instr_id, entry->address, entry->v_address, access_type_names.at(champsim::to_underlying(entry->type))};
+  };
+
+  champsim::range_print_deadlock(RQ, "ROUTER_RQ", q_writer, q_entry_pack);
+  champsim::range_print_deadlock(WQ, "ROUTER_WQ", q_writer, q_entry_pack);
+  champsim::range_print_deadlock(PQ, "ROUTER_PQ", q_writer, q_entry_pack);
+  // RespQ is deque, so doesn't need deference
+  champsim::range_print_deadlock(RespQ, "ROUTER_RespQ", q_writer, [](const auto& entry){
+    return std::tuple{entry.address, entry.v_address};
+  });
+}
