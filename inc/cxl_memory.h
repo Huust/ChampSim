@@ -60,7 +60,16 @@ struct CXL_CHANNEL final: public champsim::operable {
   champsim::data::bytes channel_width;
   
   const champsim::chrono::clock::duration tCXL, tRD, tWR;
-  
+
+  // CXL channel statistics
+  struct channel_stats_type {
+    std::string name{};
+    uint64_t bus_cycles_rd_busy = 0;       // Read bus busy cycles
+    uint64_t bus_cycles_wr_busy = 0;       // Write bus busy cycles
+    uint64_t total_operating_cycles = 0;   // Total operating cycles
+  };
+  channel_stats_type roi_stats, sim_stats;
+
   void check_collision();
   long finish_pcie_transfer();  // handle responses + handle_writes()
   long handle_writes();
@@ -89,7 +98,20 @@ class CXL_CONTROLLER final: public champsim::operable {
   const champsim::data::bytes channel_width;  // at least pciex8, which is 8bits(1byte) width for uni-direction
 
   champsim::chrono::picoseconds cxl_io_period{};  // CXL_IO_FREQ
+  
+  double rx_bw, tx_bw;  // bandwidth from json config (GT/s), used for printing
 
+  struct stats_type {
+    std::string name{};
+    
+    // CXL-specific statistics
+    uint64_t bus_cycles_rd_busy = 0;       // Read bus busy cycles
+    uint64_t bus_cycles_wr_busy = 0;       // Write bus busy cycles
+    uint64_t total_operating_cycles = 0;   // Total operating cycles for utilization calculation
+  };
+  stats_type roi_stats;
+  stats_type sim_stats;
+  
 public:
   CXL_CHANNEL channel;
   
@@ -104,6 +126,7 @@ public:
   void end_phase(unsigned cpu);
   void print_deadlock();
 
+  // own function
   void initiate_requests();
   bool add_rq(const request_type& pkt, channel_type* ul);
   bool add_wq(const request_type& pkt);

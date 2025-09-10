@@ -24,7 +24,7 @@ CXL_CHANNEL::CXL_CHANNEL(champsim::chrono::picoseconds cxl_io_period, std::size_
   : champsim::operable(cxl_io_period), WQ{wq_size}, RQ{rq_size}, lower_level(ll), channel_width(width),
     tCXL(cxl_io_period * t_cxl), tRD((int)(1000 * BLOCK_SIZE / (rx_bw * (int)width.count()))),
     tWR((int)(1000 * BLOCK_SIZE / (tx_bw * (int)width.count())))
-    // rx_bw and tx_bw is based on GB/s, width is based on bytes, tWR and tRD (clock::duration) is based on picoseconds
+    // rx_bw and tx_bw is based on GT/s, width is based on bytes, tWR and tRD (clock::duration) is based on picoseconds
 {
 }
 
@@ -59,8 +59,14 @@ long CXL_CHANNEL::operate() {
     }
   }
 
-  check_collision();
+  // Collision detection is handled by lower-level MEMORY_CONTROLLER
+  // check_collision();
   progress += finish_pcie_transfer();
+  
+  // Update total operating cycles
+  if (!warmup) {
+    sim_stats.total_operating_cycles++;
+  }
 
   return progress;
 }
@@ -104,7 +110,7 @@ bool CXL_CONTROLLER::add_wq(const request_type& pkt) {
     wq_it->value().finished = false;
     wq_it->value().ready_time = current_time + channel.tCXL;
 
-    return true; 
+    return true;
   }
 
   return false;
@@ -131,6 +137,8 @@ void CXL_CHANNEL::check_collision()
         found = std::find_if(std::next(wq_it), std::end(WQ), checker); // Backward check
       }
 
+      // TODO: What if the found is before the wq_it?
+      // If so you need to reset the found one, not the wq_it
       if (found != std::end(WQ)) {
         wq_it->reset();
       } else {
@@ -236,20 +244,34 @@ long CXL_CHANNEL::handle_responses() {
   } else {
     active_rd_resp_on_bus = std::end(RespQ);
   }
+  
+  // Update read bus utilization statistics
+  if (!warmup && active_rd_resp_on_bus != std::end(RespQ)) {
+    sim_stats.bus_cycles_rd_busy++;
+  }
 
   return progress;
 }
 
+// Populate response requests from lower level channel into CXL_CHANNEL's internal RespQ
 long CXL_CHANNEL::populate_responses() {
   long progress{0};
   
+  // the inferred type of resp is 'response_type' 
   auto populate = [this](const auto &resp) {
-    auto slot = std::find_if_not(std::begin(this->RespQ), std::end(this->RespQ), [](const auto &resp){resp->has_value();});
+    auto slot = std::find_if_not(std::begin(this->RespQ), std::end(this->RespQ), [](const auto &resp){ return resp.has_value(); });
     
-    if (slot != std::end(this->RespQ))
-      *slot = resp;
-    else
+    if (slot != std::end(this->RespQ) && slot->has_value()) {
+      // cast: response_type -> request_type
+      
+      (*slot)->pf_metadata = resp.pf_metadata;
+      (*slot)->address = resp.address;
+      (*slot)->v_address = resp.v_address;
+      (*slot)->data = resp.data;
+      (*slot)->instr_depend_on_me = resp.instr_depend_on_me;
+    } else {
       return false;
+    }
 
     return true;
   };
@@ -282,7 +304,7 @@ long CXL_CHANNEL::handle_writes() {
       if (!rhs.has_value() || rhs.value().ready_time > current_time)
         return true;
 
-      return lhs.value().ready_time < lhs.value().ready_time;
+      return lhs.value().ready_time < rhs.value().ready_time;
     }; 
 
     if (active_wr_req_on_bus = std::min_element(std::begin(WQ), std::end(WQ), schedule_next_write);
@@ -293,12 +315,22 @@ long CXL_CHANNEL::handle_writes() {
     } else {
       active_wr_req_on_bus = std::end(WQ);
     }
+    
+    // Update write bus utilization statistics
+    if (!warmup && active_wr_req_on_bus != std::end(WQ)) {
+      sim_stats.bus_cycles_wr_busy++;
+    }
   }
 
   return progress;
 }
 
-// each cycle we push all satisfied (meet tCXL latency) read requests into lower_level's champsim channel
+// Each cycle we push all satisfied (meet tCXL latency) read requests into lower_level's champsim channel
+// Note: No explicit bandwidth limit for read requests - this is by design because:
+// 1. Read requests only carry address info (small payload), unlike write/response with full data blocks
+// 2. PCIe/CXL bus can pipeline multiple read requests while waiting for responses  
+// 3. Actual bandwidth limitation is handled by lower-level MEMORY_CONTROLLER through bank/timing constraints
+// 4. This matches DRAM controller behavior which also sends reads without explicit bandwidth limits
 long CXL_CHANNEL::handle_reads() {
   long progress{0};
   auto schedule_next_read = [this](const auto& lhs, const auto& rhs) {
@@ -326,34 +358,22 @@ long CXL_CHANNEL::handle_reads() {
 
 
 // Inherit from operable
-// cxl controller needs to print its' dram size, like what memory controller do  
+// cxl controller needs to print its' dram size, like what memory controller do
 void CXL_CONTROLLER::initialize() {
-  using namespace champsim::data::data_literals;
-  using namespace std::literals::chrono_literals;
-  // auto sz = this->size();
-  // if (champsim::data::gibibytes gb_sz{sz}; gb_sz > 1_gib) {
-  //   fmt::print("off-chip dram size: {}", gb_sz);
-  // } else if (champsim::data::mebibytes mb_sz{sz}; mb_sz > 1_mib) {
-  //   fmt::print("off-chip dram size: {}", mb_sz);
-  // } else if (champsim::data::kibibytes kb_sz{sz}; kb_sz > 1_kib) {
-  //   fmt::print("off-chip dram size: {}", kb_sz);
-  // } else {
-  //   fmt::print("off-chip dram size: {}", sz);
-  // }
-  // fmt::print(" channels: {} width: {}-bit data rate: {} mt/s\n", std::size(channels), champsim::data::bits_per_byte * channel_width.count(),
-             // 1us / (data_bus_period));
+  fmt::print("CXL MEMORY: {} channel, {:.1f} GB/s RX bandwidth, {:.1f} GB/s TX bandwidth\n", 
+             1, rx_bw, tx_bw);
 }
 
 void CXL_CHANNEL::initialize() {}
 
 void CXL_CONTROLLER::begin_phase()
 {
-  // std::size_t chan_idx = 0;
-
-  // CXL_CHANNEL::stats_type new_stats;
-  // new_stats.name = "Channel " + std::to_string(chan_idx);
-  // channel.sim_stats = new_stats;
-  // channel.warmup = warmup;
+  CXL_CONTROLLER::stats_type new_roi_stats;
+  CXL_CONTROLLER::stats_type new_sim_stats;
+  new_roi_stats.name = "CXL_CONTROLLER";
+  new_sim_stats.name = "CXL_CONTROLLER";
+  this->roi_stats = new_roi_stats;
+  this->sim_stats = new_sim_stats;
 
   for (auto* ul : queues) {
     channel_type::stats_type ul_new_roi_stats;
@@ -361,31 +381,51 @@ void CXL_CONTROLLER::begin_phase()
     ul->roi_stats = ul_new_roi_stats;
     ul->sim_stats = ul_new_sim_stats;
   }
+
+  channel.warmup = warmup;
+  channel.begin_phase();
 }
 
-void CXL_CHANNEL::begin_phase() {}
+void CXL_CHANNEL::begin_phase() {
+  CXL_CHANNEL::channel_stats_type new_roi_stats;
+  CXL_CHANNEL::channel_stats_type new_sim_stats;
+  new_roi_stats.name = "CXL_CHANNEL";
+  new_sim_stats.name = "CXL_CHANNEL";
+  this->roi_stats = new_roi_stats;
+  this->sim_stats = new_sim_stats;
+  // Set warmup flag like DRAM_CHANNEL does
+  // Note: warmup is inherited from operable base class
+}
 
 void CXL_CONTROLLER::end_phase(unsigned cpu)
 {
+  // Aggregate channel statistics into controller statistics
+  sim_stats.bus_cycles_rd_busy = channel.sim_stats.bus_cycles_rd_busy;
+  sim_stats.bus_cycles_wr_busy = channel.sim_stats.bus_cycles_wr_busy;
+  sim_stats.total_operating_cycles = channel.sim_stats.total_operating_cycles;
+  
+  roi_stats = sim_stats;
   channel.end_phase(cpu);
 }
 
-void CXL_CHANNEL::end_phase(unsigned /*cpu*/) { /* roi_stats = sim_stats; */ }
+void CXL_CHANNEL::end_phase(unsigned /*cpu*/) { 
+  roi_stats = sim_stats; 
+}
 
 void CXL_CONTROLLER::print_deadlock() {
-  int j = 0;
-  fmt::print("DRAM Channel {}\n", j);
+  fmt::print("CXL Channel 0\n");
   channel.print_deadlock();
 }
 
 void CXL_CHANNEL::print_deadlock() {
-  std::string_view q_writer{"address: {} forward_checked: {} finished: {}"};
+  std::string_view q_writer{"address: {:#x} finished: {}"};
+
   auto q_entry_pack = [](const auto& entry) {
-    return std::tuple{entry->address, entry->forward_checked, entry->finished};
+    return std::tuple{entry->address, entry->finished};
   };
 
-  champsim::range_print_deadlock(RQ, "RQ", q_writer, q_entry_pack);
-  champsim::range_print_deadlock(WQ, "WQ", q_writer, q_entry_pack);
+  champsim::range_print_deadlock(RQ, "CHANNEL_RQ", q_writer, q_entry_pack);
+  champsim::range_print_deadlock(WQ, "CHANNEL_WQ", q_writer, q_entry_pack);
 }
 
 CXL_CHANNEL::request_type::request_type(const typename champsim::channel::request_type& req)
