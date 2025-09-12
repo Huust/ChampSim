@@ -284,7 +284,7 @@ $(executable_name) $(test_main_name):
 
 # Tests: build and run
 ifdef TEST_NUM
-selected_test = -\# "[$(addprefix #,$(filter $(addsuffix %,$(TEST_NUM)), $(patsubst %.cc,%,$(notdir $(wildcard $(test_source_dir)/*.cc)))))]"
+selected_test = -\# "[$(addprefix \#,$(filter $(addsuffix %,$(TEST_NUM)), $(patsubst %.cc,%,$(notdir $(wildcard $(test_source_dir)/*.cc)))))]"
 endif
 test: $(test_main_name)
 	$(test_main_name) $(selected_test)
