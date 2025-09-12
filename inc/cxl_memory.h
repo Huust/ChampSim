@@ -49,8 +49,8 @@ struct CXL_CHANNEL final: public champsim::operable {
   queue_type RQ;
   queue_type RespQ;
 
-  queue_type::iterator active_rd_resp_on_bus;
-  queue_type::iterator active_wr_req_on_bus;
+  queue_type::iterator active_rd_resp_on_bus{std::end(RespQ)};
+  queue_type::iterator active_wr_req_on_bus{std::end(WQ)};
 
   // champsim::chrono::clock::time_point rd_bus_cycle_available{};
   // champsim::chrono::clock::time_point wr_bus_cycle_available{};
@@ -99,7 +99,7 @@ class CXL_CONTROLLER final: public champsim::operable {
 
   champsim::chrono::picoseconds cxl_io_period{};  // CXL_IO_FREQ
   
-  double rx_bw, tx_bw;  // bandwidth from json config (GT/s), used for printing
+  double rx_bw, tx_bw;  // bandwidth from json config (GT/s), USED FOR PRINTING ONLY
 
   struct stats_type {
     std::string name{};
