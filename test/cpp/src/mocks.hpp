@@ -6,6 +6,7 @@
 #include <functional>
 #include <limits>
 
+#include "access_type.h"
 #include "cache.h"
 #include "operable.h"
 #include "matchers.hpp"
@@ -251,7 +252,9 @@ struct to_wq_MRP final : public queue_issue_MRP
 };
 
 /*
- * A MemoryRequestProducer that sends its packets to the read queue and notes when packets are returned
+ * A MemoryRequestProducer that intelligently routes packets based on access type:
+ * - Write requests go to WQ
+ * - Read/Prefetch requests go to RQ
  */
 struct to_rq_MRP final : public queue_issue_MRP
 {
@@ -259,7 +262,12 @@ struct to_rq_MRP final : public queue_issue_MRP
   using request_type = typename queue_issue_MRP::request_type;
   bool issue(const queue_issue_MRP::request_type &pkt) {
     packets.push_back({pkt, cycle_count, 0});
-    return queues.add_rq(pkt);
+    // Smart routing based on access type
+    if (pkt.type == access_type::WRITE) {
+      return queues.add_wq(pkt);  // Write requests go to WQ
+    } else {
+      return queues.add_rq(pkt);  // Read/Prefetch requests go to RQ
+    }
   }
 };
 
