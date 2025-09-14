@@ -41,10 +41,13 @@ struct CXL_CHANNEL final: public champsim::operable {
     // so reserve request from upper level
     champsim::channel::request_type raw_req;
 
+    request_type() = default;  // Add default constructor
     explicit request_type(const typename champsim::channel::request_type& req);
   };
+  
   using value_type = request_type;
   using queue_type = std::vector<std::optional<value_type>>;
+  
   queue_type WQ;
   queue_type RQ;
   queue_type RespQ;
@@ -60,6 +63,8 @@ struct CXL_CHANNEL final: public champsim::operable {
   champsim::data::bytes channel_width;
   
   const champsim::chrono::clock::duration tCXL, tRD, tWR;
+
+  std::vector<std::deque<response_type>*> upper_returns;  // 保存所有上层返回队列
 
   // CXL channel statistics
   struct channel_stats_type {
@@ -85,8 +90,8 @@ struct CXL_CHANNEL final: public champsim::operable {
 
 public:
   CXL_CHANNEL(champsim::chrono::picoseconds cxl_io_period, std::size_t t_cxl,
-              std::size_t rq_size, std::size_t wq_size, 
-              double rx_bw, double tx_bw, champsim::channel *ll, champsim::data::bytes width);
+              std::size_t rq_size, std::size_t wq_size, std::size_t respq_size,
+              double rx_bw, double tx_bw, champsim::channel *ll, champsim::data::bytes width, std::vector<champsim::channel*>&& ul);
 };
 
 class CXL_CONTROLLER final: public champsim::operable {
@@ -116,7 +121,7 @@ public:
   CXL_CHANNEL channel;
   
   CXL_CONTROLLER(champsim::chrono::picoseconds cxl_io_period, std::size_t t_cxl,
-                 std::vector<channel_type*>&& ul, std::size_t rq_size, std::size_t wq_size,
+                 std::vector<channel_type*>&& ul, std::size_t rq_size, std::size_t wq_size, std::size_t respq_size,
                  champsim::data::bytes chan_width, double rx_bw, double tx_bw, champsim::channel *ll);
 
   // inherit from operable

@@ -12,20 +12,24 @@
 #include "util/span.h"
 
 CXL_CONTROLLER::CXL_CONTROLLER(champsim::chrono::picoseconds cxl_io_period, std::size_t t_cxl,
-                               std::vector<channel_type*>&& ul, std::size_t rq_size, std::size_t wq_size,
+                               std::vector<channel_type*>&& ul, std::size_t rq_size, std::size_t wq_size, std::size_t respq_size,
                                champsim::data::bytes chan_width, double rx_bw, double tx_bw, champsim::channel *ll)
-  : champsim::operable(cxl_io_period), queues(std::move(ul)), channel_width(chan_width),
-    channel(cxl_io_period, t_cxl, rq_size, wq_size, rx_bw, tx_bw, ll, chan_width)
+  : champsim::operable(cxl_io_period), queues(ul), channel_width(chan_width), rx_bw(rx_bw), tx_bw(tx_bw),
+    channel(cxl_io_period, t_cxl, rq_size, wq_size, respq_size, rx_bw, tx_bw, ll, chan_width, std::move(ul))
 {
 }
 
-CXL_CHANNEL::CXL_CHANNEL(champsim::chrono::picoseconds cxl_io_period, std::size_t t_cxl, std::size_t rq_size, std::size_t wq_size,
-                         double rx_bw, double tx_bw, champsim::channel *ll, champsim::data::bytes width)
-  : champsim::operable(cxl_io_period), WQ{wq_size}, RQ{rq_size}, lower_level(ll), channel_width(width),
-    tCXL(cxl_io_period * t_cxl), tRD((int)(1000 * BLOCK_SIZE / (rx_bw * (int)width.count()))),
-    tWR((int)(1000 * BLOCK_SIZE / (tx_bw * (int)width.count())))
+CXL_CHANNEL::CXL_CHANNEL(champsim::chrono::picoseconds cxl_io_period, std::size_t t_cxl, std::size_t rq_size, std::size_t wq_size, std::size_t respq_size,
+                         double rx_bw, double tx_bw, champsim::channel *ll, champsim::data::bytes width, std::vector<champsim::channel*>&& ul)
+  : champsim::operable(cxl_io_period), WQ(wq_size), RQ(rq_size), RespQ(respq_size), lower_level(ll), channel_width(width),
+    tCXL(cxl_io_period * t_cxl), tRD((int)(1000 * BLOCK_SIZE / (rx_bw * (int)width.count() / 8))),
+    tWR((int)(1000 * BLOCK_SIZE / (tx_bw * (int)width.count() / 8)))
     // rx_bw and tx_bw is based on GT/s, width is based on bytes, tWR and tRD (clock::duration) is based on picoseconds
 {
+  // Backup return queue for CXL
+  for (const auto& item: ul) {
+    upper_returns.push_back(&(item->returned));
+  }
 }
 
 long CXL_CONTROLLER::operate() {
@@ -57,17 +61,13 @@ long CXL_CHANNEL::operate() {
       }
       entry.reset();
     }
+    return progress;
   }
 
   // Collision detection is handled by lower-level MEMORY_CONTROLLER
-  // check_collision();
+  check_collision();
   progress += finish_pcie_transfer();
   
-  // Update total operating cycles
-  if (!warmup) {
-    sim_stats.total_operating_cycles++;
-  }
-
   return progress;
 }
 
@@ -127,8 +127,8 @@ void CXL_CHANNEL::check_collision()
   
   // Write Collision
   for (auto wq_it = std::begin(WQ); wq_it != std::end(WQ); ++wq_it) {
-    auto checker = [check_val = wq_it->value().address, equal_address](const auto& pkt) {
-          return pkt.has_value() && equal_address(check_val, pkt.value().address);
+    auto checker = [wq_it, equal_address](const auto& pkt) {
+          return pkt.has_value() && equal_address(wq_it->value().address, pkt.value().address);
     };
 
     if (wq_it->has_value() && !wq_it->value().forward_checked) {
@@ -149,8 +149,8 @@ void CXL_CHANNEL::check_collision()
 
   // Read Collision
   for (auto rq_it = std::begin(RQ); rq_it != std::end(RQ); ++rq_it) {
-    auto checker = [check_val = rq_it->value().address, equal_address](const auto& pkt) {
-          return pkt.has_value() && equal_address(check_val, pkt.value().address);
+    auto checker = [rq_it, equal_address](const auto& pkt) {
+          return pkt.has_value() && equal_address(rq_it->value().address, pkt.value().address);
     };
 
     if (rq_it->has_value() && !rq_it->value().forward_checked) {
@@ -207,26 +207,32 @@ long CXL_CHANNEL::finish_pcie_transfer() {
   // put read requests into lower level
   progress += handle_reads();
 
+  sim_stats.total_operating_cycles++;
+
   return progress;
 }
 
 long CXL_CHANNEL::handle_responses() {
   long progress{0};
 
-  if (active_rd_resp_on_bus != std::end(RespQ) && active_rd_resp_on_bus->value().ready_time <= current_time) {
-    response_type response{active_rd_resp_on_bus->value().address, active_rd_resp_on_bus->value().v_address, active_rd_resp_on_bus->value().data,
-                           active_rd_resp_on_bus->value().pf_metadata, active_rd_resp_on_bus->value().instr_depend_on_me};
+  if (active_rd_resp_on_bus != std::end(RespQ)) {
+    if (active_rd_resp_on_bus->value().ready_time <= current_time) {
+      response_type response{active_rd_resp_on_bus->value().address, active_rd_resp_on_bus->value().v_address, active_rd_resp_on_bus->value().data,
+                             active_rd_resp_on_bus->value().pf_metadata, active_rd_resp_on_bus->value().instr_depend_on_me};
 
-    for (auto* ret : active_rd_resp_on_bus->value().to_return) {
-      ret->push_back(response);
+      for (auto* ret : active_rd_resp_on_bus->value().to_return) {
+        ret->push_back(response);
+      }
+      
+      active_rd_resp_on_bus->reset();
+      active_rd_resp_on_bus = std::end(RespQ);
+      ++progress;
+    } else {
+      // Some response is transferring over the PCIe bus, but not yet finished
+      return progress;
     }
-    
-    active_rd_resp_on_bus->reset();
-    active_rd_resp_on_bus = std::end(RespQ);
-    ++progress;
   }
 
-  // Find best-match next response request in RespQ
   auto schedule_next_response = [this](const auto &lhs, const auto &rhs) {
     if (!lhs.has_value() || lhs.value().ready_time > current_time)
       return false;
@@ -240,7 +246,7 @@ long CXL_CHANNEL::handle_responses() {
       active_rd_resp_on_bus != std::end(RespQ) && active_rd_resp_on_bus->has_value() &&
       active_rd_resp_on_bus->value().ready_time <= current_time) {
     active_rd_resp_on_bus->value().ready_time = current_time + tRD;
-    ++progress; 
+    ++progress;
   } else {
     active_rd_resp_on_bus = std::end(RespQ);
   }
@@ -253,27 +259,30 @@ long CXL_CHANNEL::handle_responses() {
   return progress;
 }
 
-// Populate response requests from lower level channel into CXL_CHANNEL's internal RespQ
+// Populate responses from lower level channel into CXL_CHANNEL's internal RespQ
+// In our implementation, we have limited buffer for RespQ
 long CXL_CHANNEL::populate_responses() {
   long progress{0};
   
-  // the inferred type of resp is 'response_type' 
   auto populate = [this](const auto &resp) {
     auto slot = std::find_if_not(std::begin(this->RespQ), std::end(this->RespQ), [](const auto &resp){ return resp.has_value(); });
     
-    if (slot != std::end(this->RespQ) && slot->has_value()) {
-      // cast: response_type -> request_type
-      
+    if (slot != std::end(this->RespQ)) {
+      // Common trap: direct field assignment on nullopt optional doesn't make it has_value
+      // Correct approach: use emplace() to construct and assign
+      slot->emplace();  // Make optional have value
       (*slot)->pf_metadata = resp.pf_metadata;
       (*slot)->address = resp.address;
       (*slot)->v_address = resp.v_address;
       (*slot)->data = resp.data;
       (*slot)->instr_depend_on_me = resp.instr_depend_on_me;
-    } else {
-      return false;
-    }
+      (*slot)->ready_time = current_time + tCXL;
+      (*slot)->to_return = upper_returns;
 
-    return true;
+      return true;
+    }
+    
+    return false;
   };
 
   auto complete_end = std::find_if_not(std::begin(lower_level->returned), std::end(lower_level->returned), populate);
@@ -393,8 +402,6 @@ void CXL_CHANNEL::begin_phase() {
   new_sim_stats.name = "CXL_CHANNEL";
   this->roi_stats = new_roi_stats;
   this->sim_stats = new_sim_stats;
-  // Set warmup flag like DRAM_CHANNEL does
-  // Note: warmup is inherited from operable base class
 }
 
 void CXL_CONTROLLER::end_phase(unsigned cpu)
