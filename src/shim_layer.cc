@@ -7,8 +7,11 @@
 
 SHIM_LAYER::SHIM_LAYER(champsim::channel *ul, std::vector<channel_type*>&& ll,
                        std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
-                       bool is_dram_enabled, bool is_cxl_enabled)
-  :ul(ul), ll_queues(ll), WQ(wq_size), RQ(rq_size), PQ(pq_size)
+                       long int max_upper_bw, long int max_lower_bw,
+                       bool is_dram_enabled, bool is_cxl_enabled
+                      )
+  :ul(ul), ll_queues(ll), WQ(wq_size), RQ(rq_size), PQ(pq_size), 
+   UPPER_STREAM_MAX_BW{max_upper_bw}, LOWER_STREAM_MAX_BW{max_lower_bw}
 {
   this->mode = get_operate_mode(is_dram_enabled, is_cxl_enabled);
 }
@@ -39,7 +42,7 @@ long SHIM_LAYER::handle_responses() {
 // Route requests from internal channels into corresponding lower levels
 long SHIM_LAYER::route() {
   long progress{0};
-  champsim::bandwidth lower_bw{LOWER_STREAM_BW};
+  champsim::bandwidth lower_bw{LOWER_STREAM_MAX_BW};
 
   auto process_queue = [&](auto& queue, auto stats_func_dram, auto stats_func_cxl, char queue_type) {
     for (auto it = std::begin(queue); it != std::end(queue); ++it) {
@@ -93,7 +96,7 @@ long SHIM_LAYER::route() {
 // Populate local queues with requests from upper level
 long SHIM_LAYER::populate_requests() {
   long progress{0};
-  champsim::bandwidth upper_bw{UPPER_STREAM_BW};
+  champsim::bandwidth upper_bw{UPPER_STREAM_MAX_BW};
 
   // RQ processing
   auto rq_it = std::find_if_not(std::begin(RQ), std::end(RQ), [](const auto& pkt){ return pkt.has_value(); });
@@ -228,7 +231,7 @@ void SHIM_LAYER::initialize() {
       break;
   }
 
-  fmt::print("ROUTER RQ size: {}, WQ size: {}, PQ size: {}, RespQ size: {}\n", std::size(RQ), std::size(WQ), std::size(PQ), std::size(RespQ));
+  fmt::print("ROUTER RQ size: {}, WQ size: {}, PQ size: {}\n", std::size(RQ), std::size(WQ), std::size(PQ));
 }
 void SHIM_LAYER::begin_phase() {
   shim_stats new_roi_stats;

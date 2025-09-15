@@ -21,7 +21,7 @@ class SHIM_LAYER final: public champsim::operable {
   queue_type WQ;
   queue_type RQ;
   queue_type PQ;
-  std::deque<response_type> RespQ;
+  std::deque<response_type> RespQ;  // No limited sizd
 
   enum class MODE {
     DRAM_ONLY,
@@ -30,6 +30,7 @@ class SHIM_LAYER final: public champsim::operable {
   };
   MODE mode;
 
+public:
   struct shim_stats {
     std::string name;
     
@@ -53,13 +54,15 @@ class SHIM_LAYER final: public champsim::operable {
   shim_stats roi_stats{}, sim_stats{};
 
   // Set default port bandwidth
-  champsim::bandwidth::maximum_type UPPER_STREAM_BW{4}; // equal to LLC's bandwidth limit
-  champsim::bandwidth::maximum_type LOWER_STREAM_BW{2};
+  champsim::bandwidth::maximum_type UPPER_STREAM_MAX_BW; // equal to LLC's bandwidth limit
+  champsim::bandwidth::maximum_type LOWER_STREAM_MAX_BW;
 
 public:
   SHIM_LAYER(champsim::channel *ul, std::vector<channel_type*>&& ll,
              std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
-             bool is_dram_enabled, bool is_cxl_enabled);
+             long int max_upper_bw, long int max_lower_bw,
+             bool is_dram_enabled, bool is_cxl_enabled
+             );
 
   // own function
   long handle_responses();
