@@ -9,11 +9,15 @@
 #include "operable.h"
 #include "bandwidth.h"
 
+// Forward declarations
+class MEMORY_CONTROLLER;
+class CXL_CONTROLLER;
+
 class SHIM_LAYER final: public champsim::operable {
   using channel_type = champsim::channel;
   using request_type = champsim::channel::request_type;
   using response_type = champsim::channel::response_type;
-  
+
   channel_type* ul; // upper level, points to the channel between LLC and SHIM_LAYER
   std::vector<channel_type*> ll_queues;  // lower level (possible cxl + dram)
 
@@ -22,6 +26,10 @@ class SHIM_LAYER final: public champsim::operable {
   queue_type RQ;
   queue_type PQ;
   std::deque<response_type> RespQ;  // No limited sizd
+
+  // Memory controller pointers for size access
+  MEMORY_CONTROLLER* dram_ptr;        // pointer to DRAM controller, nullptr if not enabled
+  MEMORY_CONTROLLER* cxl_ptr;         // pointer to CXL DRAM controller, nullptr if not enabled
 
   enum class MODE {
     DRAM_ONLY,
@@ -61,7 +69,7 @@ public:
   SHIM_LAYER(champsim::channel *ul, std::vector<channel_type*>&& ll,
              std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
              long int max_upper_bw, long int max_lower_bw,
-             bool is_dram_enabled, bool is_cxl_enabled
+             MEMORY_CONTROLLER* dram_ptr, MEMORY_CONTROLLER* cxl_ptr
              );
 
   // own function

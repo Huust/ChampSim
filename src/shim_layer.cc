@@ -4,16 +4,18 @@
 #include <fmt/core.h>
 #include "deadlock.h"
 #include "util/bits.h"
+#include "dram_controller.h"
 
 SHIM_LAYER::SHIM_LAYER(champsim::channel *ul, std::vector<channel_type*>&& ll,
                        std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
                        long int max_upper_bw, long int max_lower_bw,
-                       bool is_dram_enabled, bool is_cxl_enabled
+                       MEMORY_CONTROLLER* dram_ptr, MEMORY_CONTROLLER* cxl_ptr
                       )
-  :ul(ul), ll_queues(ll), WQ(wq_size), RQ(rq_size), PQ(pq_size), 
+  :ul(ul), ll_queues(ll), WQ(wq_size), RQ(rq_size), PQ(pq_size),
+   dram_ptr(dram_ptr), cxl_ptr(cxl_ptr),
    UPPER_STREAM_MAX_BW{max_upper_bw}, LOWER_STREAM_MAX_BW{max_lower_bw}
 {
-  this->mode = get_operate_mode(is_dram_enabled, is_cxl_enabled);
+  this->mode = get_operate_mode(dram_ptr != nullptr, cxl_ptr != nullptr);
 }
 
 // 1. Move the response from lower level's champsim channel (connected to potential memory) into local queue
@@ -58,8 +60,15 @@ long SHIM_LAYER::route() {
       }
 
       auto& pkt = it->value();
-      bool is_cxl_address = pkt.address.template to<uint64_t>() >= 0x100000000ULL;  // cxl memory for address higher than 4GB
-      champsim::channel* dest_channel = is_cxl_address ? ll_queues[1] : ll_queues[0]; // 0 for dram, 1 for cxl
+      bool is_cxl_address = pkt.address.template to<uint64_t>() >= dram_ptr->size().count();
+      champsim::channel* dest_channel;
+      if (this->mode == MODE::DRAM_ONLY)
+        dest_channel = ll_queues[0];
+      else if (this->mode == MODE::CXL_ONLY)
+        dest_channel = ll_queues[1];
+      else
+        dest_channel = is_cxl_address ? ll_queues[1] : ll_queues[0];
+      
       bool success = false;
       
       switch(queue_type) {
