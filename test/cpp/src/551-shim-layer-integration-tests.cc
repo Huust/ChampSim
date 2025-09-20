@@ -4,17 +4,21 @@
 #include "matchers.hpp"
 #include "mocks.hpp"
 #include "shim_layer.h"
+#include "dram_controller.h"
 
 SCENARIO("SHIM_LAYER routes memory requests correctly based on address ranges") {
     GIVEN("A HYBRID mode SHIM_LAYER with DRAM and CXL channels") {
         // Setup the test components using correct ChampSim pattern
         to_rq_MRP mock_ul;       // Simulates LLC sending requests
-        do_nothing_MRC mock_dram;         // Simulates DRAM controller  
+        do_nothing_MRC mock_dram;         // Simulates DRAM controller
         do_nothing_MRC mock_cxl;          // Simulates CXL controller
         
+        MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+        MEMORY_CONTROLLER cxl_dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+
         // Create SHIM_LAYER with proper connections
         std::vector<champsim::channel*> lower_channels = {&mock_dram.queues, &mock_cxl.queues};
-        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 64, 64, 32, 4, 2, true, true};
+        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 64, 64, 32, 4, 2, &dram, &cxl_dram};
         
         std::array<champsim::operable*, 4> elements{{&uut, &mock_ul, &mock_dram, &mock_cxl}};
         for (auto elem : elements) {
@@ -33,7 +37,8 @@ SCENARIO("SHIM_LAYER routes memory requests correctly based on address ranges") 
             req1.response_requested = true;
             
             champsim::channel::request_type req2;
-            req2.address = champsim::address{0x100000000ULL};  // Should route to potentially different channel
+            auto address = static_cast<unsigned long long>(dram.size().count());
+            req2.address = champsim::address{address};  // Should route to potentially different channel
             req2.type = access_type::LOAD;
             req2.instr_id = 2;
             req2.cpu = 0;
@@ -61,7 +66,7 @@ SCENARIO("SHIM_LAYER routes memory requests correctly based on address ranges") 
                 REQUIRE(mock_cxl.packet_count() == 1);
                 
                 REQUIRE(mock_dram.addresses.front() == champsim::address{0x10000});
-                REQUIRE(mock_cxl.addresses.front() == champsim::address{0x100000000ULL});
+                REQUIRE(mock_cxl.addresses.front() == champsim::address{address});
 
                 for (auto &pkt : mock_ul.packets) {
                     REQUIRE_THAT(pkt, champsim::test::LatencyRangeMatcher(
@@ -72,6 +77,78 @@ SCENARIO("SHIM_LAYER routes memory requests correctly based on address ranges") 
             }
         }
     }
+
+    GIVEN("A DRAM_ONLY mode SHIM_LAYER") {
+        // Setup the test components using correct ChampSim pattern
+        to_rq_MRP mock_ul;       // Simulates LLC sending requests
+        do_nothing_MRC mock_dram;         // Simulates DRAM controller
+        do_nothing_MRC mock_cxl;         // Simulates DRAM controller
+        
+        MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+
+        // Create SHIM_LAYER with proper connections
+        std::vector<champsim::channel*> lower_channels = {&mock_dram.queues, &mock_cxl.queues};
+        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 64, 64, 32, 4, 2, &dram, nullptr};
+        
+        std::array<champsim::operable*, 4> elements{{&uut, &mock_ul, &mock_dram, &mock_cxl}};
+        for (auto elem : elements) {
+            elem->initialize();
+            elem->warmup = false;
+            elem->begin_phase();
+        }
+        
+        WHEN("Requests with different addresses are sent through upper level") {
+            champsim::channel::request_type req1;
+            req1.address = champsim::address{0x10000};  // Should route to dram channel
+            req1.type = access_type::LOAD;
+            req1.instr_id = 1;
+            req1.cpu = 0;
+            req1.is_translated = true;
+            req1.response_requested = true;
+            
+            champsim::channel::request_type req2;
+            auto address = static_cast<unsigned long long>(dram.size().count());
+            req2.address = champsim::address{address};  // Should also route to dram channel
+            req2.type = access_type::LOAD;
+            req2.instr_id = 2;
+            req2.cpu = 0;
+            req2.is_translated = true;
+            req2.response_requested = true;
+            
+            auto issue1_result = mock_ul.issue(req1);
+            auto issue2_result = mock_ul.issue(req2);
+            
+            THEN("Both requests are accepted") {
+                REQUIRE(issue1_result);
+                REQUIRE(issue2_result);
+            }
+            
+            // Run the simulation for several cycles
+            for (int cycle = 0; cycle < 20; ++cycle) {
+                for (auto elem : elements) {
+                    elem->_operate();
+                }
+            }
+            
+            THEN("Requests are routed to appropriate lower-level channels") {
+                // Verify that requests were processed by lower level consumers
+                REQUIRE(mock_dram.packet_count() == 2);
+                REQUIRE(mock_cxl.packet_count() == 0);
+                
+                REQUIRE(mock_dram.addresses.front() == champsim::address{0x10000});
+                mock_dram.addresses.pop_front();
+                REQUIRE(mock_dram.addresses.front() == champsim::address{address});
+
+                for (auto &pkt : mock_ul.packets) {
+                    REQUIRE_THAT(pkt, champsim::test::LatencyRangeMatcher(
+                        {1},
+                        {std::numeric_limits<long>::max()}
+                    ));
+                }
+            }
+        }
+
+    }
 }
 
 SCENARIO("SHIM_LAYER bandwidth management controls request flow effectively") {
@@ -79,8 +156,10 @@ SCENARIO("SHIM_LAYER bandwidth management controls request flow effectively") {
         to_rq_MRP mock_ul;
         do_nothing_MRC mock_ll;
         
+        MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+
         std::vector<champsim::channel*> lower_channels = {&mock_ll.queues};
-        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 64, 64, 32, 4, 2, true, false};
+        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 64, 64, 32, 4, 2, &dram, nullptr};
         
         std::array<champsim::operable*, 3> elements{{&uut, &mock_ul, &mock_ll}};
         for (auto elem : elements) {
@@ -127,9 +206,12 @@ SCENARIO("SHIM_LAYER statistics collection tracks system performance accurately"
         to_rq_MRP mock_ul;
         do_nothing_MRC mock_dram;
         do_nothing_MRC mock_cxl;
-        
+
+        MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+        MEMORY_CONTROLLER cxl_dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+
         std::vector<champsim::channel*> lower_channels = {&mock_dram.queues, &mock_cxl.queues};
-        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 64, 64, 32, 4, 2, true, true};
+        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 64, 64, 32, 4, 2, &dram, &cxl_dram};
         
         // Initialize all components properly
         std::array<champsim::operable*, 4> elements{{&uut, &mock_ul, &mock_dram, &mock_cxl}};
@@ -178,8 +260,10 @@ SCENARIO("SHIM_LAYER handles bandwidth congestion scenarios with proper statisti
         to_rq_MRP mock_ul;
         do_nothing_MRC mock_ll;
         
+        MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+
         std::vector<champsim::channel*> lower_channels = {&mock_ll.queues};
-        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 8, 8, 8, 4, 2, true, false}; // Small queues
+        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 8, 8, 8, 4, 2, &dram, nullptr}; // Small queues
         
         std::array<champsim::operable*, 3> elements{{&uut, &mock_ul, &mock_ll}};
         for (auto elem : elements) {
@@ -230,8 +314,11 @@ SCENARIO("SHIM_LAYER complete request-response cycle functions end-to-end") {
         do_nothing_MRC mock_dram{5};    // 5 cycle latency
         do_nothing_MRC mock_cxl{10};    // 10 cycle latency (CXL typically slower)
         
+        MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+        MEMORY_CONTROLLER cxl_dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+
         std::vector<champsim::channel*> lower_channels = {&mock_dram.queues, &mock_cxl.queues};
-        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 64, 64, 32, 4, 2, true, true};
+        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 64, 64, 32, 4, 2, &dram, &cxl_dram};
         
         // Initialize all components following ChampSim pattern
         std::array<champsim::operable*, 4> elements{{&uut, &mock_ul, &mock_dram, &mock_cxl}};
@@ -244,11 +331,12 @@ SCENARIO("SHIM_LAYER complete request-response cycle functions end-to-end") {
         WHEN("A stream of requests is sent through the system") {
             // Create diverse test requests
             std::vector<champsim::channel::request_type> test_requests;
+            auto address = static_cast<unsigned long long>(dram.size().count());
             
             for (uint64_t i = 0; i < 6; ++i) {
                 champsim::channel::request_type req;
                 req.address = i % 2 == 0 ? champsim::address{static_cast<uint64_t>(0x10000 + i * 0x1000)}
-                                         : champsim::address{static_cast<uint64_t>(0x100000000ULL + i * 0x1000)};
+                                         : champsim::address{static_cast<uint64_t>(address + i * 0x1000)};
                 req.v_address = req.address;
                 req.type = access_type::LOAD;  // Focus on reads for response testing
                 req.response_requested = true; // Request responses
@@ -306,8 +394,10 @@ SCENARIO("SHIM_LAYER handles extreme load conditions gracefully without system f
         
         std::vector<champsim::channel*> lower_channels = {&mock_slow_memory.queues};
         
+        MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+
         // Small queue sizes to test overflow handling
-        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 8, 8, 8, 4, 2, true, false};
+        SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 8, 8, 8, 4, 2, &dram, nullptr};
         
         std::array<champsim::operable*, 3> elements{{&uut, &mock_ul, &mock_slow_memory}};
         for (auto elem : elements) {
@@ -360,8 +450,10 @@ SCENARIO("SHIM_LAYER different request types are handled correctly through the s
         to_pq_MRP mock_ul_prefetch;
         do_nothing_MRC mock_memory;
         
+        MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+
         std::vector<champsim::channel*> lower_channels = {&mock_memory.queues};
-        SHIM_LAYER uut{&mock_ul_read.queues, std::move(lower_channels), 32, 32, 32, 4, 2, true, false};
+        SHIM_LAYER uut{&mock_ul_read.queues, std::move(lower_channels), 32, 32, 32, 4, 2, &dram, nullptr};
         
         // Note: SHIM_LAYER only connects to one upper level in constructor
         // This test focuses on read requests through the connected channel
@@ -404,8 +496,11 @@ TEST_CASE("SHIM_LAYER stress test with mixed workload demonstrates system stabil
     do_nothing_MRC mock_memory1;
     do_nothing_MRC mock_memory2;
     
+    MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+    MEMORY_CONTROLLER cxl_dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+
     std::vector<champsim::channel*> lower_channels = {&mock_memory1.queues, &mock_memory2.queues};
-    SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 64, 64, 32, 4, 2, true, true};
+    SHIM_LAYER uut{&mock_ul.queues, std::move(lower_channels), 64, 64, 32, 4, 2, &dram, &cxl_dram};
     
     std::array<champsim::operable*, 4> elements{{&uut, &mock_ul, &mock_memory1, &mock_memory2}};
     for (auto elem : elements) {
@@ -415,11 +510,12 @@ TEST_CASE("SHIM_LAYER stress test with mixed workload demonstrates system stabil
     }
     
     // Issue mixed requests with different addresses
+    auto address = static_cast<unsigned long long>(dram.size().count());
     int total_issued = 0;
     for (uint64_t i = 0; i < 20; ++i) {
         champsim::channel::request_type req;
         req.address = i % 2 == 0 ? champsim::address{static_cast<uint64_t>(0x10000 + i * 64)}
-                                 : champsim::address{static_cast<uint64_t>(0x100000000ULL + i * 64)};
+                                 : champsim::address{static_cast<uint64_t>(address + i * 64)};
         req.type = access_type::LOAD;
         req.instr_id = i;
         req.cpu = 0;
