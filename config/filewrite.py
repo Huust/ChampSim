@@ -163,9 +163,17 @@ class Fragment:
                 print('Touching file:', str(legacy_marker))
             legacy_marker.touch()
 
+        # Check which memory systems are enabled
+        router = elements['router']
+        is_dram_enabled = router.get('dram', 0) >= 1
+        is_cxl_enabled = router.get('cxl', 0) >= 1
+        # If both are disabled, default to DRAM only
+        if not is_dram_enabled and not is_cxl_enabled:
+            is_dram_enabled = True
+
         fileparts = [
             # Instantiation file
-            (os.path.join(objdir_name, 'core_inst.inc'), cxx_file(get_instantiation_header(len(elements['cores']), config_file, build_id=build_id))),
+            (os.path.join(objdir_name, 'core_inst.inc'), cxx_file(get_instantiation_header(len(elements['cores']), config_file, build_id=build_id, is_dram_enabled=is_dram_enabled, is_cxl_enabled=is_cxl_enabled))),
             (os.path.join(objdir_name, 'core_inst.cc.inc'), cxx_file(get_instantiation_lines(build_id=build_id, **elements))),
 
             # Makefile generation

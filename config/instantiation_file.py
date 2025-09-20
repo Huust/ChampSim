@@ -23,9 +23,9 @@ import multiprocessing as mp
 from . import util
 from . import cxx
 
-shim_fmtstr = '{{{_llptr}}}, {rq_size}, {wq_size}, {{{_ulptr}}}, std::size_t{{{enable_dram}}}, std::size_t{{{enable_cxl}}}'
+shim_layer_fmtstr = '{{{_ulptr}}}, {{{_llptr}}}, {rq_size}, {wq_size}, {pq_size}, {max_upper_bw}, {max_lower_bw}, {dram_ptr}, {cxl_ptr}'
 pmem_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
-cxl_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_cxl_io}}}, std::size_t{{{_tCXL}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, champsim::data::bytes{{{channel_width}}}, {RD_BW}, {WR_BW}, {{{_llptr}}}'
+cxl_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_cxl_io}}}, std::size_t{{{_tCXL}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {respq_size}, champsim::data::bytes{{{channel_width}}}, {RD_BW}, {WR_BW}, {{{_llptr}}}'
 cxl_dram_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
 vmem_fmtstr = 'champsim::data::bytes{{{pte_page_size}}}, {num_levels}, champsim::chrono::picoseconds{{{clock_period}*{minor_fault_penalty}}}, {dram_name}, {_randomization}'
 
@@ -284,48 +284,28 @@ def ptw_queue_defaults(ptw):
 #     )))
 
 def get_upper_levels(cores, caches, ptws, router, pmem, cxl):
-    ''' 
-    根据给定的元素，获取一个 (lower_name, upper_name) 的序列。
-    这个版本会根据 router 的配置动态地添加连接。
-    '''
     def named_selector(elem, key):
-        # 辅助函数：从一个字典元素中提取 (elem[key], elem['name'])
         return elem.get(key), elem.get('name')
 
-    # 创建一个列表，用于逐步构建所有的连接关系
     connections = []
 
-    # --- 1. 添加始终存在的、无条件的连接 ---
-    # 包括 ptws, caches, 和 cores 的层级关系
     connections.extend(map(functools.partial(named_selector, key='lower_level'), ptws))
     connections.extend(map(functools.partial(named_selector, key='lower_level'), caches))
     connections.extend(map(functools.partial(named_selector, key='lower_translate'), caches))
     connections.extend(map(functools.partial(named_selector, key='L1I'), cores))
     connections.extend(map(functools.partial(named_selector, key='L1D'), cores))
 
-    # --- 2. 根据 router 配置，有条件地添加连接 ---
-
-    # 检查 'dram' 标志，如果为 1，则将 pmem 添加为 router 的 lower_level
-    # 这会生成一个 ('pmem_name', 'router_name') 的元组
     if router.get('dram') >= 1:
         connections.append((pmem.get('name'), router.get('name')))
 
-    # 检查 'cxl' 标志
     if router.get('cxl') >= 1:
-        # (2a) 如果 cxl 启用，则将 CXL 的第一个组件 (cxl[0]) 添加为 router 的 lower_level
-        # 这会生成一个 ('cxl_controller_name', 'router_name') 的元组
         connections.append((cxl[0].get('name'), router.get('name')))
 
-        # (2b) 同时，处理 CXL 内部的层级关系（CXL_DRAM -> CXL Controller）
-        # 这个 map 只在 cxl 启用时执行
         connections.extend(map(functools.partial(named_selector, key='lower_level'), cxl))
 
-    # 如果都设置为0，则默认是为DRAM-only mode
     if router.get('dram') < 1 and router.get('cxl') < 1:
         connections.append((pmem.get('name'), router.get('name')))
 
-    # --- 3. 过滤掉无效连接并返回最终列表 ---
-    # 最后，和原函数一样，过滤掉所有第一个元素为 None 的元组
     return list(filter(lambda x: x[0] is not None, connections))
 
 def module_include_files(datas):
@@ -416,6 +396,14 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     ul_pairs = get_upper_levels(cores, caches, ptws, router, pmem, cxl)
     queues = get_queue_info(ul_pairs, decorate_queues(caches, ptws, router, pmem, cxl, cxl_dram))
 
+    # Check which memory systems are enabled
+    is_dram_enabled = router.get('dram', 0) >= 1
+    is_cxl_enabled = router.get('cxl', 0) >= 1
+
+    # If both are disabled, default to DRAM only
+    if not is_dram_enabled and not is_cxl_enabled:
+        is_dram_enabled = True
+
     datas = itertools.filterfalse(operator.methodcaller('get', 'legacy', False), itertools.chain(
         *(c['_branch_predictor_data'] for c in cores),
         *(c['_btb_data'] for c in cores),
@@ -430,13 +418,15 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     channels_head, channels_tail = util.cut((f'champsim::channel{{{queue_fmtstr.format(**v)}}}' for v in queues), n=-1)
     channel_instantiation_body = ('channels{', *(v+',' for v in channels_head), *channels_tail, '},')
 
-    shim_instantiation_body = (
-        'SHIM_LAYER{',
-        shim_fmtstr.format(
+    shim_layer_instantiation_body = (
+        'ROUTER{',
+        shim_layer_fmtstr.format(
             _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == router['name']),
             _llptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[1] == router['name']),
-            enable_dram=int(router['dram']),
-            enable_cxl=int(router['cxl']),
+            dram_ptr='&DRAM' if is_dram_enabled else 'nullptr',
+            cxl_ptr='&CXL_DRAM' if is_cxl_enabled else 'nullptr',
+            max_upper_bw=int(router['upper_bw']),
+            max_lower_bw=int(router['lower_bw']),
             **router),
         '},'
     )
@@ -459,40 +449,52 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
         '},'
     )
 
-    cxl = cxl[0]
-    cxl_instantiation_body = (
-        'CXL{',
-        cxl_fmtstr.format(
-            clock_period_cxl_io=int(1000000/cxl['cxl_io_frequency']),
-            _tCXL=int(cxl['tCXL']),
-            _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == pmem['name']),
-            _llptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == cxl_dram['name']),
-            **cxl),
-        '},'
-    )
+    # Conditional CXL instantiation
+    if is_cxl_enabled:
+        cxl = cxl[0]
+        cxl_instantiation_body = (
+            'CXL{',
+            cxl_fmtstr.format(
+                clock_period_cxl_io=int(1000000/cxl['cxl_io_frequency']),
+                _tCXL=int(cxl['tCXL']),
+                _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == cxl['name']),
+                _llptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[1] == cxl['name']),
+                **cxl),
+            '},'
+        )
 
-    cxl_dram_instantiation_body = (
-        'CXL_DRAM{',
-        cxl_dram_fmtstr.format(
-            clock_period_dbus=int(1000000/cxl_dram['data_rate']),
-            clock_period_mc=int(1000000/cxl_dram['frequency']),
-            _tRP=int(cxl_dram['tRP']),
-            _tRCD=int(cxl_dram['tRCD']),
-            _tCAS=int(cxl_dram['tCAS']),
-            _tRAS=int(cxl_dram['tRAS']),
-            _bank_rows=int(cxl_dram['bank_rows']), #added for supporting old configs, mainly column size change
-            _bank_columns=int(cxl_dram['columns']*8 if 'columns' in cxl_dram else cxl_dram['bank_columns']),
-            _refresh_period=int(1000*cxl_dram['refresh_period']),
-            _refreshes_per_period=int(cxl_dram['refreshes_per_period']),
-            _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == cxl_dram['name']),
-            **cxl_dram),
-        '},'
-    )
+        cxl_dram_instantiation_body = (
+            'CXL_DRAM{',
+            cxl_dram_fmtstr.format(
+                clock_period_dbus=int(1000000/cxl_dram['data_rate']),
+                clock_period_mc=int(1000000/cxl_dram['frequency']),
+                _tRP=int(cxl_dram['tRP']),
+                _tRCD=int(cxl_dram['tRCD']),
+                _tCAS=int(cxl_dram['tCAS']),
+                _tRAS=int(cxl_dram['tRAS']),
+                _bank_rows=int(cxl_dram['bank_rows']), #added for supporting old configs, mainly column size change
+                _bank_columns=int(cxl_dram['columns']*8 if 'columns' in cxl_dram else cxl_dram['bank_columns']),
+                _refresh_period=int(1000*cxl_dram['refresh_period']),
+                _refreshes_per_period=int(cxl_dram['refreshes_per_period']),
+                _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == cxl_dram['name']),
+                **cxl_dram),
+            '},'
+        )
+    else:
+        cxl_instantiation_body = ()
+        cxl_dram_instantiation_body = ()
+
+    # Build device list for vmem based on enabled systems
+    enabled_devices = []
+    if is_dram_enabled:
+        enabled_devices.append(pmem['name'])
+    if is_cxl_enabled:
+        enabled_devices.append(cxl_dram['name'])
 
     vmem_instantiation_body = (
         'vmem{',
         vmem_fmtstr.format(
-            dram_name=pmem['name'], 
+            dram_name='{'+', '.join(f'&{device}' for device in enabled_devices)+'}',
             clock_period=global_clock_period,
             _randomization= '{}' if (isinstance(vmem['randomization'],bool) and vmem['randomization'] == False) else int(vmem['randomization']),
             **vmem),
@@ -522,10 +524,12 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     yield from itertools.chain(
     )
     yield from channel_instantiation_body
-    yield from shim_instantiation_body
-    yield from pmem_instantiation_body
-    yield from cxl_instantiation_body
-    yield from cxl_dram_instantiation_body
+    yield from shim_layer_instantiation_body
+    if is_dram_enabled:
+        yield from pmem_instantiation_body
+    if is_cxl_enabled:
+        yield from cxl_instantiation_body
+        yield from cxl_dram_instantiation_body
     yield from vmem_instantiation_body
     yield from ptw_instantiation_body
     yield from cache_instantiation_body
@@ -543,57 +547,83 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     yield from get_ref_vector_function('PageTableWalker', f'{classname}::ptw_view', 'ptws')
     yield ''
 
-    yield from cxx.function(f'{classname}::operable_view', (
+    # Build operable_view function body conditionally
+    operable_view_body = [
         'std::vector<std::reference_wrapper<champsim::operable>> retval{};',
         'auto make_ref = [](auto& x){ return std::ref<champsim::operable>(x); };',
         'std::transform(std::begin(cores), std::end(cores), std::back_inserter(retval), make_ref);',
         'std::transform(std::begin(caches), std::end(caches), std::back_inserter(retval), make_ref);',
         'std::transform(std::begin(ptws), std::end(ptws), std::back_inserter(retval), make_ref);',
-        'retval.push_back(std::ref<champsim::operable>(SHIM_LAYER));',
-        'retval.push_back(std::ref<champsim::operable>(DRAM));',
-        'retval.push_back(std::ref<champsim::operable>(CXL));',
-        'retval.push_back(std::ref<champsim::operable>(CXL_DRAM));',
-        'return retval;'
-    ), rtype='std::vector<std::reference_wrapper<champsim::operable>>')
+        'retval.push_back(std::ref<champsim::operable>(ROUTER));'
+    ]
+    if is_dram_enabled:
+        operable_view_body.append('retval.push_back(std::ref<champsim::operable>(DRAM));')
+    if is_cxl_enabled:
+        operable_view_body.extend([
+            'retval.push_back(std::ref<champsim::operable>(CXL));',
+            'retval.push_back(std::ref<champsim::operable>(CXL_DRAM));'
+        ])
+    operable_view_body.append('return retval;')
+
+    yield from cxx.function(f'{classname}::operable_view', operable_view_body, rtype='std::vector<std::reference_wrapper<champsim::operable>>')
     yield ''
 
-    yield from cxx.function(f'{classname}::shim_layer_view', [f'return {router["name"]};'], rtype='SHIM_LAYER&')
-    yield from cxx.function(f'{classname}::dram_view', [f'return {pmem["name"]};'], rtype='MEMORY_CONTROLLER&')
-    yield from cxx.function(f'{classname}::cxl_view', [f'return {cxl["name"]};'], rtype='CXL_CONTROLLER&')
-    yield from cxx.function(f'{classname}::cxl_dram_view', [f'return {cxl_dram["name"]};'], rtype='MEMORY_CONTROLLER&')
+    yield from cxx.function(f'{classname}::router_view', [f'return {router["name"]};'], rtype='SHIM_LAYER&')
+    if is_dram_enabled:
+        yield from cxx.function(f'{classname}::dram_view', [f'return {pmem["name"]};'], rtype='MEMORY_CONTROLLER&')
+    if is_cxl_enabled:
+        yield from cxx.function(f'{classname}::cxl_view', [f'return {cxl["name"]};'], rtype='CXL_CONTROLLER&')
+        yield from cxx.function(f'{classname}::cxl_dram_view', [f'return {cxl_dram["name"]};'], rtype='MEMORY_CONTROLLER&')
     yield ''
 
-def get_instantiation_header(num_cpus, env, build_id):
+def get_instantiation_header(num_cpus, env, build_id, is_dram_enabled, is_cxl_enabled):
     yield '#include "environment.h"'
     yield '#include "vmem.h"'
     yield '#include <forward_list>'
     yield 'template <>'
-    struct_body = (
+
+    # Build struct body conditionally
+    struct_body = [
         'private:',
         'std::vector<champsim::channel> channels;',
-        'SHIM_LAYER ROUTER;',
-        'MEMORY_CONTROLLER DRAM;',
-        'CXL_CONTROLLER CXL;',
-        'MEMORY_CONTROLLER CXL_DRAM;',
+        'SHIM_LAYER ROUTER;'
+    ]
+
+    if is_dram_enabled:
+        struct_body.append('MEMORY_CONTROLLER DRAM;')
+    if is_cxl_enabled:
+        struct_body.extend([
+            'CXL_CONTROLLER CXL;',
+            'MEMORY_CONTROLLER CXL_DRAM;'
+        ])
+
+    struct_body.extend([
         'VirtualMemory vmem;',
         'std::forward_list<PageTableWalker> ptws;',
         'std::forward_list<CACHE> caches;',
         'std::forward_list<O3_CPU> cores;',
-
+        '',
         'public:',
         f'constexpr static std::size_t num_cpus = {num_cpus};',
         f'constexpr static std::size_t block_size = {env["block_size"]};',
         f'constexpr static std::size_t page_size = {env["page_size"]};',
-
+        '',
         'generated_environment();',
         'std::vector<std::reference_wrapper<O3_CPU>> cpu_view() final;',
         'std::vector<std::reference_wrapper<CACHE>> cache_view() final;',
         'std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() final;',
-        'SHIM_LAYER& router_view() final;',
-        'MEMORY_CONTROLLER& dram_view() final;',
-        'CXL_CONTROLLER& cxl_view() final;',
-        'MEMORY_CONTROLLER& cxl_dram_view() final;',
-        'std::vector<std::reference_wrapper<operable>> operable_view() final;'
-    )
+        'SHIM_LAYER& router_view() final;'
+    ])
+
+    if is_dram_enabled:
+        struct_body.append('MEMORY_CONTROLLER& dram_view() final;')
+    if is_cxl_enabled:
+        struct_body.extend([
+            'CXL_CONTROLLER& cxl_view() final;',
+            'MEMORY_CONTROLLER& cxl_dram_view() final;'
+        ])
+
+    struct_body.append('std::vector<std::reference_wrapper<operable>> operable_view() final;')
+
     struct_name = f'champsim::configured::generated_environment<0x{build_id}> final'
     yield from cxx.struct(struct_name, struct_body, superclass='champsim::environment')
