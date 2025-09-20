@@ -10,7 +10,8 @@
 
 TEST_CASE("The MSHR factor uses the number of upper levels to determine the PTW's default number of MSHRs") {
   MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
-  VirtualMemory vmem{champsim::data::bytes{1<<12}, 4, std::chrono::nanoseconds{6400}, dram};
+  MEMORY_CONTROLLER cxl{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+  VirtualMemory vmem{champsim::data::bytes{1<<12}, 4, std::chrono::nanoseconds{6400}, {&dram, &cxl}};
 
   auto num_uls = GENERATE(1u,2u,4u,6u);
   auto mshr_factor = 2u;
@@ -29,7 +30,8 @@ TEST_CASE("The MSHR factor uses the number of upper levels to determine the PTW'
 
 TEST_CASE("The MSHR factor can control the PTW's default number of MSHRs") {
   MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
-  VirtualMemory vmem{champsim::data::bytes{1<<12}, 4, std::chrono::nanoseconds{6400}, dram};
+  MEMORY_CONTROLLER cxl{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+  VirtualMemory vmem{champsim::data::bytes{1<<12}, 4, std::chrono::nanoseconds{6400}, {&dram, &cxl}};
 
   auto num_uls = 2u;
   auto mshr_factor = GENERATE(1u,2u,4u,6u);
@@ -48,7 +50,8 @@ TEST_CASE("The MSHR factor can control the PTW's default number of MSHRs") {
 
 TEST_CASE("Specifying the PTW's MSHR size overrides the MSHR factor") {
   MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
-  VirtualMemory vmem{champsim::data::bytes{1<<12}, 4, std::chrono::nanoseconds{6400}, dram};
+  MEMORY_CONTROLLER cxl{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+  VirtualMemory vmem{champsim::data::bytes{1<<12}, 4, std::chrono::nanoseconds{6400}, {&dram, &cxl}};
 
   auto num_uls = 2u;
   auto mshr_factor = 2u;
@@ -69,7 +72,8 @@ TEST_CASE("Specifying the PTW's MSHR size overrides the MSHR factor") {
 
 TEST_CASE("The bandwidth factor uses the number of upper levels to determine the PTW's default tag and fill bandwidth") {
   MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
-  VirtualMemory vmem{champsim::data::bytes{1<<12}, 4, std::chrono::nanoseconds{6400}, dram};
+  MEMORY_CONTROLLER cxl{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+  VirtualMemory vmem{champsim::data::bytes{1<<12}, 4, std::chrono::nanoseconds{6400}, {&dram, &cxl}};
 
   auto num_uls = GENERATE(1u,2u,4u,6u);
   auto bandwidth_factor = 2u;
@@ -89,7 +93,8 @@ TEST_CASE("The bandwidth factor uses the number of upper levels to determine the
 
 TEST_CASE("The bandwidth factor can control the PTW's default tag bandwidth") {
   MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
-  VirtualMemory vmem{champsim::data::bytes{1<<12}, 4, std::chrono::nanoseconds{6400}, dram};
+  MEMORY_CONTROLLER cxl{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+  VirtualMemory vmem{champsim::data::bytes{1<<12}, 4, std::chrono::nanoseconds{6400}, {&dram, &cxl}};
 
   auto num_uls = 2u;
   auto bandwidth_factor = GENERATE(1u,2u,4u,6u);
@@ -109,7 +114,8 @@ TEST_CASE("The bandwidth factor can control the PTW's default tag bandwidth") {
 
 TEST_CASE("Specifying the tag bandwidth overrides the PTW's bandwidth factor") {
   MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
-  VirtualMemory vmem{champsim::data::bytes{1<<12}, 4, std::chrono::nanoseconds{6400}, dram};
+  MEMORY_CONTROLLER cxl{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+  VirtualMemory vmem{champsim::data::bytes{1<<12}, 4, std::chrono::nanoseconds{6400}, {&dram, &cxl}};
 
   auto num_uls = 2u;
   auto bandwidth_factor = 2u;
