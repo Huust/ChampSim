@@ -19,14 +19,19 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <fstream>
 #include <iomanip>
 #include <numeric>
 #include <fmt/core.h>
+#include <iostream>
+#include <sstream>
 
+#include "access_type.h"
 #include "bandwidth.h"
 #include "champsim.h"
 #include "chrono.h"
 #include "deadlock.h"
+#include "heatmap.h"
 #include "instruction.h"
 #include "util/algorithm.h"
 #include "util/bits.h"
@@ -240,6 +245,7 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
 
   response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me};
+  response.is_llc_miss = true;
   for (auto* ret : fill_mshr.to_return) {
     ret->push_back(response);
   }
@@ -364,6 +370,10 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     if (!success) {
       return false;
     }
+
+    // LLC misses is recorded in map
+    if (this->NAME == "LLC" && champsim::heatmap::is_heatmap_enabled() && handle_pkt.type != access_type::PREFETCH)
+      champsim::heatmap::track_llc_miss(handle_pkt.v_address);
 
     // Allocate an MSHR
     if (mshr_pkt.second.response_requested) {
@@ -625,14 +635,15 @@ void CACHE::finish_packet(const response_type& packet)
 
   // MSHR holds the most updated information about this request
   mshr_type::returned_value finished_value{packet.data, packet.pf_metadata};
+  mshr_entry->is_llc_miss = packet.is_llc_miss;
   mshr_entry->data_promise = champsim::waitable{finished_value, current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY)};
   if constexpr (champsim::debug_print) {
-    fmt::print("[{}_MSHR] finish_packet instr_id: {} address: {} data: {} type: {} current: {}\n", this->NAME, mshr_entry->instr_id, mshr_entry->address,
-               mshr_entry->data_promise->data, access_type_names.at(champsim::to_underlying(mshr_entry->type)), current_time.time_since_epoch() / clock_period);
+    fmt::print("[{}_MSHR] finish_packet instr_id: {} address: {} data: {} type: {} current: {} llc_miss {}\n", this->NAME, mshr_entry->instr_id, mshr_entry->address,
+               mshr_entry->data_promise->data, access_type_names.at(champsim::to_underlying(mshr_entry->type)), current_time.time_since_epoch() / clock_period, mshr_entry->is_llc_miss);
   }
 
   // Order this entry after previously-returned entries, but before non-returned
-  // entries
+  // entries (put the newly finished entry at the end of all finished entry, but before unreturned entry)
   std::iter_swap(mshr_entry, first_unreturned);
 }
 
