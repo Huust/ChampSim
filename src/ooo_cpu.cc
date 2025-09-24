@@ -24,11 +24,13 @@
 #include <fmt/core.h>
 #include <fmt/ranges.h>
 
+#include "bandwidth.h"
 #include "cache.h"
 #include "champsim.h"
 #include "deadlock.h"
 #include "instruction.h"
 #include "util/span.h"
+#include "heatmap.h"
 
 std::chrono::seconds elapsed_time();
 
@@ -754,8 +756,13 @@ long O3_CPU::handle_memory_return()
   for (champsim::bandwidth l1d_bw{L1D_BANDWIDTH}; l1d_bw.has_remaining() && l1d_it != std::end(L1D_bus.lower_level->returned); l1d_bw.consume(), ++l1d_it) {
     for (auto& lq_entry : LQ) {
       if (lq_entry.has_value() && lq_entry->fetch_issued && champsim::block_number{lq_entry->virtual_address} == champsim::block_number{l1d_it->v_address}) {
-        lq_entry->finish(std::begin(ROB), std::end(ROB));
+        auto rob_entry = lq_entry->finish(std::begin(ROB), std::end(ROB));
         lq_entry.reset();
+
+        // Record this lsq entry's vaddr if it once stalled the ROB
+        if (champsim::heatmap::is_heatmap_enabled() && l1d_it->is_llc_miss && rob_entry.caused_rob_stall)
+          champsim::heatmap::track_critical_miss(lq_entry->virtual_address);
+
         ++progress;
       }
     }
@@ -775,6 +782,17 @@ long O3_CPU::retire_rob()
     std::for_each(retire_begin, retire_end, [cycle = current_time.time_since_epoch() / clock_period](const auto& x) {
       fmt::print("[ROB] retire_rob instr_id: {} is retired cycle: {}\n", x.instr_id, cycle);
     });
+  }
+
+  // Check rob stall due to memory access instrs
+  // condition:
+  // 1. ROB is not empty
+  // 2. the oldest instruction in ROB is memory access instruction
+  // 3. not completed (means bandwidth)
+  // 4. ROB retirement bandwidth is not all consumed
+  if (!ROB.empty() && (!ROB.front().destination_memory.empty() || !ROB.front().source_memory.empty()) &&
+      !ROB.front().completed && std::distance(retire_begin, retire_end) < champsim::bandwidth{RETIRE_WIDTH}.amount_remaining()) {
+    ROB.front().caused_rob_stall = true;
   }
 
   // commit register writes to backend RAT
@@ -869,11 +887,12 @@ LSQ_ENTRY::LSQ_ENTRY(champsim::address addr, champsim::program_ordered<LSQ_ENTRY
 {
 }
 
-void LSQ_ENTRY::finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const
+ooo_model_instr& LSQ_ENTRY::finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const
 {
   auto rob_entry = std::partition_point(begin, end, ooo_model_instr::precedes(this->instr_id));
   assert(rob_entry != end);
   finish(*rob_entry);
+  return *rob_entry;
 }
 
 void LSQ_ENTRY::finish(ooo_model_instr& rob_entry) const
@@ -907,7 +926,5 @@ bool CacheBus::issue_write(request_type data_packet)
   data_packet.type = access_type::WRITE;
   data_packet.response_requested = false;
 
-  // Channel表示的就是两个层级之间的bus，所以在这里
-  // lower_level表示的是通过bus要传输到的地方，即cache
   return lower_level->add_wq(data_packet);
 }
