@@ -76,7 +76,7 @@ struct LSQ_ENTRY : champsim::program_ordered<LSQ_ENTRY> {
 
   LSQ_ENTRY(champsim::address addr, champsim::program_ordered<LSQ_ENTRY>::id_type id, champsim::address ip, std::array<uint8_t, 2> asid);
   void finish(ooo_model_instr& rob_entry) const;
-  void finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const;
+  ooo_model_instr& finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const;
 };
 
 // cpu
@@ -112,7 +112,7 @@ public:
 
   // reorder buffer, load/store queue, register file
   std::deque<ooo_model_instr> IFETCH_BUFFER;    // store insts (pre)fetched from icache
-  std::deque<ooo_model_instr> DISPATCH_BUFFER;  // reservation station, storing insts to be dispatched
+  std::deque<ooo_model_instr> DISPATCH_BUFFER;  // storing insts to be dispatched (to reservation station)
   std::deque<ooo_model_instr> DECODE_BUFFER;    // store insts to be decoded
   std::deque<ooo_model_instr> ROB;
   std::deque<ooo_model_instr> DIB_HIT_BUFFER;
