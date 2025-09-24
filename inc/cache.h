@@ -46,9 +46,11 @@
 #include "operable.h"
 #include "util/to_underlying.h" // for to_underlying
 #include "waitable.h"
+#include <unordered_map>
 
 class CACHE : public champsim::operable
 {
+private:
   enum [[deprecated(
       "Prefetchers may not specify arbitrary fill levels. Use CACHE::prefetch_line(pf_addr, fill_this_level, prefetch_metadata) instead.")]] FILL_LEVEL{
       FILL_L1 = 1, FILL_L2 = 2, FILL_LLC = 4, FILL_DRC = 8, FILL_DRAM = 16};
@@ -90,6 +92,8 @@ public:
     champsim::address v_address;
     champsim::address ip;
     uint64_t instr_id;
+    bool is_llc_miss = false; // if this mshr entry will cause llc miss
+                              // this flag can only be set when a response is returned
 
     struct returned_value {
       champsim::address data;

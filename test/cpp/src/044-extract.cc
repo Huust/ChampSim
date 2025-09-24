@@ -1,5 +1,6 @@
 #include <catch.hpp>
 #include "util/algorithm.h"
+#include <numeric> 
 
 #include <vector>
 

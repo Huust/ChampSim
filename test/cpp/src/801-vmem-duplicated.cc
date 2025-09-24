@@ -8,10 +8,11 @@ SCENARIO("The virtual memory remove PA asked by PTE") {
     constexpr unsigned levels = 5;
     constexpr champsim::data::bytes pte_page_size{1ull << 12};
     MEMORY_CONTROLLER dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
-    VirtualMemory uut{pte_page_size, levels, std::chrono::nanoseconds{6400}, dram};
+    MEMORY_CONTROLLER cxl_dram{champsim::chrono::picoseconds{3200}, champsim::chrono::picoseconds{6400}, std::size_t{18}, std::size_t{18}, std::size_t{18}, std::size_t{38}, champsim::chrono::microseconds{64000}, {}, 64, 64, 1, champsim::data::bytes{8}, 1024, 1024, 4, 4, 4, 8192};
+    VirtualMemory uut{pte_page_size, levels, std::chrono::nanoseconds{6400}, {&dram, &cxl_dram}};
 
     WHEN("PTE requires memory") {
-      std::size_t original_size = uut.available_ppages();
+      std::size_t original_size = uut.available_ppages(DEVICE::DRAM) + uut.available_ppages(DEVICE::CXL);
 
       const champsim::page_number to_check{0xdeadbeef};
       AND_WHEN("PTE ask for a page") {
@@ -28,12 +29,13 @@ SCENARIO("The virtual memory remove PA asked by PTE") {
             REQUIRE(delay_b > champsim::chrono::clock::duration::zero());
           }
 
-          THEN("The pages are different") {
+          THEN("The pages are different and not adjacent") {
             REQUIRE(paddr_a != paddr_b);
+            REQUIRE(paddr_a + pte_page_size != paddr_b);
           }
 
           THEN("The pages are remove from the available pages") {
-            REQUIRE(original_size - 2 == uut.available_ppages());
+            REQUIRE(original_size - 2 == uut.available_ppages(DEVICE::DRAM) + uut.available_ppages(DEVICE::CXL));
           }
         }
       }

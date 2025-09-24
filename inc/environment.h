@@ -21,10 +21,13 @@
 #include <vector>
 
 #include "cache.h"
+#include "shim_layer.h"
 #include "dram_controller.h"
+#include "cxl_memory.h"
 #include "ooo_cpu.h"
 #include "operable.h"
 #include "ptw.h"
+#include "vmem.h"
 
 namespace champsim
 {
@@ -32,7 +35,10 @@ struct environment {
   virtual std::vector<std::reference_wrapper<O3_CPU>> cpu_view() = 0;
   virtual std::vector<std::reference_wrapper<CACHE>> cache_view() = 0;
   virtual std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() = 0;
+  virtual SHIM_LAYER& router_view() = 0;
   virtual MEMORY_CONTROLLER& dram_view() = 0;
+  virtual CXL_CONTROLLER& cxl_view() = 0;
+  virtual MEMORY_CONTROLLER& cxl_dram_view() = 0;
   virtual std::vector<std::reference_wrapper<operable>> operable_view() = 0;
 };
 

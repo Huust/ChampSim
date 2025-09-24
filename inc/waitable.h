@@ -28,6 +28,27 @@
 
 namespace champsim
 {
+/*
+ * champsim::waitable是一个非常关键的抽象，它的名字本身就揭示了其作用：“一个需要等待才能就绪的数据”。
+ * 在离散事件模拟器（Discrete-event simulator）如ChampSim中，任何操作都不是瞬时完成的，
+ * 都需要消耗时间（延迟）。waitable就是用来封装一个带有时间延迟的数据的工具。
+ *
+ * 它内部主要包含两部分信息：
+ * 数据本身 (Data): 例如，我们计算出的下一个PTE的物理地址，或者最终的物理页号。
+ * 就绪时间 (Ready Time): 这个数据在未来的哪一个仿真周期才能被使用。
+ *
+ * 为什么需要它？
+ * 当ptw.cc中finish_step或finish_last_step被调用时，它们会计算出下一步的结果。
+ * 但这个结果并不能在当前周期马上被使用，因为它需要模拟两个延迟：
+ * penalty: 可能存在的、来自vmem的缺页惩罚。
+ * HIT_LATENCY: PTW内部处理和计算的流水线延迟。
+ * waitable将“结果”和“结果的可用时间”绑定在一起。在operate函数的主循环中，
+ * 代码会使用is_ready这个lambda来检查mshr_entry.data.is_ready_at(current_time)。
+ * 只有当当前仿真时间大于等于waitable对象中记录的就绪时间时，这个MSHR才能被handle_fill处理或被返回给TLB。
+ *
+ * 总结：waitable是ChampSim中模拟时间延迟的核心机制。它确保了在PTW的流水线中，
+ * 每一个步骤都必须在付出了相应的时间代价后，其结果才能对后续步骤可见。
+ */
 template <typename T>
 class waitable
 {

@@ -33,6 +33,7 @@ long SHIM_LAYER::handle_responses() {
   
   // 2
   for (auto& ret : RespQ) {
+    ret.is_llc_miss = true;
     ul->returned.push_back(ret);
     progress++;
   }

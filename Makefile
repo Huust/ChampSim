@@ -287,7 +287,7 @@ ifdef TEST_NUM
 selected_test = -\# "[$(addprefix \#,$(filter $(addsuffix %,$(TEST_NUM)), $(patsubst %.cc,%,$(notdir $(wildcard $(test_source_dir)/*.cc)))))]"
 endif
 test: $(test_main_name)
-	$(test_main_name) $(selected_test)
+	$(test_main_name) $(selected_test) $(if $(TEST_ORDER),--order $(TEST_ORDER)) $(if $(TEST_SEED),--rng-seed $(TEST_SEED))
 
 pytest:
 	PYTHONPATH=$(PYTHONPATH):$(ROOT_DIR) python3 -m unittest discover -v --start-directory='test/python'
