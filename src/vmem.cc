@@ -16,18 +16,21 @@
 
 #include "vmem.h"
 
+#include <algorithm>
 #include <cassert>
 #include <fmt/core.h>
+#include <numeric>
 
 #include "champsim.h"
 #include "dram_controller.h"
+#include "heatmap.h"
 #include "util/bits.h"
 
 using namespace champsim::data::data_literals;
 
 VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::size_t page_table_levels, champsim::chrono::clock::duration minor_penalty,
-                             MEMORY_CONTROLLER& dram_, std::optional<uint64_t> randomization_seed_)
-    : randomization_seed(randomization_seed_), dram(dram_), minor_fault_penalty(minor_penalty), pt_levels(page_table_levels),
+                             std::vector<MEMORY_CONTROLLER*> dram_, std::optional<uint64_t> randomization_seed_)
+    : randomization_seed(randomization_seed_), device(dram_), minor_fault_penalty(minor_penalty), pt_levels(page_table_levels),
       pte_page_size(page_table_page_size),
       next_pte_page(
           champsim::dynamic_extent{champsim::data::bits{LOG2_PAGE_SIZE}, champsim::data::bits{champsim::lg2(champsim::data::bytes{pte_page_size}.count())}}, 0)
@@ -41,36 +44,58 @@ VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::si
   if (required_bits > champsim::address::bits) {
     fmt::print("[VMEM] WARNING: virtual memory configuration would require {} bits of addressing.\n", required_bits); // LCOV_EXCL_LINE
   }
-  if (required_bits > champsim::data::bits{champsim::lg2(dram.size().count())}) {
+  if (required_bits > champsim::data::bits{champsim::lg2(std::accumulate(device.begin(), device.end(), 0, [](auto accumulator, auto device) {
+    return accumulator + device->size().count();
+  }))}) {
     fmt::print("[VMEM] WARNING: physical memory size is smaller than virtual memory size.\n"); // LCOV_EXCL_LINE
   }
   populate_pages();
-  shuffle_pages();
 }
 
 VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::size_t page_table_levels, champsim::chrono::clock::duration minor_penalty,
-                             MEMORY_CONTROLLER& dram_)
+                             std::vector<MEMORY_CONTROLLER*> dram_)
     : VirtualMemory(page_table_page_size, page_table_levels, minor_penalty, dram_, {})
 {
 }
 
+// TODO: Now this function only support DRAM + CXL mode
 void VirtualMemory::populate_pages()
 {
-  assert(dram.size() > 1_MiB);
-  ppage_free_list.resize(((dram.size() - 1_MiB) / PAGE_SIZE).count());
-  assert(ppage_free_list.size() != 0);
+  auto dram_size = std::accumulate(device.begin(), device.end(), champsim::data::bytes{0}, [](auto accumulator, auto device) {
+    return accumulator + device->size();
+  });
+  assert(dram_size > 1_MiB);
+  assert(device[DRAM]->size().count() != 0);
+  assert(device[CXL]->size().count() != 0);
+  ppage_free_list.resize(2);
+  ppage_free_list[DRAM].resize(((device[DRAM]->size() - 1_MiB) / PAGE_SIZE).count());
+  ppage_free_list[CXL].resize((device[CXL]->size() / PAGE_SIZE).count());
+  assert(ppage_free_list[DRAM].size() != 0);
+  assert(ppage_free_list[CXL].size() != 0);
   champsim::page_number base_address =
       champsim::page_number{champsim::lowest_address_for_size(std::max<champsim::data::mebibytes>(champsim::data::bytes{PAGE_SIZE}, 1_MiB))};
-  for (auto it = ppage_free_list.begin(); it != ppage_free_list.end(); it++) {
-    *it = base_address;
+
+  auto initialize_free_list = [&base_address](auto page) {
+    page = base_address;
     base_address++;
-  }
+  };
+  std::for_each(ppage_free_list[DRAM].begin(), ppage_free_list[DRAM].end(), initialize_free_list);
+  std::for_each(ppage_free_list[CXL].begin(), ppage_free_list[CXL].end(), initialize_free_list);
 }
 
-void VirtualMemory::shuffle_pages()
-{
-  if (randomization_seed.has_value())
-    std::shuffle(ppage_free_list.begin(), ppage_free_list.end(), std::mt19937_64{randomization_seed.value()});
+enum DEVICE VirtualMemory::flip_device() {
+  return active_device = (active_device == DEVICE::DRAM) ? DEVICE::CXL : DEVICE::DRAM;
+}
+
+enum DEVICE VirtualMemory::select_device(champsim::page_number vaddr) {
+  if (champsim::heatmap::is_heatmap_used()) {
+    // Use heatmap-based allocation
+    uint64_t vpn = vaddr.to<uint64_t>();
+    return champsim::heatmap::is_fast_memory(vpn) ? DEVICE::DRAM : DEVICE::CXL;
+  } else {
+    // Use traditional interleaving allocation
+    return flip_device();
+  }
 }
 
 champsim::dynamic_extent VirtualMemory::extent(std::size_t level) const
@@ -86,31 +111,31 @@ uint64_t VirtualMemory::get_offset(champsim::address vaddr, std::size_t level) c
 
 uint64_t VirtualMemory::get_offset(champsim::page_number vaddr, std::size_t level) const { return get_offset(champsim::address{vaddr}, level); }
 
-champsim::page_number VirtualMemory::ppage_front() const
+champsim::page_number VirtualMemory::ppage_front(enum DEVICE dev) const
 {
-  assert(available_ppages() > 0);
-  return ppage_free_list.front();
+  assert(available_ppages(dev) > 0);
+  return ppage_free_list[dev].front();
 }
 
-void VirtualMemory::ppage_pop()
+void VirtualMemory::ppage_pop(enum DEVICE dev)
 {
-  ppage_free_list.pop_front();
-  if (available_ppages() == 0) {
+  ppage_free_list[dev].pop_front();
+  if (available_ppages(dev) == 0) {
     fmt::print("[VMEM] WARNING: Out of physical memory, freeing ppages\n");
     populate_pages();
-    shuffle_pages();
   }
 }
 
-std::size_t VirtualMemory::available_ppages() const { return (ppage_free_list.size()); }
+std::size_t VirtualMemory::available_ppages(enum DEVICE dev) const { return (ppage_free_list[dev].size()); }
 
 std::pair<champsim::page_number, champsim::chrono::clock::duration> VirtualMemory::va_to_pa(uint32_t cpu_num, champsim::page_number vaddr)
 {
-  auto [ppage, fault] = vpage_to_ppage_map.try_emplace({cpu_num, champsim::page_number{vaddr}}, ppage_front());
+  enum DEVICE selected_device = select_device(vaddr);
+  auto [ppage, fault] = vpage_to_ppage_map.try_emplace({cpu_num, champsim::page_number{vaddr}}, ppage_front(selected_device));
 
   // this vpage doesn't yet have a ppage mapping
   if (fault) {
-    ppage_pop();
+    ppage_pop(selected_device);
   }
 
   auto penalty = fault ? minor_fault_penalty : champsim::chrono::clock::duration::zero();
@@ -125,8 +150,9 @@ std::pair<champsim::page_number, champsim::chrono::clock::duration> VirtualMemor
 std::pair<champsim::address, champsim::chrono::clock::duration> VirtualMemory::get_pte_pa(uint32_t cpu_num, champsim::page_number vaddr, std::size_t level)
 {
   if (champsim::page_offset{next_pte_page} == champsim::page_offset{0}) {
-    active_pte_page = ppage_front();
-    ppage_pop();
+    enum DEVICE selected_device = select_device(vaddr);
+    active_pte_page = ppage_front(selected_device);
+    ppage_pop(selected_device);
   }
 
   champsim::dynamic_extent pte_table_entry_extent{champsim::address::bits, shamt(level)};
