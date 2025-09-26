@@ -32,8 +32,11 @@ class MEMORY_CONTROLLER;
 using pte_entry = champsim::data::size<long long, std::ratio<8>>;
 
 enum DEVICE {
+  // single mode
+  SINGLE = 0,
+  // hybrid mode
   DRAM = 0,
-  CXL
+  CXL = 1
 };
 
 class VirtualMemory
@@ -44,7 +47,7 @@ private:
   std::optional<uint64_t> randomization_seed; // 如果有random seed，代表vm管理的物理内存页不是连续的；可能这一次物理页号是0x100，下一次就是0x108
 
   std::vector<MEMORY_CONTROLLER*> device; // may have both dram and cxl memory device
-  enum DEVICE active_device = DEVICE::DRAM; // current active device for physical page allocation
+  enum DEVICE active_device; // current active device for physical page allocation (this variable is only valid in interleaving mode)
 
 public:
   const champsim::chrono::clock::duration minor_fault_penalty;
@@ -63,7 +66,6 @@ private:
   void ppage_pop(enum DEVICE);
 
   void populate_pages();
-  enum DEVICE flip_device();
   enum DEVICE select_device(champsim::page_number vaddr);
 
 public:

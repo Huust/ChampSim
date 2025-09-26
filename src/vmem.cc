@@ -38,6 +38,9 @@ VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::si
   assert(pte_page_size > 1_kiB);
   assert(champsim::is_power_of_2(pte_page_size.count()));
 
+  // Use dram for interleaving mode at the beginning
+  active_device = (dram_.size() == 2) ? DEVICE::DRAM : DEVICE::SINGLE;
+
   champsim::page_number last_vpage{
       champsim::lowest_address_for_size(champsim::data::bytes{PAGE_SIZE + champsim::ipow(pte_page_size.count(), static_cast<unsigned>(pt_levels))})};
   champsim::data::bits required_bits{LOG2_PAGE_SIZE + champsim::lg2(last_vpage.to<uint64_t>())};
@@ -58,43 +61,54 @@ VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::si
 {
 }
 
-// TODO: Now this function only support DRAM + CXL mode
+// Support flexible memory configuration: single device (DRAM-only/CXL-only) or hybrid (DRAM+CXL)
+// Device vector size determines initialization: 1 element = single mode, 2 elements = hybrid mode
 void VirtualMemory::populate_pages()
 {
-  auto dram_size = std::accumulate(device.begin(), device.end(), champsim::data::bytes{0}, [](auto accumulator, auto device) {
-    return accumulator + device->size();
+  auto dram_size = std::accumulate(device.begin(), device.end(), champsim::data::bytes{0}, [](auto accumulator, auto dev) {
+    return accumulator + dev->size();
   });
   assert(dram_size > 1_MiB);
-  assert(device[DRAM]->size().count() != 0);
-  assert(device[CXL]->size().count() != 0);
-  ppage_free_list.resize(2);
-  ppage_free_list[DRAM].resize(((device[DRAM]->size() - 1_MiB) / PAGE_SIZE).count());
-  ppage_free_list[CXL].resize((device[CXL]->size() / PAGE_SIZE).count());
-  assert(ppage_free_list[DRAM].size() != 0);
-  assert(ppage_free_list[CXL].size() != 0);
+
+  ppage_free_list.resize(device.size());
+
+  std::for_each(ppage_free_list.begin(), ppage_free_list.end(), [this, dev = device.begin()](auto list) mutable {
+    assert((*dev)->size().count() != 0);
+    if (dev == device.begin())  // If this is the first memory device, spare 1 MB address space
+      list->resize((((*dev)->size() - 1_MiB) / PAGE_SIZE).count());
+    else
+      list->resize(((*dev)->size() / PAGE_SIZE).count());
+
+    assert(dev != device.cend());
+    assert(list->size() != 0);
+    dev++;
+  });
+
   champsim::page_number base_address =
       champsim::page_number{champsim::lowest_address_for_size(std::max<champsim::data::mebibytes>(champsim::data::bytes{PAGE_SIZE}, 1_MiB))};
-
   auto initialize_free_list = [&base_address](auto page) {
     page = base_address;
     base_address++;
   };
-  std::for_each(ppage_free_list[DRAM].begin(), ppage_free_list[DRAM].end(), initialize_free_list);
-  std::for_each(ppage_free_list[CXL].begin(), ppage_free_list[CXL].end(), initialize_free_list);
-}
-
-enum DEVICE VirtualMemory::flip_device() {
-  return active_device = (active_device == DEVICE::DRAM) ? DEVICE::CXL : DEVICE::DRAM;
+  
+  for (std::size_t dev = 0; dev < ppage_free_list.size(); dev++)
+  std::for_each(ppage_free_list.begin(), ppage_free_list.end(), [initialize_free_list](auto list){
+    std::for_each(list.begin(), list.end(), initialize_free_list);
+  });
 }
 
 enum DEVICE VirtualMemory::select_device(champsim::page_number vaddr) {
   if (champsim::heatmap::is_heatmap_used()) {
+    assert(device.size() == 2); // Should have 2 devices when using heatmap
     // Use heatmap-based allocation
     uint64_t vpn = vaddr.to<uint64_t>();
     return champsim::heatmap::is_fast_memory(vpn) ? DEVICE::DRAM : DEVICE::CXL;
   } else {
     // Use traditional interleaving allocation
-    return flip_device();
+    // Flip the device, if we do have 2 devices
+    if (active_device != DEVICE::SINGLE)
+      active_device = (active_device == DEVICE::DRAM) ? DEVICE::CXL : DEVICE::DRAM;
+    return active_device;
   }
 }
 
