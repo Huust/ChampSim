@@ -98,7 +98,7 @@ void VirtualMemory::populate_pages()
 }
 
 enum DEVICE VirtualMemory::select_device(champsim::page_number vaddr) {
-  if (champsim::heatmap::is_heatmap_used()) {
+  if (champsim::heatmap::is_hotness_allocation_enabled()) {
     assert(device.size() == 2); // Should have 2 devices when using heatmap
     // Use heatmap-based allocation
     uint64_t vpn = vaddr.to<uint64_t>();

@@ -372,7 +372,7 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     }
 
     // LLC misses is recorded in map
-    if (this->NAME == "LLC" && champsim::heatmap::is_heatmap_enabled() && handle_pkt.type != access_type::PREFETCH)
+    if (this->NAME == "LLC" && champsim::heatmap::is_heatmap_generation_enabled() && handle_pkt.type != access_type::PREFETCH)
       champsim::heatmap::track_llc_miss(handle_pkt.v_address);
 
     // Allocate an MSHR

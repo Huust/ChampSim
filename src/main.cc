@@ -128,7 +128,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       fmt::print("ERROR: --heatmap-dir is required when using --generate-heatmap\n");
       return 1;
     }
-    champsim::heatmap::enable(heatmap_dir);
+    champsim::heatmap::enable_heatmap_generation();
 
     phases = {
       champsim::phase_info{"Warmup", true, warmup_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names},
@@ -143,16 +143,9 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
     // Load heatmap and allocate VPNs if parameters are provided
     if (!heatmap_dir.empty()) {
-      // For simulation mode, we need to set the file path first
-      std::ifstream check_file(heatmap_dir);
-      if (!check_file.good()) {
-        fmt::print("ERROR: Cannot access heatmap file: {}\\n", heatmap_dir);
-        return 1;
-      }
-
       // Enable heatmap with the file path, then load the data
-      champsim::heatmap::enable(heatmap_dir);
-      champsim::heatmap::load();
+      champsim::heatmap::enable_hotness_allocation();
+      champsim::heatmap::load(heatmap_dir);
 
       if (!ratio_str.empty()) {
         // Parse ratio string (format: "N:M")
@@ -162,7 +155,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
           uint32_t ratio_second = std::stoul(ratio_str.substr(colon_pos + 1));
 
           champsim::heatmap::allocate_vpns(sort_by_criticality, ratio_first, ratio_second);
-          champsim::heatmap::launch_heatmap();
+          champsim::heatmap::enable_hotness_allocation();
         } else {
           fmt::print("ERROR: Invalid ratio format. Use N:M format (e.g., 1:3)\\n");
           return 1;
@@ -191,9 +184,9 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   // Save heatmap if in generate mode
   if (generate_heatmap) {
-    champsim::heatmap::save();
+    champsim::heatmap::save(heatmap_dir);
     fmt::print("\nHeatmap generation completed and saved to: {}\n\n", heatmap_dir);
-    return 0; // Exit after heatmap generation
+    return 0;
   }
 
   // Champsim would print it after warmup and simulation are done

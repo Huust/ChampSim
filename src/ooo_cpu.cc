@@ -760,7 +760,7 @@ long O3_CPU::handle_memory_return()
         lq_entry.reset();
 
         // Record this lsq entry's vaddr if it once stalled the ROB
-        if (champsim::heatmap::is_heatmap_enabled() && l1d_it->is_llc_miss && rob_entry.caused_rob_stall)
+        if (champsim::heatmap::is_heatmap_generation_enabled() && l1d_it->is_llc_miss && rob_entry.caused_rob_stall)
           champsim::heatmap::track_critical_miss(lq_entry->virtual_address);
 
         ++progress;

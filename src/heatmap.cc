@@ -6,40 +6,38 @@
 #include <vector>
 #include <fmt/core.h>
 
-void HeatMapTracker::enable_heatmap_generation(const std::string& file_path) {
+void HeatMapTracker::enable_heatmap_generation() {
   heatmap_generation_enabled = true;
-  heatmap_file_path = file_path;
   llc_miss_heatmap.clear();
-  fmt::print("Heatmap generation enabled, output: {}\n", file_path);
+  fmt::print("Heatmap generation enabled\n");
+}
+
+bool HeatMapTracker::is_heatmap_generation_enabled() {
+  return heatmap_generation_enabled;
 }
 
 void HeatMapTracker::track_llc_miss(champsim::address v_address) {
-  if (!heatmap_generation_enabled)
-    return;
-
   // pick the VPN
-  // auto vpn = champsim::address_slice{champsim::dynamic_extent{champsim::data::bits{LOG2_PAGE_SIZE}, champsim::address::bits}, v_address}.to<uint64_t>();
   auto vpn = v_address.to<uint64_t>() >> LOG2_PAGE_SIZE;
   llc_miss_heatmap[vpn].first++;
 }
 
 void HeatMapTracker::track_critical_miss(champsim::address v_address) {
-  if (!heatmap_generation_enabled)
-    return;
-
   // pick the VPN
   auto vpn = v_address.to<uint64_t>() >> LOG2_PAGE_SIZE;
   llc_miss_heatmap[vpn].second++;
 }
 
-void HeatMapTracker::save_heatmap() {
-  if (!heatmap_generation_enabled || llc_miss_heatmap.empty())
-    return;
+void HeatMapTracker::save_heatmap(const std::string& file_path) {
+  if (llc_miss_heatmap.empty()) {
+    fmt::print("ERROR: Cannot save heatmap file due to empty llc_miss_heatmap\\n");
+    exit(1);
+  }
   
-  std::ofstream file(heatmap_file_path);
+  std::ofstream file(file_path);
   if (!file.is_open()) {
-    std::cerr << " Error: Cannot open heatmap file for writing: " << heatmap_file_path << std::endl;
-    return;
+    fmt::print("ERROR: Cannot open heatmap file for writing: {}\\n", file_path);
+    exit(1);
   }
 
   // Write into it!
@@ -47,14 +45,14 @@ void HeatMapTracker::save_heatmap() {
     file << std::hex << entry.first << ": " << std::dec << entry.second.first << " " << entry.second.second << std::endl;
   }
   file.close();
-  fmt::print("Heatmap saved to: {} with {} virtual pages\n", heatmap_file_path, llc_miss_heatmap.size());
+  fmt::print("Heatmap saved to: {} with {} virtual pages\n", file_path, llc_miss_heatmap.size());
 }
 
-void HeatMapTracker::load_heatmap() {
-  std::ifstream file(heatmap_file_path);
+void HeatMapTracker::load_heatmap(const std::string& file_path) {
+  std::ifstream file(file_path);
   if (!file.is_open()) {
-    std::cerr << "Error: Cannot open heatmap file for reading: " << heatmap_file_path << std::endl;
-    return;
+    fmt::print("Error: Cannot open heatmap file for reading: {}\n", file_path);
+    exit(1);
   }
 
   llc_miss_heatmap.clear();
@@ -78,15 +76,15 @@ void HeatMapTracker::load_heatmap() {
   }
 
   file.close();
-  fmt::print("Heatmap loaded from: {} with {} virtual pages\n", heatmap_file_path, llc_miss_heatmap.size());
+  fmt::print("Heatmap loaded from: {} with {} virtual pages\n", file_path, llc_miss_heatmap.size());
 }
 
-bool HeatMapTracker::is_heatmap_enabled() {
-  return heatmap_generation_enabled;
+void HeatMapTracker::enable_hotness_allocation() {
+  hotness_allocation_enabled = true;
 }
 
-void HeatMapTracker::launch_heatmap() {
-  use_heatmap = true;
+bool HeatMapTracker::is_hotness_allocation_enabled() {
+  return hotness_allocation_enabled;
 }
 
 bool HeatMapTracker::is_fast_memory(uint64_t vpn) const {
@@ -138,9 +136,9 @@ void HeatMapTracker::allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t
   fmt::print("VPN allocation complete: {} fast, {} slow (ratio {}:{})\n",
              fast_vpns.size(), slow_vpns.size(), ratio_first, ratio_second);
   if (sort_by_criticality) {
-    fmt::print("Allocation based on criticality\n");
+    fmt::print("Allocation based on CRITICALITY count\n");
   } else {
-    fmt::print("Allocation based on total access count\n");
+    fmt::print("Allocation based on ACCESS count\n");
   }
 }
 
@@ -151,8 +149,12 @@ namespace {
 
 namespace champsim {
   namespace heatmap {
-    void enable(const std::string& file_path) {
-      global_heatmap_instance.enable_heatmap_generation(file_path);
+    void enable_heatmap_generation() {
+      global_heatmap_instance.enable_heatmap_generation();
+    }
+
+    void enable_hotness_allocation() {
+      global_heatmap_instance.enable_hotness_allocation();
     }
 
     void track_llc_miss(champsim::address v_address) {
@@ -163,20 +165,20 @@ namespace champsim {
       global_heatmap_instance.track_critical_miss(v_address);
     }
 
-    void save() {
-      global_heatmap_instance.save_heatmap();
+    void save(const std::string& file_path) {
+      global_heatmap_instance.save_heatmap(file_path);
     }
 
-    void load() {
-      global_heatmap_instance.load_heatmap();
+    void load(const std::string& file_path) {
+      global_heatmap_instance.load_heatmap(file_path);
     }
 
-    bool is_heatmap_enabled() {
-      return global_heatmap_instance.is_heatmap_enabled();
+    bool is_heatmap_generation_enabled() {
+      return global_heatmap_instance.is_heatmap_generation_enabled();
     }
 
-    bool is_heatmap_used() {
-      return global_heatmap_instance.use_heatmap;
+    bool is_hotness_allocation_enabled() {
+      return global_heatmap_instance.is_hotness_allocation_enabled();
     }
 
     void allocate_vpns(bool sort_by_criticality, uint32_t ratio_first, uint32_t ratio_second) {
@@ -187,8 +189,8 @@ namespace champsim {
       return global_heatmap_instance.is_fast_memory(vpn);
     }
 
-    void launch_heatmap() {
-      global_heatmap_instance.launch_heatmap();
+    void enable_hotness_allocation() {
+      global_heatmap_instance.enable_hotness_allocation();
     }
   }
 }
