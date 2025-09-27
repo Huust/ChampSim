@@ -67,13 +67,14 @@ struct CXL_CHANNEL final: public champsim::operable {
   std::vector<std::deque<response_type>*> upper_returns;  // 保存所有上层返回队列
 
   // CXL channel statistics
-  struct channel_stats_type {
+  struct cxl_channel_stats_type {
     std::string name{};
     uint64_t bus_cycles_rd_busy = 0;       // Read bus busy cycles
     uint64_t bus_cycles_wr_busy = 0;       // Write bus busy cycles
     uint64_t total_operating_cycles = 0;   // Total operating cycles
   };
-  channel_stats_type roi_stats, sim_stats;
+  using stats_type = cxl_channel_stats_type;
+  stats_type roi_stats, sim_stats;
 
   void check_collision();
   long finish_pcie_transfer();  // handle responses + handle_writes()
@@ -106,7 +107,8 @@ class CXL_CONTROLLER final: public champsim::operable {
   
   double rx_bw, tx_bw;  // bandwidth from json config (GT/s), USED FOR PRINTING ONLY
 
-  struct stats_type {
+public:
+  struct cxl_stats_type {
     std::string name{};
     
     // CXL-specific statistics
@@ -114,6 +116,7 @@ class CXL_CONTROLLER final: public champsim::operable {
     uint64_t bus_cycles_wr_busy = 0;       // Write bus busy cycles
     uint64_t total_operating_cycles = 0;   // Total operating cycles for utilization calculation
   };
+  using stats_type = cxl_stats_type;
   stats_type roi_stats;
   stats_type sim_stats;
   

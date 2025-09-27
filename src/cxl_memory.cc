@@ -377,8 +377,8 @@ void CXL_CHANNEL::initialize() {}
 
 void CXL_CONTROLLER::begin_phase()
 {
-  CXL_CONTROLLER::stats_type new_roi_stats;
-  CXL_CONTROLLER::stats_type new_sim_stats;
+  CXL_CONTROLLER::cxl_stats_type new_roi_stats;
+  CXL_CONTROLLER::cxl_stats_type new_sim_stats;
   new_roi_stats.name = "CXL_CONTROLLER";
   new_sim_stats.name = "CXL_CONTROLLER";
   this->roi_stats = new_roi_stats;
@@ -396,8 +396,8 @@ void CXL_CONTROLLER::begin_phase()
 }
 
 void CXL_CHANNEL::begin_phase() {
-  CXL_CHANNEL::channel_stats_type new_roi_stats;
-  CXL_CHANNEL::channel_stats_type new_sim_stats;
+  CXL_CHANNEL::cxl_channel_stats_type new_roi_stats;
+  CXL_CHANNEL::cxl_channel_stats_type new_sim_stats;
   new_roi_stats.name = "CXL_CHANNEL";
   new_sim_stats.name = "CXL_CHANNEL";
   this->roi_stats = new_roi_stats;

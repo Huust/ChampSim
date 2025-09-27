@@ -28,8 +28,8 @@ class SHIM_LAYER final: public champsim::operable {
   std::deque<response_type> RespQ;  // No limited sizd
 
   // Memory controller pointers for size access
-  MEMORY_CONTROLLER* dram_ptr;        // pointer to DRAM controller, nullptr if not enabled
-  MEMORY_CONTROLLER* cxl_ptr;         // pointer to CXL DRAM controller, nullptr if not enabled
+  MEMORY_CONTROLLER* dram_ptr = nullptr;        // pointer to DRAM controller, nullptr if not enabled
+  MEMORY_CONTROLLER* cxl_ptr = nullptr;         // pointer to CXL DRAM controller, nullptr if not enabled
 
   enum class MODE {
     DRAM_ONLY,
@@ -59,6 +59,7 @@ public:
     uint64_t upper_bw_congestion_cycles = 0;
     uint64_t lower_bw_congestion_cycles = 0;
   };
+  using stats_type = shim_stats;
   shim_stats roi_stats{}, sim_stats{};
 
   // Set default port bandwidth

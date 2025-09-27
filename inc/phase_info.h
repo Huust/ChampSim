@@ -26,6 +26,8 @@
 #include "cache_stats.h"
 #include "core_stats.h"
 #include "dram_stats.h"
+#include "cxl_memory.h"
+#include "shim_layer.h"
 
 namespace champsim
 {
@@ -43,7 +45,11 @@ struct phase_stats {
   std::vector<std::string> trace_names;
   std::vector<O3_CPU::stats_type> roi_cpu_stats, sim_cpu_stats;
   std::vector<CACHE::stats_type> roi_cache_stats, sim_cache_stats;
+  std::vector<SHIM_LAYER::stats_type> roi_shim_layer_stats, sim_shim_layer_stats;
   std::vector<DRAM_CHANNEL::stats_type> roi_dram_stats, sim_dram_stats;
+  // Optional CXL statistics - only populated when CXL is enabled
+  std::vector<CXL_CHANNEL::stats_type> roi_cxl_stats, sim_cxl_stats;
+  std::vector<DRAM_CHANNEL::stats_type> roi_cxl_dram_stats, sim_cxl_dram_stats;
 };
 
 } // namespace champsim

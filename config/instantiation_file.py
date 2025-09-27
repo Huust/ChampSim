@@ -23,7 +23,7 @@ import multiprocessing as mp
 from . import util
 from . import cxx
 
-shim_layer_fmtstr = '{{{_ulptr}}}, {{{_llptr}}}, {rq_size}, {wq_size}, {pq_size}, {max_upper_bw}, {max_lower_bw}, {dram_ptr}, {cxl_ptr}'
+shim_layer_fmtstr = '{_ulptr}, {{{_llptr}}}, {rq_size}, {wq_size}, {pq_size}, {max_upper_bw}, {max_lower_bw}, {dram_ptr}, {cxl_ptr}'
 pmem_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
 cxl_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_cxl_io}}}, std::size_t{{{_tCXL}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {respq_size}, champsim::data::bytes{{{channel_width}}}, {RD_BW}, {WR_BW}, {{{_llptr}}}'
 cxl_dram_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
@@ -418,10 +418,14 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     channels_head, channels_tail = util.cut((f'champsim::channel{{{queue_fmtstr.format(**v)}}}' for v in queues), n=-1)
     channel_instantiation_body = ('channels{', *(v+',' for v in channels_head), *channels_tail, '},')
 
+    # SHIM_LAYER ul parameter should be a single pointer, not vector
+    router_ul_channels = [f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == router['name']]
+    router_ul_ptr = router_ul_channels[0] if router_ul_channels else 'nullptr'
+
     shim_layer_instantiation_body = (
         'ROUTER{',
         shim_layer_fmtstr.format(
-            _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == router['name']),
+            _ulptr=router_ul_ptr,
             _llptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[1] == router['name']),
             dram_ptr='&DRAM' if is_dram_enabled else 'nullptr',
             cxl_ptr='&CXL_DRAM' if is_cxl_enabled else 'nullptr',
@@ -571,9 +575,18 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     yield from cxx.function(f'{classname}::router_view', [f'return {router["name"]};'], rtype='SHIM_LAYER&')
     if is_dram_enabled:
         yield from cxx.function(f'{classname}::dram_view', [f'return {pmem["name"]};'], rtype='MEMORY_CONTROLLER&')
+
+    # Always generate CXL functions - manually generate has_cxl due to const qualifier positioning
+    yield f'auto {classname}::has_cxl() const -> bool'
+    yield '{'
+    yield f'  return {str(is_cxl_enabled).lower()};'
+    yield '}'
     if is_cxl_enabled:
-        yield from cxx.function(f'{classname}::cxl_view', [f'return {cxl["name"]};'], rtype='CXL_CONTROLLER&')
-        yield from cxx.function(f'{classname}::cxl_dram_view', [f'return {cxl_dram["name"]};'], rtype='MEMORY_CONTROLLER&')
+        yield from cxx.function(f'{classname}::cxl_view', [f'return &{cxl["name"]};'], rtype='CXL_CONTROLLER*')
+        yield from cxx.function(f'{classname}::cxl_dram_view', [f'return &{cxl_dram["name"]};'], rtype='MEMORY_CONTROLLER*')
+    else:
+        yield from cxx.function(f'{classname}::cxl_view', ['return nullptr;'], rtype='CXL_CONTROLLER*')
+        yield from cxx.function(f'{classname}::cxl_dram_view', ['return nullptr;'], rtype='MEMORY_CONTROLLER*')
     yield ''
 
 def get_instantiation_header(num_cpus, env, build_id, is_dram_enabled, is_cxl_enabled):
@@ -617,13 +630,14 @@ def get_instantiation_header(num_cpus, env, build_id, is_dram_enabled, is_cxl_en
 
     if is_dram_enabled:
         struct_body.append('MEMORY_CONTROLLER& dram_view() final;')
-    if is_cxl_enabled:
-        struct_body.extend([
-            'CXL_CONTROLLER& cxl_view() final;',
-            'MEMORY_CONTROLLER& cxl_dram_view() final;'
-        ])
 
-    struct_body.append('std::vector<std::reference_wrapper<operable>> operable_view() final;')
+    # Always declare CXL functions for compatibility
+    struct_body.extend([
+        'std::vector<std::reference_wrapper<operable>> operable_view() final;',
+        'bool has_cxl() const final;',
+        'CXL_CONTROLLER* cxl_view() final;',
+        'MEMORY_CONTROLLER* cxl_dram_view() final;'
+    ])
 
     struct_name = f'champsim::configured::generated_environment<0x{build_id}> final'
     yield from cxx.struct(struct_name, struct_body, superclass='champsim::environment')

@@ -37,9 +37,15 @@ struct environment {
   virtual std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() = 0;
   virtual SHIM_LAYER& router_view() = 0;
   virtual MEMORY_CONTROLLER& dram_view() = 0;
-  virtual CXL_CONTROLLER& cxl_view() = 0;
-  virtual MEMORY_CONTROLLER& cxl_dram_view() = 0;
   virtual std::vector<std::reference_wrapper<operable>> operable_view() = 0;
+
+  // Optional CXL interface - conditionally exists based on configuration
+  // Note: Uses pointers instead of references because CXL components may not exist
+  // when CXL is disabled in configuration. References cannot be null, but pointers
+  // can return nullptr to indicate "component not available"
+  virtual bool has_cxl() const { return false; }
+  virtual CXL_CONTROLLER* cxl_view() { return nullptr; }        // Returns nullptr when CXL disabled
+  virtual MEMORY_CONTROLLER* cxl_dram_view() { return nullptr; } // Returns nullptr when CXL disabled
 };
 
 namespace configured

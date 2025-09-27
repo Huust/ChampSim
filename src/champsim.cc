@@ -171,11 +171,34 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
   std::transform(std::begin(caches), std::end(caches), std::back_inserter(stats.sim_cache_stats), [](const CACHE& cache) { return cache.sim_stats; });
   std::transform(std::begin(caches), std::end(caches), std::back_inserter(stats.roi_cache_stats), [](const CACHE& cache) { return cache.roi_stats; });
 
+  auto router = env.router_view();
+  stats.roi_shim_layer_stats.push_back(router.roi_stats);
+  stats.sim_shim_layer_stats.push_back(router.sim_stats);
+  
   auto dram = env.dram_view();
   std::transform(std::begin(dram.channels), std::end(dram.channels), std::back_inserter(stats.sim_dram_stats),
                  [](const DRAM_CHANNEL& chan) { return chan.sim_stats; });
   std::transform(std::begin(dram.channels), std::end(dram.channels), std::back_inserter(stats.roi_dram_stats),
                  [](const DRAM_CHANNEL& chan) { return chan.roi_stats; });
+
+  // Conditionally collect CXL statistics if CXL is enabled
+  if (env.has_cxl()) {
+    auto cxl = env.cxl_view();
+    if (cxl) {
+      // CXL_CONTROLLER has a single 'channel' member, not 'channels' vector
+      stats.sim_cxl_stats.push_back(cxl->channel.sim_stats);
+      stats.roi_cxl_stats.push_back(cxl->channel.roi_stats);
+    }
+
+    auto cxl_dram = env.cxl_dram_view();
+    if (cxl_dram) {
+      // CXL_DRAM is a MEMORY_CONTROLLER with channels vector
+      std::transform(std::begin(cxl_dram->channels), std::end(cxl_dram->channels), std::back_inserter(stats.sim_cxl_dram_stats),
+                     [](const DRAM_CHANNEL& chan) { return chan.sim_stats; });
+      std::transform(std::begin(cxl_dram->channels), std::end(cxl_dram->channels), std::back_inserter(stats.roi_cxl_dram_stats),
+                     [](const DRAM_CHANNEL& chan) { return chan.roi_stats; });
+    }
+  }
 
   return stats;
 }
