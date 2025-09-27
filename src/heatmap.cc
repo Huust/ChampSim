@@ -188,9 +188,5 @@ namespace champsim {
     bool is_fast_memory(uint64_t vpn) {
       return global_heatmap_instance.is_fast_memory(vpn);
     }
-
-    void enable_hotness_allocation() {
-      global_heatmap_instance.enable_hotness_allocation();
-    }
   }
 }

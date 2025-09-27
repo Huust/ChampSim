@@ -65,34 +65,34 @@ VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::si
 // Device vector size determines initialization: 1 element = single mode, 2 elements = hybrid mode
 void VirtualMemory::populate_pages()
 {
-  auto dram_size = std::accumulate(device.begin(), device.end(), champsim::data::bytes{0}, [](auto accumulator, auto dev) {
+  auto dram_size = std::accumulate(device.begin(), device.end(), champsim::data::bytes{0}, [](auto accumulator, auto& dev) {
     return accumulator + dev->size();
   });
   assert(dram_size > 1_MiB);
 
   ppage_free_list.resize(device.size());
 
-  std::for_each(ppage_free_list.begin(), ppage_free_list.end(), [this, dev = device.begin()](auto list) mutable {
+  std::for_each(ppage_free_list.begin(), ppage_free_list.end(), [this, dev = device.begin()](auto& list) mutable {
     assert((*dev)->size().count() != 0);
     if (dev == device.begin())  // If this is the first memory device, spare 1 MB address space
-      list->resize((((*dev)->size() - 1_MiB) / PAGE_SIZE).count());
+      list.resize((((*dev)->size() - 1_MiB) / PAGE_SIZE).count());
     else
-      list->resize(((*dev)->size() / PAGE_SIZE).count());
+      list.resize(((*dev)->size() / PAGE_SIZE).count());
 
     assert(dev != device.cend());
-    assert(list->size() != 0);
+    assert(list.size() != 0);
     dev++;
   });
 
   champsim::page_number base_address =
       champsim::page_number{champsim::lowest_address_for_size(std::max<champsim::data::mebibytes>(champsim::data::bytes{PAGE_SIZE}, 1_MiB))};
-  auto initialize_free_list = [&base_address](auto page) {
+  auto initialize_free_list = [&base_address](auto& page) {
     page = base_address;
     base_address++;
   };
   
   for (std::size_t dev = 0; dev < ppage_free_list.size(); dev++)
-  std::for_each(ppage_free_list.begin(), ppage_free_list.end(), [initialize_free_list](auto list){
+  std::for_each(ppage_free_list.begin(), ppage_free_list.end(), [initialize_free_list](auto& list){
     std::for_each(list.begin(), list.end(), initialize_free_list);
   });
 }
