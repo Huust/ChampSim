@@ -160,6 +160,7 @@
     },
 
     "shim_layer": {
+        "frequency": 4000,
         "cxl": 0,
         "dram": 1,
         "wq_size": 64,

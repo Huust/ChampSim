@@ -3,17 +3,19 @@
 #include <cfenv>
 #include <fmt/core.h>
 #include "deadlock.h"
+#include "operable.h"
 #include "util/bits.h"
 #include "dram_controller.h"
 
-SHIM_LAYER::SHIM_LAYER(champsim::channel *ul, std::vector<channel_type*>&& ll,
+SHIM_LAYER::SHIM_LAYER(champsim::chrono::picoseconds clock_period, champsim::channel *ul, std::vector<channel_type*>&& ll,
                        std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
                        long int max_upper_bw, long int max_lower_bw,
                        MEMORY_CONTROLLER* dram_ptr, MEMORY_CONTROLLER* cxl_ptr
                       )
-  :ul(ul), ll_queues(ll), WQ(wq_size), RQ(rq_size), PQ(pq_size),
-   dram_ptr(dram_ptr), cxl_ptr(cxl_ptr),
-   UPPER_STREAM_MAX_BW{max_upper_bw}, LOWER_STREAM_MAX_BW{max_lower_bw}
+  : champsim::operable(clock_period),
+    ul(ul), ll_queues(ll), WQ(wq_size), RQ(rq_size), PQ(pq_size),
+    dram_ptr(dram_ptr), cxl_ptr(cxl_ptr),
+    UPPER_STREAM_MAX_BW{max_upper_bw}, LOWER_STREAM_MAX_BW{max_lower_bw}
 {
   this->mode = get_operate_mode(dram_ptr != nullptr, cxl_ptr != nullptr);
 }

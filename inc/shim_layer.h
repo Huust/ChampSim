@@ -67,7 +67,7 @@ public:
   champsim::bandwidth::maximum_type LOWER_STREAM_MAX_BW;
 
 public:
-  SHIM_LAYER(champsim::channel *ul, std::vector<channel_type*>&& ll,
+  SHIM_LAYER(champsim::chrono::picoseconds clock_period, champsim::channel *ul, std::vector<channel_type*>&& ll,
              std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
              long int max_upper_bw, long int max_lower_bw,
              MEMORY_CONTROLLER* dram_ptr, MEMORY_CONTROLLER* cxl_ptr
