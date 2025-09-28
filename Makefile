@@ -18,7 +18,7 @@ override REPLACEMENT_ROOT += $(addsuffix /replacement,$(MODULE_ROOT))
 TRIPLET_DIR = $(patsubst %/,%,$(firstword $(filter-out $(ROOT_DIR)/vcpkg_installed/vcpkg/, $(wildcard $(ROOT_DIR)/vcpkg_installed/*/))))
 override CPPFLAGS += -I$(OBJ_ROOT)
 override LDFLAGS  += -L$(TRIPLET_DIR)/lib -L$(TRIPLET_DIR)/lib/manual-link
-override LDLIBS   += -llzma -lz -lbz2 -lfmt
+override LDLIBS   += -llzma -lz -lbz2 -lfmt -lCLI11
 
 .PHONY: all clean configclean test pytest maketest
 
@@ -284,10 +284,10 @@ $(executable_name) $(test_main_name):
 
 # Tests: build and run
 ifdef TEST_NUM
-selected_test = -\# "[$(addprefix #,$(filter $(addsuffix %,$(TEST_NUM)), $(patsubst %.cc,%,$(notdir $(wildcard $(test_source_dir)/*.cc)))))]"
+selected_test = -\# "[$(addprefix \#,$(filter $(addsuffix %,$(TEST_NUM)), $(patsubst %.cc,%,$(notdir $(wildcard $(test_source_dir)/*.cc)))))]"
 endif
 test: $(test_main_name)
-	$(test_main_name) $(selected_test)
+	$(test_main_name) $(selected_test) $(if $(TEST_ORDER),--order $(TEST_ORDER)) $(if $(TEST_SEED),--rng-seed $(TEST_SEED))
 
 pytest:
 	PYTHONPATH=$(PYTHONPATH):$(ROOT_DIR) python3 -m unittest discover -v --start-directory='test/python'
