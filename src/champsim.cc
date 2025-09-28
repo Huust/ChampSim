@@ -132,6 +132,9 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
     }
 
     // Check for phase finish
+    // 当程序执行到此处，会检查每个CPU所执行的指令是否超过了要求执行的长度（比如要求执行100条指令，本周期刚好执行到了第100条指令也就是cpu.sim_instr() >= length）
+    // 如果超过，就会将next_phase_complete[this cpu]设置为true；回到这段代码逻辑所属的外层while循环，你会发现我们的检测逻辑是：
+    // 如果在某次循环检测到所有next_phase_complete[this cpu]都是true，则表示每个CPU都执行完它们的指令了，也就是完成全部CPU的全部指令，于是可以退出while循环，因为全部cycles都做完了
     for (O3_CPU& cpu : env.cpu_view()) {
       // Phase complete
       next_phase_complete[cpu.cpu] = next_phase_complete[cpu.cpu] || (cpu.sim_instr() >= length);

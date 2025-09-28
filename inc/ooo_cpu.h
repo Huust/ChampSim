@@ -76,7 +76,7 @@ struct LSQ_ENTRY : champsim::program_ordered<LSQ_ENTRY> {
 
   LSQ_ENTRY(champsim::address addr, champsim::program_ordered<LSQ_ENTRY>::id_type id, champsim::address ip, std::array<uint8_t, 2> asid);
   void finish(ooo_model_instr& rob_entry) const;
-  void finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const;
+  ooo_model_instr& finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const;
 };
 
 // cpu

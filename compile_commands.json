@@ -10,9 +10,9 @@
       ".csconfig/address.o",
       "src/address.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/address.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/address.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/address.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/address.o"
   },
   {
     "arguments": [
@@ -25,24 +25,9 @@
       ".csconfig/bandwidth.o",
       "src/bandwidth.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/bandwidth.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/bandwidth.o"
-  },
-  {
-    "arguments": [
-      "/usr/bin/c++",
-      "@global.options",
-      "@absolute.options",
-      "-I.csconfig",
-      "-c",
-      "-o",
-      ".csconfig/cache.o",
-      "src/cache.cc"
-    ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/cache.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/cache.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/bandwidth.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/bandwidth.o"
   },
   {
     "arguments": [
@@ -55,9 +40,24 @@
       ".csconfig/cache_stats.o",
       "src/cache_stats.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/cache_stats.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/cache_stats.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/cache_stats.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/cache_stats.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/c++",
+      "@global.options",
+      "@absolute.options",
+      "-I.csconfig",
+      "-c",
+      "-o",
+      ".csconfig/cache.o",
+      "src/cache.cc"
+    ],
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/cache.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/cache.o"
   },
   {
     "arguments": [
@@ -70,9 +70,9 @@
       ".csconfig/champsim.o",
       "src/champsim.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/champsim.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/champsim.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/champsim.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/champsim.o"
   },
   {
     "arguments": [
@@ -85,9 +85,9 @@
       ".csconfig/channel.o",
       "src/channel.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/channel.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/channel.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/channel.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/channel.o"
   },
   {
     "arguments": [
@@ -100,9 +100,9 @@
       ".csconfig/chrono.o",
       "src/chrono.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/chrono.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/chrono.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/chrono.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/chrono.o"
   },
   {
     "arguments": [
@@ -115,9 +115,9 @@
       ".csconfig/core_stats.o",
       "src/core_stats.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/core_stats.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/core_stats.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/core_stats.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/core_stats.o"
   },
   {
     "arguments": [
@@ -130,9 +130,9 @@
       ".csconfig/dram_controller.o",
       "src/dram_controller.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/dram_controller.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/dram_controller.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/dram_controller.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/dram_controller.o"
   },
   {
     "arguments": [
@@ -145,9 +145,9 @@
       ".csconfig/dram_stats.o",
       "src/dram_stats.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/dram_stats.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/dram_stats.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/dram_stats.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/dram_stats.o"
   },
   {
     "arguments": [
@@ -160,9 +160,9 @@
       ".csconfig/extent.o",
       "src/extent.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/extent.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/extent.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/extent.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/extent.o"
   },
   {
     "arguments": [
@@ -175,9 +175,9 @@
       ".csconfig/generated_environment.o",
       "src/generated_environment.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/generated_environment.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/generated_environment.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/generated_environment.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/generated_environment.o"
   },
   {
     "arguments": [
@@ -190,9 +190,9 @@
       ".csconfig/json_printer.o",
       "src/json_printer.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/json_printer.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/json_printer.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/json_printer.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/json_printer.o"
   },
   {
     "arguments": [
@@ -200,15 +200,15 @@
       "@global.options",
       "@absolute.options",
       "-I.csconfig",
-      "-DCHAMPSIM_BUILD=0xbf89e5f753a21898",
+      "-DCHAMPSIM_BUILD=0x79d16564e0ca2de9",
       "-c",
       "-o",
-      ".csconfig/bf89e5f753a21898_main.o",
+      ".csconfig/79d16564e0ca2de9_main.o",
       "src/main.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/main.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/bf89e5f753a21898_main.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/main.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/79d16564e0ca2de9_main.o"
   },
   {
     "arguments": [
@@ -221,9 +221,9 @@
       ".csconfig/modules.o",
       "src/modules.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/modules.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/modules.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules.o"
   },
   {
     "arguments": [
@@ -236,9 +236,9 @@
       ".csconfig/ooo_cpu.o",
       "src/ooo_cpu.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/ooo_cpu.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/ooo_cpu.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/ooo_cpu.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/ooo_cpu.o"
   },
   {
     "arguments": [
@@ -251,9 +251,9 @@
       ".csconfig/operable.o",
       "src/operable.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/operable.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/operable.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/operable.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/operable.o"
   },
   {
     "arguments": [
@@ -266,24 +266,9 @@
       ".csconfig/plain_printer.o",
       "src/plain_printer.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/plain_printer.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/plain_printer.o"
-  },
-  {
-    "arguments": [
-      "/usr/bin/c++",
-      "@global.options",
-      "@absolute.options",
-      "-I.csconfig",
-      "-c",
-      "-o",
-      ".csconfig/ptw.o",
-      "src/ptw.cc"
-    ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/ptw.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/ptw.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/plain_printer.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/plain_printer.o"
   },
   {
     "arguments": [
@@ -296,9 +281,24 @@
       ".csconfig/ptw_builder.o",
       "src/ptw_builder.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/ptw_builder.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/ptw_builder.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/ptw_builder.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/ptw_builder.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/c++",
+      "@global.options",
+      "@absolute.options",
+      "-I.csconfig",
+      "-c",
+      "-o",
+      ".csconfig/ptw.o",
+      "src/ptw.cc"
+    ],
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/ptw.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/ptw.o"
   },
   {
     "arguments": [
@@ -311,9 +311,9 @@
       ".csconfig/register_allocator.o",
       "src/register_allocator.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/register_allocator.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/register_allocator.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/register_allocator.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/register_allocator.o"
   },
   {
     "arguments": [
@@ -326,9 +326,9 @@
       ".csconfig/tracereader.o",
       "src/tracereader.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/tracereader.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/tracereader.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/tracereader.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/tracereader.o"
   },
   {
     "arguments": [
@@ -341,9 +341,9 @@
       ".csconfig/vmem.o",
       "src/vmem.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/src/vmem.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/vmem.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/src/vmem.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/vmem.o"
   },
   {
     "arguments": [
@@ -357,9 +357,9 @@
       ".csconfig/modules/branch/bimodal/bimodal.o",
       "branch/bimodal/bimodal.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/branch/bimodal/bimodal.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/branch/bimodal/bimodal.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/branch/bimodal/bimodal.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/branch/bimodal/bimodal.o"
   },
   {
     "arguments": [
@@ -373,9 +373,9 @@
       ".csconfig/modules/branch/gshare/gshare.o",
       "branch/gshare/gshare.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/branch/gshare/gshare.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/branch/gshare/gshare.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/branch/gshare/gshare.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/branch/gshare/gshare.o"
   },
   {
     "arguments": [
@@ -389,9 +389,9 @@
       ".csconfig/modules/branch/hashed_perceptron/hashed_perceptron.o",
       "branch/hashed_perceptron/hashed_perceptron.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/branch/hashed_perceptron/hashed_perceptron.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/branch/hashed_perceptron/hashed_perceptron.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/branch/hashed_perceptron/hashed_perceptron.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/branch/hashed_perceptron/hashed_perceptron.o"
   },
   {
     "arguments": [
@@ -405,9 +405,9 @@
       ".csconfig/modules/branch/perceptron/perceptron.o",
       "branch/perceptron/perceptron.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/branch/perceptron/perceptron.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/branch/perceptron/perceptron.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/branch/perceptron/perceptron.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/branch/perceptron/perceptron.o"
   },
   {
     "arguments": [
@@ -421,9 +421,9 @@
       ".csconfig/modules/btb/basic_btb/basic_btb.o",
       "btb/basic_btb/basic_btb.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/btb/basic_btb/basic_btb.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/btb/basic_btb/basic_btb.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/btb/basic_btb/basic_btb.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/btb/basic_btb/basic_btb.o"
   },
   {
     "arguments": [
@@ -437,9 +437,9 @@
       ".csconfig/modules/btb/basic_btb/direct_predictor.o",
       "btb/basic_btb/direct_predictor.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/btb/basic_btb/direct_predictor.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/btb/basic_btb/direct_predictor.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/btb/basic_btb/direct_predictor.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/btb/basic_btb/direct_predictor.o"
   },
   {
     "arguments": [
@@ -453,9 +453,9 @@
       ".csconfig/modules/btb/basic_btb/indirect_predictor.o",
       "btb/basic_btb/indirect_predictor.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/btb/basic_btb/indirect_predictor.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/btb/basic_btb/indirect_predictor.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/btb/basic_btb/indirect_predictor.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/btb/basic_btb/indirect_predictor.o"
   },
   {
     "arguments": [
@@ -469,9 +469,9 @@
       ".csconfig/modules/btb/basic_btb/return_stack.o",
       "btb/basic_btb/return_stack.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/btb/basic_btb/return_stack.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/btb/basic_btb/return_stack.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/btb/basic_btb/return_stack.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/btb/basic_btb/return_stack.o"
   },
   {
     "arguments": [
@@ -485,9 +485,9 @@
       ".csconfig/modules/prefetcher/ip_stride/ip_stride.o",
       "prefetcher/ip_stride/ip_stride.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/prefetcher/ip_stride/ip_stride.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/prefetcher/ip_stride/ip_stride.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/prefetcher/ip_stride/ip_stride.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/prefetcher/ip_stride/ip_stride.o"
   },
   {
     "arguments": [
@@ -501,9 +501,9 @@
       ".csconfig/modules/prefetcher/next_line/next_line.o",
       "prefetcher/next_line/next_line.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/prefetcher/next_line/next_line.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/prefetcher/next_line/next_line.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/prefetcher/next_line/next_line.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/prefetcher/next_line/next_line.o"
   },
   {
     "arguments": [
@@ -517,9 +517,9 @@
       ".csconfig/modules/prefetcher/no/no.o",
       "prefetcher/no/no.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/prefetcher/no/no.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/prefetcher/no/no.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/prefetcher/no/no.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/prefetcher/no/no.o"
   },
   {
     "arguments": [
@@ -533,9 +533,9 @@
       ".csconfig/modules/prefetcher/spp_dev/spp_dev.o",
       "prefetcher/spp_dev/spp_dev.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/prefetcher/spp_dev/spp_dev.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/prefetcher/spp_dev/spp_dev.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/prefetcher/spp_dev/spp_dev.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/prefetcher/spp_dev/spp_dev.o"
   },
   {
     "arguments": [
@@ -549,9 +549,9 @@
       ".csconfig/modules/prefetcher/va_ampm_lite/va_ampm_lite.o",
       "prefetcher/va_ampm_lite/va_ampm_lite.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/prefetcher/va_ampm_lite/va_ampm_lite.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/prefetcher/va_ampm_lite/va_ampm_lite.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/prefetcher/va_ampm_lite/va_ampm_lite.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/prefetcher/va_ampm_lite/va_ampm_lite.o"
   },
   {
     "arguments": [
@@ -565,9 +565,9 @@
       ".csconfig/modules/replacement/drrip/drrip.o",
       "replacement/drrip/drrip.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/replacement/drrip/drrip.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/replacement/drrip/drrip.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/replacement/drrip/drrip.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/replacement/drrip/drrip.o"
   },
   {
     "arguments": [
@@ -581,9 +581,9 @@
       ".csconfig/modules/replacement/lru/lru.o",
       "replacement/lru/lru.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/replacement/lru/lru.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/replacement/lru/lru.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/replacement/lru/lru.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/replacement/lru/lru.o"
   },
   {
     "arguments": [
@@ -597,9 +597,9 @@
       ".csconfig/modules/replacement/random/random.o",
       "replacement/random/random.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/replacement/random/random.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/replacement/random/random.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/replacement/random/random.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/replacement/random/random.o"
   },
   {
     "arguments": [
@@ -613,9 +613,9 @@
       ".csconfig/modules/replacement/ship/ship.o",
       "replacement/ship/ship.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/replacement/ship/ship.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/replacement/ship/ship.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/replacement/ship/ship.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/replacement/ship/ship.o"
   },
   {
     "arguments": [
@@ -629,8 +629,8 @@
       ".csconfig/modules/replacement/srrip/srrip.o",
       "replacement/srrip/srrip.cc"
     ],
-    "directory": "/Users/ryan/ChampSim",
-    "file": "/Users/ryan/ChampSim/replacement/srrip/srrip.cc",
-    "output": "/Users/ryan/ChampSim/.csconfig/modules/replacement/srrip/srrip.o"
+    "directory": "/Users/ryan/ChampSim-explore",
+    "file": "/Users/ryan/ChampSim-explore/replacement/srrip/srrip.cc",
+    "output": "/Users/ryan/ChampSim-explore/.csconfig/modules/replacement/srrip/srrip.o"
   }
 ]
