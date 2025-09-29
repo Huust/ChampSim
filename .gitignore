@@ -33,3 +33,5 @@ absolute.options
 **/*.xz
 
 **/champsim_cache_analysis.md
+
+compile_commands.json
