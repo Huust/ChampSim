@@ -22,6 +22,7 @@
 #include <map>
 #include <optional>
 #include <random>
+#include <variant>
 
 #include "address.h"
 #include "champsim.h"
@@ -39,6 +40,11 @@ enum DEVICE {
   CXL = 1
 };
 
+struct Single {int id = 0;};  // single mode
+struct Dram {int id = 0;};    // hybrid-dram
+struct Cxl {int id = 1;};     // hybrid-cxl
+using Device = std::variant<Single, Dram, Cxl>;
+
 class VirtualMemory
 {
 private:
@@ -46,8 +52,12 @@ private:
   std::map<std::tuple<uint32_t, uint32_t, champsim::address_slice<champsim::dynamic_extent>>, champsim::address> page_table;
   std::optional<uint64_t> randomization_seed; // 如果有random seed，代表vm管理的物理内存页不是连续的；可能这一次物理页号是0x100，下一次就是0x108
 
-  std::vector<MEMORY_CONTROLLER*> device; // may have both dram and cxl memory device
-  enum DEVICE active_device; // current active device for physical page allocation (this variable is only valid in interleaving mode)
+  std::vector<MEMORY_CONTROLLER*> devices; // may have both dram and cxl memory device
+  Device active_device; // current active device for physical page allocation (this variable is only valid in interleaving mode)
+
+private:
+  // Helper function to get device index for array access
+  [[nodiscard]] std::size_t get_device_index(const Device& device) const;
 
 public:
   const champsim::chrono::clock::duration minor_fault_penalty;
@@ -59,14 +69,12 @@ private:
   champsim::page_number active_pte_page{};
   champsim::address_slice<champsim::dynamic_extent> next_pte_page;
 
-  // champsim::page_number next_ppage;
-  // champsim::page_number last_ppage;
-
-  [[nodiscard]] champsim::page_number ppage_front(enum DEVICE) const;
-  void ppage_pop(enum DEVICE);
+  [[nodiscard]] champsim::page_number ppage_front(const Device&) const;
+  void ppage_pop(const Device&);
 
   void populate_pages();
-  enum DEVICE select_device(champsim::page_number vaddr);
+  void shuffle_pages();
+  Device select_device(champsim::page_number vaddr);
 
 public:
   /**
@@ -104,7 +112,7 @@ public:
   /**
    * The count of unallocated physical pages.
    */
-  [[nodiscard]] std::size_t available_ppages(enum DEVICE) const;
+  [[nodiscard]] std::size_t available_ppages(const Device&) const;
 
   /**
    * Translate the given address from the virtual space to the physical space.
