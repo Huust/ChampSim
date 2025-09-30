@@ -32,12 +32,18 @@
 namespace champsim
 {
 struct environment {
+  virtual std::vector<std::reference_wrapper<operable>> operable_view() = 0;
   virtual std::vector<std::reference_wrapper<O3_CPU>> cpu_view() = 0;
   virtual std::vector<std::reference_wrapper<CACHE>> cache_view() = 0;
   virtual std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() = 0;
   virtual SHIM_LAYER& router_view() = 0;
-  virtual MEMORY_CONTROLLER& dram_view() = 0;
-  virtual std::vector<std::reference_wrapper<operable>> operable_view() = 0;
+
+  // Optional DRAM interface - conditionally exists based on configuration
+  // Note: Uses pointers instead of references because DRAM components may not exist
+  // when DRAM is disabled in configuration. References cannot be null, but pointers
+  // can return nullptr to indicate "component not available"
+  virtual bool has_dram() const { return false; }
+  virtual MEMORY_CONTROLLER* dram_view() { return nullptr; }    // Returns nullptr when DRAM disabled
 
   // Optional CXL interface - conditionally exists based on configuration
   // Note: Uses pointers instead of references because CXL components may not exist

@@ -574,8 +574,16 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     yield ''
 
     yield from cxx.function(f'{classname}::router_view', [f'return {router["name"]};'], rtype='SHIM_LAYER&')
+
+    # Always generate DRAM functions - manually generate has_dram due to const qualifier positioning
+    yield f'auto {classname}::has_dram() const -> bool'
+    yield '{'
+    yield f'  return {str(is_dram_enabled).lower()};'
+    yield '}'
     if is_dram_enabled:
-        yield from cxx.function(f'{classname}::dram_view', [f'return {pmem["name"]};'], rtype='MEMORY_CONTROLLER&')
+        yield from cxx.function(f'{classname}::dram_view', [f'return &{pmem["name"]};'], rtype='MEMORY_CONTROLLER*')
+    else:
+        yield from cxx.function(f'{classname}::dram_view', ['return nullptr;'], rtype='MEMORY_CONTROLLER*')
 
     # Always generate CXL functions - manually generate has_cxl due to const qualifier positioning
     yield f'auto {classname}::has_cxl() const -> bool'
@@ -629,12 +637,11 @@ def get_instantiation_header(num_cpus, env, build_id, is_dram_enabled, is_cxl_en
         'SHIM_LAYER& router_view() final;'
     ])
 
-    if is_dram_enabled:
-        struct_body.append('MEMORY_CONTROLLER& dram_view() final;')
-
-    # Always declare CXL functions for compatibility
+    # Always declare DRAM and CXL functions for compatibility
     struct_body.extend([
         'std::vector<std::reference_wrapper<operable>> operable_view() final;',
+        'bool has_dram() const final;',
+        'MEMORY_CONTROLLER* dram_view() final;',
         'bool has_cxl() const final;',
         'CXL_CONTROLLER* cxl_view() final;',
         'MEMORY_CONTROLLER* cxl_dram_view() final;'
