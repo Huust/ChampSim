@@ -54,8 +54,7 @@ VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::si
     fmt::print("[VMEM] WARNING: physical memory size is smaller than virtual memory size.\n"); // LCOV_EXCL_LINE
   }
   populate_pages();
-  if (std::holds_alternative<Single>(active_device))
-    shuffle_pages();
+  shuffle_pages();
 }
 
 VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::size_t page_table_levels, champsim::chrono::clock::duration minor_penalty,
@@ -99,10 +98,10 @@ void VirtualMemory::populate_pages()
 
 void VirtualMemory::shuffle_pages()
 {
-  assert(std::holds_alternative<Single>(active_device));
-  auto idx = std::get<Single>(active_device).id;
   if (randomization_seed.has_value())
-    std::shuffle(ppage_free_list[idx].begin(), ppage_free_list[idx].end(), std::mt19937_64{randomization_seed.value()});
+    std::for_each(ppage_free_list.begin(), ppage_free_list.end(), [this](auto& list){
+      std::shuffle(list.begin(), list.end(), std::mt19937_64{randomization_seed.value()});
+    });
 }
 
 std::size_t VirtualMemory::get_device_index(const Device& device) const
@@ -151,8 +150,7 @@ void VirtualMemory::ppage_pop(const Device& dev)
   if (available_ppages(dev) == 0) {
     fmt::print("[VMEM] WARNING: Out of physical memory, freeing ppages\n");
     populate_pages();
-    if (std::holds_alternative<Single>(active_device))
-      shuffle_pages();
+    shuffle_pages();
   }
 }
 

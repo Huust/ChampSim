@@ -32,14 +32,6 @@ class MEMORY_CONTROLLER;
 
 using pte_entry = champsim::data::size<long long, std::ratio<8>>;
 
-enum DEVICE {
-  // single mode
-  SINGLE = 0,
-  // hybrid mode
-  DRAM = 0,
-  CXL = 1
-};
-
 struct Single {int id = 0;};  // single mode
 struct Dram {int id = 0;};    // hybrid-dram
 struct Cxl {int id = 1;};     // hybrid-cxl
