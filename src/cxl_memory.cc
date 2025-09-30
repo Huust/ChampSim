@@ -214,21 +214,25 @@ long CXL_CHANNEL::finish_pcie_transfer() {
 
 long CXL_CHANNEL::handle_responses() {
   long progress{0};
+  bool this_cycle_is_busy = false;
 
   if (active_rd_resp_on_bus != std::end(RespQ)) {
+    this_cycle_is_busy = true;
     if (active_rd_resp_on_bus->value().ready_time <= current_time) {
       response_type response{active_rd_resp_on_bus->value().address, active_rd_resp_on_bus->value().v_address, active_rd_resp_on_bus->value().data,
                              active_rd_resp_on_bus->value().pf_metadata, active_rd_resp_on_bus->value().instr_depend_on_me};
-
       for (auto* ret : active_rd_resp_on_bus->value().to_return) {
         ret->push_back(response);
       }
       
       active_rd_resp_on_bus->reset();
       active_rd_resp_on_bus = std::end(RespQ);
+
       ++progress;
     } else {
       // Some response is transferring over the PCIe bus, but not yet finished
+      if (!warmup)
+          sim_stats.bus_cycles_rd_busy++;
       return progress;
     }
   }
@@ -246,13 +250,14 @@ long CXL_CHANNEL::handle_responses() {
       active_rd_resp_on_bus != std::end(RespQ) && active_rd_resp_on_bus->has_value() &&
       active_rd_resp_on_bus->value().ready_time <= current_time) {
     active_rd_resp_on_bus->value().ready_time = current_time + tRD;
+    this_cycle_is_busy = true;
     ++progress;
   } else {
     active_rd_resp_on_bus = std::end(RespQ);
   }
   
   // Update read bus utilization statistics
-  if (!warmup && active_rd_resp_on_bus != std::end(RespQ)) {
+  if (!warmup && this_cycle_is_busy) {
     sim_stats.bus_cycles_rd_busy++;
   }
 
@@ -296,12 +301,16 @@ long CXL_CHANNEL::populate_responses() {
 // 2. Then we choose another write request (which is already in WQ and goes through tCXL latency) and set its ready_time as current_time + tWR
 long CXL_CHANNEL::handle_writes() {
   long progress{0};
+  bool this_cycle_is_busy = false;
 
-  if (active_wr_req_on_bus != std::end(WQ) && active_wr_req_on_bus->value().ready_time <= current_time) {
-    lower_level->add_wq(active_wr_req_on_bus->value().raw_req);
-    active_wr_req_on_bus->reset();
-    active_wr_req_on_bus = std::end(WQ);
-    ++progress;
+  if (active_wr_req_on_bus != std::end(WQ)) {
+    this_cycle_is_busy = true;
+    if (active_wr_req_on_bus->value().ready_time <= current_time) {
+      lower_level->add_wq(active_wr_req_on_bus->value().raw_req);
+      active_wr_req_on_bus->reset();
+      active_wr_req_on_bus = std::end(WQ);
+      ++progress;
+    }
   }
 
   if (active_wr_req_on_bus == std::end(WQ)) {
@@ -320,15 +329,16 @@ long CXL_CHANNEL::handle_writes() {
         active_wr_req_on_bus != std::end(WQ) && active_wr_req_on_bus->has_value() &&
         active_wr_req_on_bus->value().ready_time <= current_time) {
       active_wr_req_on_bus->value().ready_time = current_time + tWR;
+      this_cycle_is_busy = true;
       ++progress;
     } else {
       active_wr_req_on_bus = std::end(WQ);
     }
-    
-    // Update write bus utilization statistics
-    if (!warmup && active_wr_req_on_bus != std::end(WQ)) {
-      sim_stats.bus_cycles_wr_busy++;
-    }
+  }
+
+  // Update write bus utilization statistics
+  if (!warmup && this_cycle_is_busy) {
+    sim_stats.bus_cycles_wr_busy++;
   }
 
   return progress;
