@@ -175,11 +175,15 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
   stats.roi_shim_layer_stats.push_back(router.roi_stats);
   stats.sim_shim_layer_stats.push_back(router.sim_stats);
   
-  auto dram = env.dram_view();
-  std::transform(std::begin(dram.channels), std::end(dram.channels), std::back_inserter(stats.sim_dram_stats),
-                 [](const DRAM_CHANNEL& chan) { return chan.sim_stats; });
-  std::transform(std::begin(dram.channels), std::end(dram.channels), std::back_inserter(stats.roi_dram_stats),
-                 [](const DRAM_CHANNEL& chan) { return chan.roi_stats; });
+  if (env.has_dram()) {
+    auto dram = env.dram_view();
+    if (dram) {
+      std::transform(std::begin(dram->channels), std::end(dram->channels), std::back_inserter(stats.sim_dram_stats),
+                     [](const DRAM_CHANNEL& chan) { return chan.sim_stats; });
+      std::transform(std::begin(dram->channels), std::end(dram->channels), std::back_inserter(stats.roi_dram_stats),
+                     [](const DRAM_CHANNEL& chan) { return chan.roi_stats; });
+    }
+  }
 
   // Conditionally collect CXL statistics if CXL is enabled
   if (env.has_cxl()) {
