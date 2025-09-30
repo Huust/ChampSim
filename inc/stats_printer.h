@@ -22,6 +22,8 @@
 #include "dram_controller.h"
 #include "ooo_cpu.h"
 #include "phase_info.h"
+#include "shim_layer.h"
+#include "cxl_memory.h"
 
 namespace champsim
 {
@@ -37,6 +39,8 @@ public:
   static std::vector<std::string> format(O3_CPU::stats_type stats);
   static std::vector<std::string> format(CACHE::stats_type stats);
   static std::vector<std::string> format(DRAM_CHANNEL::stats_type stats);
+  static std::vector<std::string> format(SHIM_LAYER::stats_type stats);
+  static std::vector<std::string> format(CXL_CHANNEL::stats_type stats);
   static std::vector<std::string> format(phase_stats& stats);
 };
 

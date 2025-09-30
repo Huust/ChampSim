@@ -145,6 +145,61 @@ std::vector<std::string> champsim::plain_printer::format(DRAM_CHANNEL::stats_typ
   return lines;
 }
 
+std::vector<std::string> champsim::plain_printer::format(SHIM_LAYER::stats_type stats)
+{
+  std::vector<std::string> lines{};
+
+  // DRAM request statistics
+  lines.push_back(fmt::format("{} DRAM REQUESTS", stats.name));
+  lines.push_back(fmt::format("  READ: {:10}", stats.dram_requests_read));
+  lines.push_back(fmt::format("  WRITE: {:10}", stats.dram_requests_write));
+  lines.push_back(fmt::format("  PREFETCH: {:10}", stats.dram_requests_prefetch));
+  lines.push_back(fmt::format("  TOTAL: {:10}", stats.dram_requests_total));
+
+  // CXL request statistics
+  lines.push_back(fmt::format("{} CXL REQUESTS", stats.name));
+  lines.push_back(fmt::format("  READ: {:10}", stats.cxl_requests_read));
+  lines.push_back(fmt::format("  WRITE: {:10}", stats.cxl_requests_write));
+  lines.push_back(fmt::format("  PREFETCH: {:10}", stats.cxl_requests_prefetch));
+  lines.push_back(fmt::format("  TOTAL: {:10}", stats.cxl_requests_total));
+
+  // Buffer congestion statistics
+  lines.push_back(fmt::format("{} BUFFER CONGESTION", stats.name));
+  lines.push_back(fmt::format("  RQ FULL: {:10}", stats.rq_full));
+  lines.push_back(fmt::format("  WQ FULL: {:10}", stats.wq_full));
+  lines.push_back(fmt::format("  PQ FULL: {:10}", stats.pq_full));
+
+  // Bandwidth congestion statistics
+  lines.push_back(fmt::format("{} BANDWIDTH CONGESTION", stats.name));
+  lines.push_back(fmt::format("  UPPER BW CONGESTION CYCLES: {:10}", stats.upper_bw_congestion_cycles));
+  lines.push_back(fmt::format("  LOWER BW CONGESTION CYCLES: {:10}", stats.lower_bw_congestion_cycles));
+
+  return lines;
+}
+
+std::vector<std::string> champsim::plain_printer::format(CXL_CHANNEL::stats_type stats)
+{
+  std::vector<std::string> lines{};
+
+  lines.push_back(fmt::format("{} CXL CHANNEL STATISTICS", stats.name));
+  lines.push_back(fmt::format("  READ BUS BUSY CYCLES: {:10}", stats.bus_cycles_rd_busy));
+  lines.push_back(fmt::format("  WRITE BUS BUSY CYCLES: {:10}", stats.bus_cycles_wr_busy));
+  lines.push_back(fmt::format("  TOTAL OPERATING CYCLES: {:10}", stats.total_operating_cycles));
+
+  // Calculate utilization percentages
+  if (stats.total_operating_cycles > 0) {
+    lines.push_back(fmt::format("  READ BUS UTILIZATION: {}%",
+                                ::print_ratio(100 * stats.bus_cycles_rd_busy, stats.total_operating_cycles)));
+    lines.push_back(fmt::format("  WRITE BUS UTILIZATION: {}%",
+                                ::print_ratio(100 * stats.bus_cycles_wr_busy, stats.total_operating_cycles)));
+  } else {
+    lines.push_back(fmt::format("  READ BUS UTILIZATION: -"));
+    lines.push_back(fmt::format("  WRITE BUS UTILIZATION: -"));
+  }
+
+  return lines;
+}
+
 void champsim::plain_printer::print(champsim::phase_stats& stats)
 {
   auto lines = format(stats);
@@ -193,12 +248,48 @@ std::vector<std::string> champsim::plain_printer::format(champsim::phase_stats& 
     std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
   }
 
-  lines.emplace_back("");
-  lines.emplace_back("DRAM Statistics");
-  for (const auto& stat : stats.roi_dram_stats) {
-    auto sublines = format(stat);
+  // SHIM_LAYER Statistics
+  if (!stats.roi_shim_layer_stats.empty()) {
     lines.emplace_back("");
-    std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
+    lines.emplace_back("SHIM_LAYER Statistics");
+    for (const auto& stat : stats.roi_shim_layer_stats) {
+      auto sublines = format(stat);
+      lines.emplace_back("");
+      std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
+    }
+  }
+
+  // DRAM Statistics - only display if DRAM stats exist
+  if (!stats.roi_dram_stats.empty()) {
+    lines.emplace_back("");
+    lines.emplace_back("DRAM Statistics");
+    for (const auto& stat : stats.roi_dram_stats) {
+      auto sublines = format(stat);
+      lines.emplace_back("");
+      std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
+    }
+  }
+
+  // CXL Statistics - only display if CXL stats exist
+  if (!stats.roi_cxl_stats.empty()) {
+    lines.emplace_back("");
+    lines.emplace_back("CXL Statistics");
+    for (const auto& stat : stats.roi_cxl_stats) {
+      auto sublines = format(stat);
+      lines.emplace_back("");
+      std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
+    }
+  }
+
+  // CXL DRAM Statistics - only display if CXL DRAM stats exist
+  if (!stats.roi_cxl_dram_stats.empty()) {
+    lines.emplace_back("");
+    lines.emplace_back("CXL DRAM Statistics");
+    for (const auto& stat : stats.roi_cxl_dram_stats) {
+      auto sublines = format(stat);
+      lines.emplace_back("");
+      std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
+    }
   }
 
   return lines;
