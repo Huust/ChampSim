@@ -15,6 +15,7 @@
  */
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <numeric>
 #include <string>
@@ -65,10 +66,10 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   std::string json_file_name;
   std::vector<std::string> trace_names;
 
-  bool generate_heatmap = false;
-  std::string heatmap_dir;
+  std::string generate_heatmap_path;
+  std::string use_heatmap_path;
   bool sort_by_criticality = false;
-  std::string ratio_str;
+  std::string ratio_str = "1:3";
 
   auto set_heartbeat_callback = [&](auto) {
     for (O3_CPU& cpu : gen_environment.cpu_view()) {
@@ -89,10 +90,10 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   auto* json_option =
       app.add_option("--json", json_file_name, "The name of the file to receive JSON output. If no name is specified, stdout will be used")->expected(0, 1);
 
-  app.add_flag("--generate-heatmap", generate_heatmap, "Generate heatmap data by running part of trace instructions after warmup");
-  app.add_option("--heatmap-dir", heatmap_dir, "Directory path for heatmap output file");
+  app.add_option("--generate-heatmap", generate_heatmap_path, "Generate heatmap data and save to specified file path");
+  app.add_option("--use-heatmap", use_heatmap_path, "Use existing heatmap file for memory allocation during simulation");
   app.add_flag("--sort-by-criticality", sort_by_criticality, "Sort virtual pages by criticality when allocating (for simulation mode)");
-  app.add_option("--ratio", ratio_str, "Ratio for memory allocation (format: N:M, for simulation mode)");
+  app.add_option("--ratio", ratio_str, "Ratio for memory allocation (format: N:M, for simulation mode)")->default_val("1:3");
 
   app.add_option("traces", trace_names, "The paths to the traces")->required()->expected(NUM_CPUS)->check(CLI::ExistingFile);
 
@@ -122,12 +123,17 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   std::vector<champsim::phase_info> phases;
 
-  if (generate_heatmap) {
-    // Generate heatmap mode: warmup + heatmap generation phase
-    if (heatmap_dir.empty()) {
-      fmt::print("ERROR: --heatmap-dir is required when using --generate-heatmap\n");
-      return 1;
+  if (!generate_heatmap_path.empty()) {
+    // Check if both DRAM and CXL devices are available for heatmap generation
+    if (!gen_environment.has_dram() || !gen_environment.has_cxl()) {
+      fmt::print("ERROR: Heatmap generation requires both DRAM and CXL devices to be enabled in configuration.\n");
+      fmt::print("       Current configuration: DRAM={}, CXL={}\n",
+                 gen_environment.has_dram() ? "enabled" : "disabled",
+                 gen_environment.has_cxl() ? "enabled" : "disabled");
+      std::abort();
     }
+
+    // Generate heatmap mode: warmup + heatmap generation phase
     champsim::heatmap::enable_heatmap_generation();
 
     phases = {
@@ -141,25 +147,32 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       champsim::phase_info{"Simulation", false, simulation_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names}
     };
 
-    // Load heatmap and allocate VPNs if parameters are provided
-    if (!heatmap_dir.empty()) {
+    // Load heatmap and allocate VPNs if use-heatmap is provided
+    if (!use_heatmap_path.empty()) {
+      // Check if both DRAM and CXL devices are available for heatmap usage
+      if (!gen_environment.has_dram() || !gen_environment.has_cxl()) {
+        fmt::print("ERROR: Heatmap functionality requires both DRAM and CXL devices to be enabled in configuration.\n");
+        fmt::print("       Current configuration: DRAM={}, CXL={}\n",
+                   gen_environment.has_dram() ? "enabled" : "disabled",
+                   gen_environment.has_cxl() ? "enabled" : "disabled");
+        std::abort();
+      }
+
       // Enable heatmap with the file path, then load the data
       champsim::heatmap::enable_hotness_allocation();
-      champsim::heatmap::load(heatmap_dir);
+      champsim::heatmap::load(use_heatmap_path);
 
-      if (!ratio_str.empty()) {
-        // Parse ratio string (format: "N:M")
-        size_t colon_pos = ratio_str.find(':');
-        if (colon_pos != std::string::npos) {
-          uint32_t ratio_first = std::stoul(ratio_str.substr(0, colon_pos));
-          uint32_t ratio_second = std::stoul(ratio_str.substr(colon_pos + 1));
+      // Parse ratio string (format: "N:M") - now has default value "1:3"
+      size_t colon_pos = ratio_str.find(':');
+      if (colon_pos != std::string::npos) {
+        uint32_t ratio_first = std::stoul(ratio_str.substr(0, colon_pos));
+        uint32_t ratio_second = std::stoul(ratio_str.substr(colon_pos + 1));
 
-          champsim::heatmap::allocate_vpns(sort_by_criticality, ratio_first, ratio_second);
-          champsim::heatmap::enable_hotness_allocation();
-        } else {
-          fmt::print("ERROR: Invalid ratio format. Use N:M format (e.g., 1:3)\\n");
-          return 1;
-        }
+        champsim::heatmap::allocate_vpns(sort_by_criticality, ratio_first, ratio_second);
+        champsim::heatmap::enable_hotness_allocation();
+      } else {
+        fmt::print("ERROR: Invalid ratio format. Use N:M format (e.g., 1:3)\n");
+        return 1;
       }
     }
   }
@@ -171,21 +184,26 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   }
 
   // Print simulation configuration
-  if (generate_heatmap) {
+  if (!generate_heatmap_path.empty()) {
     fmt::print("\n*** ChampSim Heatmap Generation Mode ***\nWarmup Instructions: {}\nHeatmap Generation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\nHeatmap Output: {}\n\n",
-               phases.at(0).length, phases.at(1).length, std::size(gen_environment.cpu_view()), PAGE_SIZE, heatmap_dir);
+               phases.at(0).length, phases.at(1).length, std::size(gen_environment.cpu_view()), PAGE_SIZE, generate_heatmap_path);
   } else {
-    fmt::print("\n*** ChampSim Multicore Out-of-Order Simulator ***\nWarmup Instructions: {}\nSimulation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\n\n",
+    fmt::print("\n*** ChampSim Multicore Out-of-Order Simulator ***\nWarmup Instructions: {}\nSimulation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\n",
                phases.at(0).length, phases.at(1).length, std::size(gen_environment.cpu_view()), PAGE_SIZE);
+    if (!use_heatmap_path.empty()) {
+      fmt::print("Using Heatmap: {}\nMemory Allocation Ratio: {}\nSort by Criticality: {}\n",
+                 use_heatmap_path, ratio_str, sort_by_criticality ? "Yes" : "No");
+    }
+    fmt::print("\n");
   }
 
   // in champsim.cc
   auto phase_stats = champsim::main(gen_environment, phases, traces);
 
   // Save heatmap if in generate mode
-  if (generate_heatmap) {
-    champsim::heatmap::save(heatmap_dir);
-    fmt::print("\nHeatmap generation completed and saved to: {}\n\n", heatmap_dir);
+  if (!generate_heatmap_path.empty()) {
+    champsim::heatmap::save(generate_heatmap_path);
+    fmt::print("\nHeatmap generation completed and saved to: {}\n\n", generate_heatmap_path);
     return 0;
   }
 
