@@ -77,6 +77,7 @@ public:
   long handle_responses();
   long route();
   long populate_requests();
+  long warmup_fast_forward();
   MODE get_operate_mode(bool is_dram_enabled, bool is_cxl_enabled);
 
   // inherit from operable

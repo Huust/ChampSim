@@ -25,7 +25,7 @@ SHIM_LAYER::SHIM_LAYER(champsim::chrono::picoseconds clock_period, champsim::cha
 long SHIM_LAYER::handle_responses() {
   long progress{0};
   // 1
-  for (auto* lower_level : ll_queues) {
+  for (auto lower_level : ll_queues) {
     for (auto& ret : lower_level->returned) {
         RespQ.push_back(ret);
         progress++;
@@ -56,20 +56,25 @@ long SHIM_LAYER::route() {
       }
 
       if (!lower_bw.has_remaining()) {
-        if (!warmup) {
-          sim_stats.lower_bw_congestion_cycles++;
-        }
+        sim_stats.lower_bw_congestion_cycles++;
         break;
       }
 
       auto& pkt = it->value();
-      bool is_cxl_address = pkt.address.template to<uint64_t>() >= dram_ptr->size().count();
-      champsim::channel* dest_channel;
-      if (this->mode == MODE::DRAM_ONLY)
-        dest_channel = ll_queues[0];
-      else if (this->mode == MODE::CXL_ONLY)
-        dest_channel = ll_queues[1];
-      else
+      bool is_cxl_address;
+      if (mode == MODE::CXL_ONLY) {
+        is_cxl_address = true;
+      } else if (mode == MODE::HYBRID) {
+        is_cxl_address = pkt.address.template to<uint64_t>() >= dram_ptr->size().count();
+      } else if (mode == MODE::DRAM_ONLY) {
+        is_cxl_address = false;
+      } else {
+        assert(0);
+        abort();
+      }
+
+      champsim::channel* dest_channel = ll_queues[0];
+      if (mode == MODE::HYBRID)
         dest_channel = is_cxl_address ? ll_queues[1] : ll_queues[0];
       
       bool success = false;
@@ -81,12 +86,10 @@ long SHIM_LAYER::route() {
       }
       
       if (success) {
-        if (!warmup) {
-          if (is_cxl_address) {
-            stats_func_cxl();
-          } else {
-            stats_func_dram();
-          }
+        if (is_cxl_address) {
+          stats_func_cxl();
+        } else {
+          stats_func_dram();
         }
         it->reset();
         lower_bw.consume();
@@ -105,7 +108,51 @@ long SHIM_LAYER::route() {
   return progress;
 }
 
-// Populate local queues with requests from upper level
+// Warmup mode: direct pass-through without bandwidth/queue limits (from upper level to lower level)
+long SHIM_LAYER::warmup_fast_forward() {
+  long progress{0};
+
+  // Process all upstream requests directly
+  auto process_direct_transfer = [&](auto& from_queue, char queue_type) {
+    while (!from_queue.empty()) {
+      auto req = from_queue.front();
+      from_queue.pop_front();
+
+      // Route to appropriate lower level
+      bool is_cxl_address;
+      if (mode == MODE::CXL_ONLY) {
+        is_cxl_address = true;
+      } else if (mode == MODE::HYBRID) {
+        is_cxl_address = req.address.template to<uint64_t>() >= dram_ptr->size().count();
+      } else if (mode == MODE::DRAM_ONLY) {
+        is_cxl_address = false;
+      } else {
+        assert(0);
+        abort();
+      }
+
+      champsim::channel* dest_channel = ll_queues[0];
+      if (mode == MODE::HYBRID)
+        dest_channel = is_cxl_address ? ll_queues[1] : ll_queues[0];
+
+      // Direct transfer without checking success
+      switch(queue_type) {
+        case 'R': dest_channel->add_rq(req); break;
+        case 'W': dest_channel->add_wq(req); break;
+        case 'P': dest_channel->add_pq(req); break;
+      }
+
+      progress++;
+    }
+  };
+
+  process_direct_transfer(ul->RQ, 'R');
+  process_direct_transfer(ul->WQ, 'W');
+  process_direct_transfer(ul->PQ, 'P');
+
+  return progress;
+}
+
 long SHIM_LAYER::populate_requests() {
   long progress{0};
   champsim::bandwidth upper_bw{UPPER_STREAM_MAX_BW};
@@ -117,18 +164,14 @@ long SHIM_LAYER::populate_requests() {
     // First check bandwidth limitation
     if (!upper_bw.has_remaining()) {
       // Bandwidth exhausted
-      if (!warmup) {
-        sim_stats.upper_bw_congestion_cycles++;  // Upper bandwidth congestion
-      }
+      sim_stats.upper_bw_congestion_cycles++;
       break;
     }
     
     // Then check internal buffer availability
     if (rq_it == std::end(RQ)) {
       // Internal RQ is full
-      if (!warmup) {
-        sim_stats.rq_full++;  // Buffer congestion
-      }
+      sim_stats.rq_full++;
       break;
     }
     
@@ -150,18 +193,14 @@ long SHIM_LAYER::populate_requests() {
     // First check bandwidth limitation
     if (!upper_bw.has_remaining()) {
       // Bandwidth exhausted
-      if (!warmup) {
-        sim_stats.upper_bw_congestion_cycles++;  // Upper bandwidth congestion
-      }
+      sim_stats.upper_bw_congestion_cycles++;
       break;
     }
     
     // Then check internal buffer availability
     if (wq_it == std::end(WQ)) {
       // Internal WQ is full
-      if (!warmup) {
-        sim_stats.wq_full++;  // Buffer congestion
-      }
+      sim_stats.wq_full++;
       break;
     }
     
@@ -183,18 +222,14 @@ long SHIM_LAYER::populate_requests() {
     // First check bandwidth limitation
     if (!upper_bw.has_remaining()) {
       // Bandwidth exhausted
-      if (!warmup) {
-        sim_stats.upper_bw_congestion_cycles++;  // Upper bandwidth congestion
-      }
+      sim_stats.upper_bw_congestion_cycles++;
       break;
     }
     
     // Then check internal buffer availability
     if (pq_it == std::end(PQ)) {
       // Internal PQ is full
-      if (!warmup) {
-        sim_stats.pq_full++;  // Buffer congestion
-      }
+      sim_stats.pq_full++;
       break;
     }
     
@@ -223,8 +258,16 @@ SHIM_LAYER::MODE SHIM_LAYER::get_operate_mode(bool is_dram_enabled, bool is_cxl_
 long SHIM_LAYER::operate() {
   long progress{0};
   progress += handle_responses();
-  progress += route();
-  progress += populate_requests();
+
+  if (warmup) {
+    // Warmup mode: direct pass-through, skip bandwidth modeling
+    progress += warmup_fast_forward();
+  } else {
+    // Normal mode: full bandwidth modeling and queue management
+    progress += route();
+    progress += populate_requests();
+  }
+
   return progress;
 }
 
