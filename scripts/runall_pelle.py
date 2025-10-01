@@ -55,10 +55,9 @@ def run_champsim(path_to_traces, champsim_run):
                 f'--output={outputdir}/{conf_prefix}.out',
                 f'--error={outputdir}/{conf_prefix}.err',
                 champsim_run,
-                conf,                    # configuration
-                outputdir,          # output directory
-                f'{conf_prefix}_{trace_name}',
-                full_trace_path,         # trace file path
+                conf,                           # configuration
+                resultsdir,                     # results directory (used for storing heatmap collection in run_pelle.sh)
+                full_trace_path,                # trace file path
             ]
             cmds.append(cmd)
 
@@ -76,9 +75,7 @@ def run_champsim(path_to_traces, champsim_run):
 
 
 # Example usage
-path_to_traces = '/crex/proj/uppstore2017059/iamchp/coaxial_artifact/traces/'
-csrunscript = '/crex/proj/uppstore2017059/iamchp/coaxial_artifact/ChampSim/run_rackham.sh'
-csrunscript = '/crex/proj/uppstore2017059/iamchp/coaxial_artifact/ChampSim/run_rackham_long.sh'
-csrunscript = '/crex/proj/uppstore2017059/iamchp/coaxial_artifact/ChampSim/run_rackham_addrmap.sh'
-resultsdir = '/crex/proj/uppstore2017059/iamchp/coaxial_artifact/results'
+path_to_traces = '/proj/uart_chp_cxl_trans/champsim_traces'
+csrunscript = '/proj/uart_chp_cxl_trans/songtao/ChampSim-dev/scripts/run_pelle.sh'
+resultsdir = '/proj/uart_chp_cxl_trans/songtao/results'
 run_champsim(path_to_traces, csrunscript)
