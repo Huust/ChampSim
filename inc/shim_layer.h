@@ -3,6 +3,7 @@
 
 #include <cstddef>  // for size_t
 #include <deque>    // for deque
+#include <optional> // for gcc to compile
 
 #include "address.h"
 #include "channel.h"
