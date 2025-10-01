@@ -291,10 +291,10 @@ class NormalizedConfiguration:
             self.pmem['frequency'] = self.pmem['data_rate']/2
 
         if('frequency' in self.cxl_dram.keys()):
-            self.pmem['data_rate'] = self.pmem['frequency']
-            self.pmem['frequency'] = self.pmem['frequency']/2
+            self.cxl_dram['data_rate'] = self.cxl_dram['frequency']
+            self.cxl_dram['frequency'] = self.cxl_dram['frequency']/2
         elif('data_rate' in self.cxl_dram.keys()):
-            self.pmem['frequency'] = self.pmem['data_rate']/2
+            self.cxl_dram['frequency'] = self.cxl_dram['data_rate']/2
 
         if verbose:
             print('P: router', list(self.router.keys()))
