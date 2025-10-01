@@ -52,6 +52,11 @@ case "$CONFIGURATION" in
         BINARY="$CHAMPSIM_BASE/bin/champsim_hybrid"
         HEATMAP_FILE="$HEATMAP_DIR/${TRACE_NAME}_access"
 
+        # Clean old heatmap data to ensure fresh start
+        echo "=== Cleaning old heatmap data ==="
+        rm -rf "$HEATMAP_DIR" 2>/dev/null
+        mkdir -p "$HEATMAP_DIR"
+
         echo "=== PHASE 1: Generating heatmap ==="
         GENERATE_COMMAND="$BINARY $ARGS --generate-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
         echo "Executing: $GENERATE_COMMAND"
@@ -69,6 +74,11 @@ case "$CONFIGURATION" in
         # Two-phase execution for criticality-based heatmap allocation
         BINARY="$CHAMPSIM_BASE/bin/champsim_hybrid"
         HEATMAP_FILE="$HEATMAP_DIR/${TRACE_NAME}_criticality"
+
+        # Clean old heatmap data to ensure fresh start
+        echo "=== Cleaning old heatmap data ==="
+        rm -rf "$HEATMAP_DIR" 2>/dev/null
+        mkdir -p "$HEATMAP_DIR"
 
         echo "=== PHASE 1: Generating heatmap ==="
         GENERATE_COMMAND="$BINARY $ARGS --generate-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
