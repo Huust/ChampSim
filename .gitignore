@@ -36,3 +36,7 @@ absolute.options
 
 compile_commands.json
 heatmap
+plots/
+plots_final/
+results/
+
