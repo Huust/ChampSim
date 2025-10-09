@@ -116,6 +116,7 @@ struct ooo_model_instr : champsim::program_ordered<ooo_model_instr> {
   bool executed = false;
   bool completed = false;
   bool caused_rob_stall = false;
+  bool is_llc_miss = false;
 
   unsigned completed_mem_ops = 0;
   int num_reg_dependent = 0;

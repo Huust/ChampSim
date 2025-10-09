@@ -2,10 +2,12 @@
 
 #include <cfenv>
 #include <fmt/core.h>
+#include "access_type.h"
 #include "deadlock.h"
 #include "operable.h"
 #include "util/bits.h"
 #include "dram_controller.h"
+#include "heatmap.h"
 
 SHIM_LAYER::SHIM_LAYER(champsim::chrono::picoseconds clock_period, champsim::channel *ul, std::vector<channel_type*>&& ll,
                        std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
@@ -175,8 +177,13 @@ long SHIM_LAYER::populate_requests() {
       break;
     }
     
-    // Both conditions satisfied, transfer the request
     *rq_it = ul->RQ.front();
+    // Track four cases of access type
+    if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() &&
+        ((*rq_it)->type == access_type::LOAD || (*rq_it)->type == access_type::RFO ||
+         (*rq_it)->type == access_type::TRANSLATION || (*rq_it)->type == access_type::PREFETCH)) {
+      champsim::heatmap::track_llc_miss((*rq_it)->v_address);
+    }
     ul->RQ.pop_front();
     ++rq_it;
     upper_bw.consume();

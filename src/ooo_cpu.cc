@@ -586,7 +586,7 @@ void O3_CPU::do_memory_scheduling(ooo_model_instr& instr)
       if (sq_it->fetch_issued) { // Store already executed
         (*q_entry)->finish(instr);
         q_entry->reset();
-      } else {
+      } else {  // else if we know the address is same, but the data of store instruction is still not available
         assert(sq_it->instr_id < instr.instr_id);      // The found SQ entry is a prior store
         sq_it->lq_depend_on_me.emplace_back(*q_entry); // Forward the load when the store finishes
         (*q_entry)->producer_id = sq_it->instr_id;     // The load waits on the store to finish
@@ -756,12 +756,12 @@ long O3_CPU::handle_memory_return()
   for (champsim::bandwidth l1d_bw{L1D_BANDWIDTH}; l1d_bw.has_remaining() && l1d_it != std::end(L1D_bus.lower_level->returned); l1d_bw.consume(), ++l1d_it) {
     for (auto& lq_entry : LQ) {
       if (lq_entry.has_value() && lq_entry->fetch_issued && champsim::block_number{lq_entry->virtual_address} == champsim::block_number{l1d_it->v_address}) {
-        auto rob_entry = lq_entry->finish(std::begin(ROB), std::end(ROB));
+        auto& rob_entry = lq_entry->finish(std::begin(ROB), std::end(ROB));
         lq_entry.reset();
 
-        // Record this lsq entry's vaddr if it once stalled the ROB
-        if (champsim::heatmap::is_heatmap_generation_enabled() && l1d_it->is_llc_miss && rob_entry.caused_rob_stall)
-          champsim::heatmap::track_critical_miss(lq_entry->virtual_address);
+        if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() && l1d_it->is_llc_miss) {
+          rob_entry.is_llc_miss = true;
+        }
 
         ++progress;
       }
@@ -775,6 +775,17 @@ long O3_CPU::handle_memory_return()
 
 long O3_CPU::retire_rob()
 {
+  // Track critical miss only once per instruction to avoid duplicate counting
+  if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() && !ROB.empty() &&
+      ROB.front().caused_rob_stall && ROB.front().is_llc_miss &&
+      !champsim::heatmap::is_critical_miss_tracked(ROB.front().instr_id)) {
+
+    champsim::heatmap::mark_critical_miss_tracked(ROB.front().instr_id);
+    std::for_each(ROB.front().source_memory.cbegin(), ROB.front().source_memory.cend(), [](auto& smem){
+      champsim::heatmap::track_critical_miss(smem);
+    });
+  }
+
   auto [retire_begin, retire_end] =
       champsim::get_span_p(std::cbegin(ROB), std::cend(ROB), champsim::bandwidth{RETIRE_WIDTH}, [](const auto& x) { return x.completed; });
   assert(std::distance(retire_begin, retire_end) >= 0); // end succeeds begin
@@ -782,17 +793,6 @@ long O3_CPU::retire_rob()
     std::for_each(retire_begin, retire_end, [cycle = current_time.time_since_epoch() / clock_period](const auto& x) {
       fmt::print("[ROB] retire_rob instr_id: {} is retired cycle: {}\n", x.instr_id, cycle);
     });
-  }
-
-  // Check rob stall due to memory access instrs
-  // condition:
-  // 1. ROB is not empty
-  // 2. the oldest instruction in ROB is memory access instruction
-  // 3. not completed (means bandwidth)
-  // 4. ROB retirement bandwidth is not all consumed
-  if (!ROB.empty() && (!ROB.front().destination_memory.empty() || !ROB.front().source_memory.empty()) &&
-      !ROB.front().completed && std::distance(retire_begin, retire_end) < champsim::bandwidth{RETIRE_WIDTH}.amount_remaining()) {
-    ROB.front().caused_rob_stall = true;
   }
 
   // commit register writes to backend RAT
@@ -806,6 +806,15 @@ long O3_CPU::retire_rob()
   auto retire_count = std::distance(retire_begin, retire_end);
   num_retired += retire_count;
   ROB.erase(retire_begin, retire_end);
+
+  // Check rob stall (this property might be used at the beginning of this function in some next cycles)
+  // condition:
+  // Only when the oldest instruction in ROB is not completed and the retire_bandwidth has not been used out,
+  // in this case, the instruction cause rob stall.
+  if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() && !ROB.empty() &&
+      !ROB.front().completed && retire_count < champsim::bandwidth{RETIRE_WIDTH}.amount_remaining()) {
+    ROB.front().caused_rob_stall = true;
+  }
 
   return retire_count;
 }

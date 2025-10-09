@@ -245,7 +245,7 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
 
   response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me};
-  response.is_llc_miss = true;
+  response.is_llc_miss = fill_mshr.is_llc_miss;
   for (auto* ret : fill_mshr.to_return) {
     ret->push_back(response);
   }
@@ -370,10 +370,6 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     if (!success) {
       return false;
     }
-
-    // LLC misses is recorded in map
-    if (this->NAME == "LLC" && champsim::heatmap::is_heatmap_generation_enabled() && handle_pkt.type != access_type::PREFETCH)
-      champsim::heatmap::track_llc_miss(handle_pkt.v_address);
 
     // Allocate an MSHR
     if (mshr_pkt.second.response_requested) {
