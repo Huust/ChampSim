@@ -51,6 +51,55 @@ bin/champsim --warmup_instructions 200000000 --simulation_instructions 500000000
 bin/<executable_name> --warmup_instructions <warmup> --simulation_instructions <sim> <trace_file>
 ```
 
+### Building Multiple Hardware Configurations (Repository-Specific)
+
+This repository uses hardware configuration JSON files to build different memory system variants:
+
+```bash
+# Build all three binary configurations at once
+./scripts/make_all_binaries.sh
+
+# Or build individually with specific config files:
+./config.sh hardware_configs/hybrid.json && make
+./config.sh hardware_configs/dram_only.json && make
+./config.sh hardware_configs/cxl_only.json && make
+```
+
+**Available Hardware Configurations:**
+- `hardware_configs/hybrid.json` → `bin/champsim_hybrid` (CXL + DRAM)
+- `hardware_configs/dram_only.json` → `bin/champsim_dram_only` (DRAM only)
+- `hardware_configs/cxl_only.json` → `bin/champsim_cxl_only` (CXL only)
+
+### Cluster Job Submission and Analysis Workflow
+
+**Running experiments on SLURM cluster:**
+```bash
+# Submit all configurations across all traces
+python3 scripts/runall_pelle.py
+
+# Or manually submit individual jobs
+sbatch --output=results/config_trace.out --error=results/config_trace.err \
+    scripts/run_pelle.sh <configuration> <results_dir> <trace_path>
+```
+
+**Supported configurations in run_pelle.sh:**
+- `cxl_only`: CXL-only memory system
+- `dram_only`: DRAM-only memory system
+- `hybrid-roundrobin`: Hybrid with round-robin allocation
+- `hybrid-hotness-access`: Two-phase with access-count-based heatmap
+- `hybrid-hotness-criticality`: Two-phase with criticality-based heatmap
+
+**Data collection and visualization:**
+```bash
+# Collect statistics from all .out files into CSV/pickle
+python3 scripts/collect_stats.py
+
+# Generate various plots from collected data
+python3 scripts/plot.py              # Basic IPC and MPKI plots
+python3 scripts/advanced_plot.py     # Detailed comparisons
+python3 scripts/heatmap_plot.py      # Memory access heatmaps
+```
+
 ## Architecture Overview
 
 ### Core Components
@@ -103,6 +152,15 @@ CPU (O3_CPU) → L1I/L1D Caches → L2C Cache → LLC Cache → SHIM_LAYER (Rout
 - Connected to internal DRAM controller for CXL device memory
 - Implements collision detection and write forwarding
 - Located in `inc/cxl_memory.h` and `src/cxl_memory.cc`
+
+**Heatmap-Based Memory Allocation (Repository-Specific):**
+- Two-phase simulation for intelligent memory placement
+- Phase 1: Generates heatmap of page access patterns (`--generate-heatmap`)
+- Phase 2: Uses heatmap to allocate hot pages to DRAM, cold to CXL (`--use-heatmap`)
+- Two allocation strategies:
+  - Access-count based: Pages sorted by total access count
+  - Criticality-based: Pages sorted by criticality (`--sort-by-criticality`)
+- Heatmap files stored per-trace for reproducible allocation decisions
 
 ### Important Implementation Details
 
@@ -167,3 +225,24 @@ cp prefetcher/no_l2c/no.cc prefetcher/my_prefetcher/my_prefetcher.cc
 - `config/`: Python scripts for parsing JSON and generating build files
 - `config/instantiation_file.py`: Main configuration parser and code generator
 - `champsim_config.json`: Example configuration with all available options
+
+**Analysis and Visualization Scripts:**
+- `scripts/runall_pelle.py`: Batch job submission for SLURM cluster
+- `scripts/run_pelle.sh`: Individual job runner with configuration handling
+- `scripts/collect_stats.py`: Extracts IPC, LLC stats, SHIM statistics from .out files
+- `scripts/plot.py`: Generates MPKI distribution and IPC comparison plots
+- `scripts/advanced_plot.py`: Additional detailed performance analysis plots
+- `scripts/heatmap_plot.py`: Visualizes memory access patterns and allocation
+
+**Expected Results Directory Structure:**
+```
+results/
+├── dram_only/          # DRAM-only configuration outputs
+├── cxl_only/           # CXL-only configuration outputs
+├── hybrid-roundrobin/  # Hybrid round-robin allocation
+├── hybrid-hotness-access/       # Access-count based allocation
+├── hybrid-hotness-criticality/  # Criticality-based allocation
+├── heatmaps/           # Generated heatmap files (per-trace)
+├── collected_stats.csv # Aggregated statistics
+└── collected_stats.pkl # Pandas pickle for analysis
+```

@@ -48,7 +48,7 @@ def run_champsim(path_to_traces, champsim_run):
 
         for conf, outputdir in configs_outputs:
             outputdir = os.path.join(resultsdir, outputdir)
-            conf_prefix = f"{conf}_{trace_name}"
+            conf_prefix = f"{conf}_{trace_name}"    # {conf} field is unnecessary
 
             cmd = [
                 'sbatch',
