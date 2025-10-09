@@ -124,15 +124,6 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   std::vector<champsim::phase_info> phases;
 
   if (!generate_heatmap_path.empty()) {
-    // Check if both DRAM and CXL devices are available for heatmap generation
-    if (!gen_environment.has_dram() || !gen_environment.has_cxl()) {
-      fmt::print("ERROR: Heatmap generation requires both DRAM and CXL devices to be enabled in configuration.\n");
-      fmt::print("       Current configuration: DRAM={}, CXL={}\n",
-                 gen_environment.has_dram() ? "enabled" : "disabled",
-                 gen_environment.has_cxl() ? "enabled" : "disabled");
-      std::abort();
-    }
-
     // Generate heatmap mode: warmup + heatmap generation phase
     champsim::heatmap::enable_heatmap_generation();
 
@@ -204,7 +195,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   if (!generate_heatmap_path.empty()) {
     champsim::heatmap::save(generate_heatmap_path);
     fmt::print("\nHeatmap generation completed and saved to: {}\n\n", generate_heatmap_path);
-    return 0;
+    // return 0;
   }
 
   // Champsim would print it after warmup and simulation are done
