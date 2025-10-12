@@ -1,6 +1,8 @@
 #include "shim_layer.h"
 
+#include <cassert>
 #include <cfenv>
+#include <stdexcept>
 #include <fmt/core.h>
 #include "access_type.h"
 #include "deadlock.h"
@@ -8,15 +10,18 @@
 #include "util/bits.h"
 #include "dram_controller.h"
 #include "heatmap.h"
+#include "environment.h"
+#include "ooo_cpu.h"
 
 SHIM_LAYER::SHIM_LAYER(champsim::chrono::picoseconds clock_period, champsim::channel *ul, std::vector<channel_type*>&& ll,
                        std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
                        long int max_upper_bw, long int max_lower_bw,
-                       MEMORY_CONTROLLER* dram_ptr, MEMORY_CONTROLLER* cxl_ptr
+                       MEMORY_CONTROLLER* dram_ptr, MEMORY_CONTROLLER* cxl_ptr,
+                       champsim::environment* env_ptr
                       )
   : champsim::operable(clock_period),
     ul(ul), ll_queues(ll), WQ(wq_size), RQ(rq_size), PQ(pq_size),
-    dram_ptr(dram_ptr), cxl_ptr(cxl_ptr),
+    dram_ptr(dram_ptr), cxl_ptr(cxl_ptr), env_ptr(env_ptr),
     UPPER_STREAM_MAX_BW{max_upper_bw}, LOWER_STREAM_MAX_BW{max_lower_bw}
 {
   this->mode = get_operate_mode(dram_ptr != nullptr, cxl_ptr != nullptr);
@@ -183,6 +188,25 @@ long SHIM_LAYER::populate_requests() {
         ((*rq_it)->type == access_type::LOAD || (*rq_it)->type == access_type::RFO ||
          (*rq_it)->type == access_type::TRANSLATION || (*rq_it)->type == access_type::PREFETCH)) {
       champsim::heatmap::track_llc_miss((*rq_it)->v_address);
+
+      // Set is_llc_miss in corresponding ROB entry as true
+      // RFOs always come from write request, and at this moment write has been retired
+      // If the translation comes from write, at this moment write has been retired
+      // No matter what situation, rob_entry is gone
+      // For load request, it should always be within the ROB before reposoen before reposoen before reposoen before response is reached
+
+      // Anyway, the possible situation can be:
+      // All loads
+      // Translation triggered by load requests
+      if ((*rq_it)->type == access_type::LOAD || (*rq_it)->type == access_type::TRANSLATION) {
+        auto rob_entry = get_rob_entry((*rq_it)->cpu, (*rq_it)->instr_id);
+        if (rob_entry != nullptr) {
+          rob_entry->is_llc_miss = true;
+          // Track the source memory address that caused this LLC miss
+          rob_entry->llc_miss_source_memory.push_back((*rq_it)->v_address);
+        } else
+          assert((*rq_it)->type != access_type::LOAD);
+      }
     }
     ul->RQ.pop_front();
     ++rq_it;
@@ -301,7 +325,7 @@ void SHIM_LAYER::begin_phase() {
   roi_stats = new_roi_stats;
 
   // Update upper level's and lower levels' channel stats
-  for (auto levels : {std::vector{ul}, ll_queues}) {
+  for(auto levels : {std::vector{ul}, ll_queues}) {
     for (auto l: levels) {
       channel_type::stats_type new_level_roi_stats;
       channel_type::stats_type new_level_sim_stats;
@@ -329,4 +353,19 @@ void SHIM_LAYER::print_deadlock() {
   champsim::range_print_deadlock(RespQ, "ROUTER_RespQ", q_writer, [](const auto& entry){
     return std::tuple{entry.address, entry.v_address};
   });
+}
+
+// ROB access function - finds and returns reference to ROB entry by instruction ID
+ooo_model_instr* SHIM_LAYER::get_rob_entry(uint32_t cpu_id, uint64_t instr_id) {
+  assert(env_ptr != nullptr);
+  auto cpu_view = env_ptr->cpu_view();
+
+  assert(cpu_id < cpu_view.size());
+  O3_CPU& cpu = cpu_view[cpu_id];
+
+  // Search through ROB to find matching instruction ID
+  auto rob_entry = std::partition_point(cpu.ROB.begin(), cpu.ROB.end(), ooo_model_instr::precedes(instr_id));
+  assert(rob_entry != cpu.ROB.end());
+
+  return (rob_entry->instr_id == instr_id) ? &(*rob_entry) : nullptr;
 }
