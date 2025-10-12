@@ -126,6 +126,7 @@ struct ooo_model_instr : champsim::program_ordered<ooo_model_instr> {
 
   std::vector<champsim::address> destination_memory = {};
   std::vector<champsim::address> source_memory = {};
+  std::vector<champsim::address> llc_miss_source_memory = {};  // Source memory addresses that caused LLC misses
 
   // these are indices of instructions in the ROB that depend on me
   std::vector<std::reference_wrapper<ooo_model_instr>> registers_instrs_depend_on_me;
