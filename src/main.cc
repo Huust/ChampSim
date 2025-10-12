@@ -195,7 +195,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   if (!generate_heatmap_path.empty()) {
     champsim::heatmap::save(generate_heatmap_path);
     fmt::print("\nHeatmap generation completed and saved to: {}\n\n", generate_heatmap_path);
-    // return 0;
+    return 0;
   }
 
   // Champsim would print it after warmup and simulation are done
