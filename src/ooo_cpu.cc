@@ -759,9 +759,9 @@ long O3_CPU::handle_memory_return()
         auto& rob_entry = lq_entry->finish(std::begin(ROB), std::end(ROB));
         lq_entry.reset();
 
-        if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() && l1d_it->is_llc_miss) {
-          rob_entry.is_llc_miss = true;
-        }
+        // if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() && l1d_it->is_llc_miss) {
+        //   rob_entry.is_llc_miss = true;
+        // }
 
         ++progress;
       }
@@ -775,16 +775,6 @@ long O3_CPU::handle_memory_return()
 
 long O3_CPU::retire_rob()
 {
-  // Track critical miss only once per instruction to avoid duplicate counting
-  if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() && !ROB.empty() &&
-      ROB.front().caused_rob_stall && ROB.front().is_llc_miss &&
-      !champsim::heatmap::is_critical_miss_tracked(ROB.front().instr_id)) {
-
-    champsim::heatmap::mark_critical_miss_tracked(ROB.front().instr_id);
-    std::for_each(ROB.front().source_memory.cbegin(), ROB.front().source_memory.cend(), [](auto& smem){
-      champsim::heatmap::track_critical_miss(smem);
-    });
-  }
 
   auto [retire_begin, retire_end] =
       champsim::get_span_p(std::cbegin(ROB), std::cend(ROB), champsim::bandwidth{RETIRE_WIDTH}, [](const auto& x) { return x.completed; });
@@ -798,6 +788,17 @@ long O3_CPU::retire_rob()
   // commit register writes to backend RAT
   // and recycle the old physical registers
   for (auto rob_it = retire_begin; rob_it != retire_end; ++rob_it) {
+    // Track critical miss for instructions that caused ROB stall and had LLC misses
+    if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() &&
+        rob_it->caused_rob_stall && rob_it->is_llc_miss &&
+        !rob_it->llc_miss_source_memory.empty()) {
+
+      // Only blame source memory addresses that actually caused LLC misses, not all source memory
+      std::for_each(rob_it->llc_miss_source_memory.cbegin(), rob_it->llc_miss_source_memory.cend(), [](auto& smem){
+        champsim::heatmap::track_critical_miss(smem);
+      });
+    }
+
     for (auto dreg : rob_it->destination_registers) {
       reg_allocator.retire_dest_register(dreg);
     }
