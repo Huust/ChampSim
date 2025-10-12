@@ -28,13 +28,6 @@ void HeatMapTracker::track_critical_miss(champsim::address v_address) {
   llc_miss_heatmap[vpn].second++;
 }
 
-bool HeatMapTracker::is_critical_miss_tracked(uint64_t instr_id) {
-  return critical_miss_tracked_instructions.count(instr_id) > 0;
-}
-
-void HeatMapTracker::mark_critical_miss_tracked(uint64_t instr_id) {
-  critical_miss_tracked_instructions.insert(instr_id);
-}
 
 void HeatMapTracker::save_heatmap(const std::string& file_path) {
   if (llc_miss_heatmap.empty()) {
@@ -173,13 +166,6 @@ namespace champsim {
       global_heatmap_instance.track_critical_miss(v_address);
     }
 
-    bool is_critical_miss_tracked(uint64_t instr_id) {
-      return global_heatmap_instance.is_critical_miss_tracked(instr_id);
-    }
-
-    void mark_critical_miss_tracked(uint64_t instr_id) {
-      global_heatmap_instance.mark_critical_miss_tracked(instr_id);
-    }
 
     void save(const std::string& file_path) {
       global_heatmap_instance.save_heatmap(file_path);
