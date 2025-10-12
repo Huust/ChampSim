@@ -23,7 +23,7 @@ import multiprocessing as mp
 from . import util
 from . import cxx
 
-shim_layer_fmtstr = 'champsim::chrono::picoseconds{{{clock_period}}}, {_ulptr}, {{{_llptr}}}, {rq_size}, {wq_size}, {pq_size}, {max_upper_bw}, {max_lower_bw}, {dram_ptr}, {cxl_ptr}'
+shim_layer_fmtstr = 'champsim::chrono::picoseconds{{{clock_period}}}, {_ulptr}, {{{_llptr}}}, {rq_size}, {wq_size}, {pq_size}, {max_upper_bw}, {max_lower_bw}, {dram_ptr}, {cxl_ptr}, this'
 pmem_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
 cxl_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_cxl_io}}}, std::size_t{{{_tCXL}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {respq_size}, champsim::data::bytes{{{channel_width}}}, {RD_BW}, {WR_BW}, {{{_llptr}}}'
 cxl_dram_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'

@@ -13,6 +13,9 @@
 // Forward declarations
 class MEMORY_CONTROLLER;
 class CXL_CONTROLLER;
+class O3_CPU;
+struct ooo_model_instr;
+namespace champsim { struct environment; }
 
 class SHIM_LAYER final: public champsim::operable {
   using channel_type = champsim::channel;
@@ -31,6 +34,9 @@ class SHIM_LAYER final: public champsim::operable {
   // Memory controller pointers for size access
   MEMORY_CONTROLLER* dram_ptr = nullptr;        // pointer to DRAM controller, nullptr if not enabled
   MEMORY_CONTROLLER* cxl_ptr = nullptr;         // pointer to CXL DRAM controller, nullptr if not enabled
+
+  // Environment access for ROB operations
+  champsim::environment* env_ptr = nullptr;
 
   enum class MODE {
     DRAM_ONLY,
@@ -71,7 +77,8 @@ public:
   SHIM_LAYER(champsim::chrono::picoseconds clock_period, champsim::channel *ul, std::vector<channel_type*>&& ll,
              std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
              long int max_upper_bw, long int max_lower_bw,
-             MEMORY_CONTROLLER* dram_ptr, MEMORY_CONTROLLER* cxl_ptr
+             MEMORY_CONTROLLER* dram_ptr, MEMORY_CONTROLLER* cxl_ptr,
+             champsim::environment* env_ptr
              );
 
   // own function
@@ -80,6 +87,9 @@ public:
   long populate_requests();
   long warmup_fast_forward();
   MODE get_operate_mode(bool is_dram_enabled, bool is_cxl_enabled);
+
+  // ROB access function
+  ooo_model_instr* get_rob_entry(uint32_t cpu_id, uint64_t instr_id);
 
   // inherit from operable
   void initialize();
