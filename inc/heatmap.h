@@ -19,14 +19,14 @@ class HeatMapTracker {
 public:
   void enable_heatmap_generation();
   bool is_heatmap_generation_enabled();
-  void track_llc_miss(champsim::address v_address);
-  void track_critical_miss(champsim::address v_address);
+  void track_llc_miss(champsim::page_number vpn);
+  void track_critical_miss(champsim::page_number vpn);
   void save_heatmap(const std::string& file_path);
   void load_heatmap(const std::string& file_path);
   void enable_hotness_allocation();
   bool is_hotness_allocation_enabled();
   void allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t ratio_first, uint32_t ratio_second);
-  bool is_fast_memory(uint64_t vpn) const;
+  bool is_fast_memory(champsim::page_number vpn) const;
 };
 
 // Global heatmap access interface
@@ -41,7 +41,7 @@ namespace champsim {
     bool is_heatmap_generation_enabled();
     bool is_hotness_allocation_enabled();
     void allocate_vpns(bool sort_by_criticality, uint32_t ratio_first, uint32_t ratio_second);
-    bool is_fast_memory(uint64_t vpn);
+    bool is_fast_memory(champsim::page_number vpn);
     void enable_hotness_allocation();
   }
 }
