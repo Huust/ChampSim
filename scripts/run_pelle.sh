@@ -49,16 +49,19 @@ case "$CONFIGURATION" in
         ;;
     "hybrid-hotness-access")
         # Two-phase execution for access-count-based heatmap allocation
-        BINARY="$CHAMPSIM_BASE/bin/champsim_hybrid"
+        # Use dram-only mode to generate heatmap
+        # Use hybrid mode to use heatmap
+        DRAM_BINARY="$CHAMPSIM_BASE/bin/champsim_dram_only"
+        HYBRID_BINARY="$CHAMPSIM_BASE/bin/champsim_hybrid"
         HEATMAP_FILE="$HEATMAP_DIR/${TRACE_NAME}_access"
 
         # Clean old heatmap data to ensure fresh start
         echo "=== Cleaning old heatmap data ==="
-        rm -rf "$HEATMAP_DIR" 2>/dev/null
-        mkdir -p "$HEATMAP_DIR"
+        rm "$HEATMAP_FILE" 2>/dev/null
+        touch "$HEATMAP_FILE"
 
         echo "=== PHASE 1: Generating heatmap ==="
-        GENERATE_COMMAND="$BINARY $ARGS --generate-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
+        GENERATE_COMMAND="$DRAM_BINARY $ARGS --generate-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
         echo "Executing: $GENERATE_COMMAND"
         $GENERATE_COMMAND
 
@@ -68,20 +71,21 @@ case "$CONFIGURATION" in
         fi
 
         echo "=== PHASE 2: Using heatmap for simulation (access-count based) ==="
-        COMMAND="$BINARY $ARGS --use-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
+        COMMAND="$HYBRID_BINARY $ARGS --use-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
         ;;
     "hybrid-hotness-criticality")
         # Two-phase execution for criticality-based heatmap allocation
-        BINARY="$CHAMPSIM_BASE/bin/champsim_hybrid"
+        DRAM_BINARY="$CHAMPSIM_BASE/bin/champsim_dram_only"
+        HYBRID_BINARY="$CHAMPSIM_BASE/bin/champsim_hybrid"
         HEATMAP_FILE="$HEATMAP_DIR/${TRACE_NAME}_criticality"
 
         # Clean old heatmap data to ensure fresh start
         echo "=== Cleaning old heatmap data ==="
-        rm -rf "$HEATMAP_DIR" 2>/dev/null
-        mkdir -p "$HEATMAP_DIR"
+        rm "$HEATMAP_FILE" 2>/dev/null
+        touch "$HEATMAP_FILE" 
 
         echo "=== PHASE 1: Generating heatmap ==="
-        GENERATE_COMMAND="$BINARY $ARGS --generate-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
+        GENERATE_COMMAND="$DRAM_BINARY $ARGS --generate-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
         echo "Executing: $GENERATE_COMMAND"
         $GENERATE_COMMAND
 
@@ -91,7 +95,7 @@ case "$CONFIGURATION" in
         fi
 
         echo "=== PHASE 2: Using heatmap for simulation (criticality based) ==="
-        COMMAND="$BINARY $ARGS --use-heatmap $HEATMAP_FILE --sort-by-criticality $FULL_TRACE_PATH"
+        COMMAND="$HYBRID_BINARY $ARGS --use-heatmap $HEATMAP_FILE --sort-by-criticality $FULL_TRACE_PATH"
         ;;
     *)
         echo "Invalid configuration: $CONFIGURATION"
