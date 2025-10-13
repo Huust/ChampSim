@@ -109,11 +109,16 @@ std::size_t VirtualMemory::get_device_index(const Device& device) const
   return std::visit([](const auto& dev) { return dev.id; }, device);
 }
 
-Device VirtualMemory::select_device(champsim::page_number vaddr) {
+Device VirtualMemory::select_device(champsim::page_number vpn) {
   if (champsim::heatmap::is_hotness_allocation_enabled()) {
     assert(devices.size() == 2); // Should have 2 devices when using heatmap
+    
+    // If hotness allocation is enabled, warmup phase must use DRAM
+    // to be consistent with warmup phase in heatmap generation (dram-only mode)
+    if (devices[0]->warmup)
+      return Device{Dram{}};
+
     // Use heatmap-based allocation
-    uint64_t vpn = vaddr.to<uint64_t>();
     return champsim::heatmap::is_fast_memory(vpn) ? Device{Dram{}} : Device{Cxl{}};
   } else {
     // Use traditional interleaving allocation

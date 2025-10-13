@@ -122,6 +122,9 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
     uint64_t total_downstream_demands = total_mshr_return - stats.mshr_return.value_or(std::pair{access_type::PREFETCH, cpu}, mshr_return_value_type{});
     lines.push_back(
         fmt::format("cpu{}->{} AVERAGE MISS LATENCY: {} cycles", cpu, stats.name, ::print_ratio(stats.total_miss_latency_cycles, total_downstream_demands)));
+    lines.push_back(
+        fmt::format("cpu{}->{} MSHR CONGESTION CYCLES: {:10} ({}% of total cycles)", cpu, stats.name, stats.mshr_congestion_cycles,
+                    stats.mshr_congestion_cycles * 100.0 / std::max(uint64_t{1}, stats.mshr_congestion_cycles + total_hits + total_misses)));
   }
 
   return lines;

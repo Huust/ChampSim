@@ -98,6 +98,7 @@ python3 scripts/collect_stats.py
 python3 scripts/plot.py              # Basic IPC and MPKI plots
 python3 scripts/advanced_plot.py     # Detailed comparisons
 python3 scripts/heatmap_plot.py      # Memory access heatmaps
+python3 scripts/tlb_plot.py          # TLB miss rate and latency analysis
 ```
 
 ## Architecture Overview
@@ -161,6 +162,13 @@ CPU (O3_CPU) → L1I/L1D Caches → L2C Cache → LLC Cache → SHIM_LAYER (Rout
   - Access-count based: Pages sorted by total access count
   - Criticality-based: Pages sorted by criticality (`--sort-by-criticality`)
 - Heatmap files stored per-trace for reproducible allocation decisions
+- Criticality tracking: Instructions track LLC miss sources and mark retirement-time critical misses
+
+**Statistics Collection (Repository-Specific):**
+- Cache statistics: Hits, misses, MSHR merges, miss latency, congestion cycles
+- SHIM layer statistics: Separate tracking for DRAM and CXL read/write requests
+- TLB statistics: DTLB/STLB access counts, miss counts, and average miss latencies
+- All statistics separated between warmup and simulation phases
 
 ### Important Implementation Details
 
@@ -229,10 +237,11 @@ cp prefetcher/no_l2c/no.cc prefetcher/my_prefetcher/my_prefetcher.cc
 **Analysis and Visualization Scripts:**
 - `scripts/runall_pelle.py`: Batch job submission for SLURM cluster
 - `scripts/run_pelle.sh`: Individual job runner with configuration handling
-- `scripts/collect_stats.py`: Extracts IPC, LLC stats, SHIM statistics from .out files
+- `scripts/collect_stats.py`: Extracts IPC, LLC stats, SHIM statistics, and TLB metrics from .out files
 - `scripts/plot.py`: Generates MPKI distribution and IPC comparison plots
 - `scripts/advanced_plot.py`: Additional detailed performance analysis plots
 - `scripts/heatmap_plot.py`: Visualizes memory access patterns and allocation
+- `scripts/tlb_plot.py`: Analyzes TLB miss rates, MPKI, and average miss latencies across configurations
 
 **Expected Results Directory Structure:**
 ```

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <vector>
 #include <fmt/core.h>
+#include "champsim.h"
 
 void HeatMapTracker::enable_heatmap_generation() {
   heatmap_generation_enabled = true;
@@ -16,16 +17,12 @@ bool HeatMapTracker::is_heatmap_generation_enabled() {
   return heatmap_generation_enabled;
 }
 
-void HeatMapTracker::track_llc_miss(champsim::address v_address) {
-  // pick the VPN
-  auto vpn = v_address.to<uint64_t>() >> LOG2_PAGE_SIZE;
-  llc_miss_heatmap[vpn].first++;
+void HeatMapTracker::track_llc_miss(champsim::page_number vpn) {
+  llc_miss_heatmap[vpn.to<uint64_t>()].first++;
 }
 
-void HeatMapTracker::track_critical_miss(champsim::address v_address) {
-  // pick the VPN
-  auto vpn = v_address.to<uint64_t>() >> LOG2_PAGE_SIZE;
-  llc_miss_heatmap[vpn].second++;
+void HeatMapTracker::track_critical_miss(champsim::page_number vpn) {
+  llc_miss_heatmap[vpn.to<uint64_t>()].second++;
 }
 
 
@@ -88,8 +85,8 @@ bool HeatMapTracker::is_hotness_allocation_enabled() {
   return hotness_allocation_enabled;
 }
 
-bool HeatMapTracker::is_fast_memory(uint64_t vpn) const {
-  return fast_vpns.find(vpn) != fast_vpns.end();
+bool HeatMapTracker::is_fast_memory(champsim::page_number vpn) const {
+  return (fast_vpns.find(vpn.to<uint64_t>()) != fast_vpns.end());
 }
 
 void HeatMapTracker::allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t ratio_first, uint32_t ratio_second) {
@@ -159,11 +156,11 @@ namespace champsim {
     }
 
     void track_llc_miss(champsim::address v_address) {
-      global_heatmap_instance.track_llc_miss(v_address);
+      global_heatmap_instance.track_llc_miss(champsim::page_number{v_address});
     }
 
     void track_critical_miss(champsim::address v_address) {
-      global_heatmap_instance.track_critical_miss(v_address);
+      global_heatmap_instance.track_critical_miss(champsim::page_number{v_address});
     }
 
 
@@ -187,7 +184,7 @@ namespace champsim {
       global_heatmap_instance.allocate_vpns_by_heatmap(sort_by_criticality, ratio_first, ratio_second);
     }
 
-    bool is_fast_memory(uint64_t vpn) {
+    bool is_fast_memory(champsim::page_number vpn) {
       return global_heatmap_instance.is_fast_memory(vpn);
     }
   }

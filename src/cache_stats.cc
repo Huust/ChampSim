@@ -11,7 +11,10 @@ cache_stats operator-(cache_stats lhs, cache_stats rhs)
 
   result.hits = lhs.hits - rhs.hits;
   result.misses = lhs.misses - rhs.misses;
+  result.mshr_merge = lhs.mshr_merge - rhs.mshr_merge;
+  result.mshr_return = lhs.mshr_return - rhs.mshr_return;
 
   result.total_miss_latency_cycles = lhs.total_miss_latency_cycles - rhs.total_miss_latency_cycles;
+  result.mshr_congestion_cycles = lhs.mshr_congestion_cycles - rhs.mshr_congestion_cycles;
   return result;
 }
