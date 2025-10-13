@@ -794,8 +794,8 @@ long O3_CPU::retire_rob()
         !rob_it->llc_miss_source_memory.empty()) {
 
       // Only blame source memory addresses that actually caused LLC misses, not all source memory
-      std::for_each(rob_it->llc_miss_source_memory.cbegin(), rob_it->llc_miss_source_memory.cend(), [](auto& smem){
-        champsim::heatmap::track_critical_miss(smem);
+      std::for_each(rob_it->llc_miss_source_memory.cbegin(), rob_it->llc_miss_source_memory.cend(), [](const auto& smem_uint64){
+        champsim::heatmap::track_critical_miss(champsim::address{smem_uint64});
       });
     }
 

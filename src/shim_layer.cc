@@ -202,8 +202,8 @@ long SHIM_LAYER::populate_requests() {
         auto rob_entry = get_rob_entry((*rq_it)->cpu, (*rq_it)->instr_id);
         if (rob_entry != nullptr) {
           rob_entry->is_llc_miss = true;
-          // Track the source memory address that caused this LLC miss
-          rob_entry->llc_miss_source_memory.push_back((*rq_it)->v_address);
+          // Track the source memory address that caused this LLC miss (no duplicates)
+          rob_entry->llc_miss_source_memory.insert((*rq_it)->v_address.to<uint64_t>());
         } else
           assert((*rq_it)->type != access_type::LOAD);
       }
