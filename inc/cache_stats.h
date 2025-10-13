@@ -24,6 +24,7 @@ struct cache_stats {
   champsim::stats::event_counter<std::pair<access_type, std::remove_cv_t<decltype(NUM_CPUS)>>> mshr_return = {};
 
   long total_miss_latency_cycles{};
+  uint64_t mshr_congestion_cycles = 0;  // Cycles when MSHR was full and requests were blocked
 };
 
 cache_stats operator-(cache_stats lhs, cache_stats rhs);

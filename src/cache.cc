@@ -361,6 +361,8 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     *mshr_entry = mshr_type::merge(*mshr_entry, to_allocate);
   } else {
     if (mshr_full) { // not enough MSHR resource
+      // Track MSHR congestion cycles
+      sim_stats.mshr_congestion_cycles++;
       return false;  // TODO should we allow prefetches anyway if they will not be filled to this level?
     }
 
