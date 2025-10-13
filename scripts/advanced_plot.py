@@ -40,7 +40,7 @@ def shorten_benchmark_name(full_name):
         if num_match:
             return f"{parsec_match.group(1)}-{num_match.group(1)}M"
         return parsec_match.group(1)
-        
+
     # Handle ligra benchmarks (e.g., ligra_PageRank.com-lj...)
     ligra_match = re.match(r'(ligra_[a-zA-Z_-]+)\.', full_name)
     if ligra_match:
@@ -48,6 +48,42 @@ def shorten_benchmark_name(full_name):
 
     # Fallback for any other format
     return full_name.split('.')[0]
+
+
+def extract_program_base(full_name):
+    """
+    Extracts [program]_[algorithm].[dataset].[compiler]_[opt_level] from trace name.
+    Example: 'ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_11500M.length_250M.champsimtrace'
+             -> 'ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3'
+    """
+    # Pattern: everything before .drop_ (or .length_ if no drop_)
+    match = re.match(r'(.+?)\.(?:drop_|length_)', full_name)
+    if match:
+        return match.group(1)
+
+    # Fallback: take first few parts
+    parts = full_name.split('.')
+    if len(parts) >= 4:
+        return '.'.join(parts[:4])
+
+    return full_name.split('.champsimtrace')[0]
+
+
+def extract_instruction_info(full_name):
+    """
+    Extracts [warmup_instructions].[simulation_instructions] from trace name.
+    Example: 'ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_11500M.length_250M.champsimtrace'
+             -> '11500M.250M'
+    Returns tuple: (display_string, warmup_value, length_value) for sorting
+    """
+    drop_match = re.search(r'drop_(\d+)M', full_name)
+    length_match = re.search(r'length_(\d+)M', full_name)
+
+    warmup = int(drop_match.group(1)) if drop_match else 0
+    length = int(length_match.group(1)) if length_match else 0
+
+    display = f"{warmup}M.{length}M"
+    return display, warmup, length
 
 
 # --- Data Loading ---
@@ -116,33 +152,39 @@ def generate_breakdown_per_benchmark_pdf(df, output_filename="report_detailed_br
     if hybrid_df.empty:
         print("Warning: No hybrid configurations found. Skipping breakdown PDF.")
         return
-    
-    hybrid_df['program'] = hybrid_df['benchmark'].apply(lambda x: x.split('-')[0])
+
+    # Extract program base (detailed grouping key) and instruction info for labels and sorting
+    hybrid_df['program_base'] = hybrid_df['benchmark'].apply(extract_program_base)
     hybrid_df['dram_accesses'] = hybrid_df['dram_reads'] + hybrid_df['dram_writes']
     hybrid_df['cxl_accesses'] = hybrid_df['cxl_reads'] + hybrid_df['cxl_writes']
-    
+
+    # Extract instruction info for sorting
+    hybrid_df[['instr_label', 'warmup_val', 'length_val']] = hybrid_df['benchmark'].apply(
+        lambda x: pd.Series(extract_instruction_info(x))
+    )
+
     with PdfPages(output_filename) as pdf:
-        for program_name, program_df in hybrid_df.groupby('program'):
-            print(f"  Plotting page for: {program_name}")
-            
+        for program_base, program_df in hybrid_df.groupby('program_base'):
+            print(f"  Plotting page for: {program_base}")
+
             fig, axes = plt.subplots(1, 3, figsize=(20, 8), sharey=True)
-            fig.suptitle(f'Memory Access Breakdown for Workload: {program_name}', fontsize=18)
-            
+            fig.suptitle(f'Memory Access Breakdown for Workload: {program_base}', fontsize=18)
+
             hybrid_configs = ['hybrid-hotness-access', 'hybrid-hotness-criticality', 'hybrid-roundrobin']
-            
+
             for i, config_name in enumerate(hybrid_configs):
-                if config_name not in program_df['config'].values:
+                config_subset = program_df[program_df['config'] == config_name]
+                if config_subset.empty:
                     continue # Skip if this config doesn't exist for this program
-                
-                config_data = program_df[program_df['config'] == config_name][['benchmark', 'dram_accesses', 'cxl_accesses']].set_index('benchmark')
-                
-                # *** Apply the name shortening function to the index ***
-                config_data.index = config_data.index.map(shorten_benchmark_name)
-                
+
+                # Sort by instruction numbers (warmup first, then length)
+                config_subset = config_subset.sort_values(['warmup_val', 'length_val'])
+
+                config_data = config_subset[['instr_label', 'dram_accesses', 'cxl_accesses']].set_index('instr_label')
                 config_perc = config_data.div(config_data.sum(axis=1), axis=0) * 100
-                
+
                 config_perc.plot(kind='bar', stacked=True, ax=axes[i], color=HYBRID_BREAKDOWN_COLORS, legend=False)
-                
+
                 axes[i].set_title(config_name)
                 axes[i].set_ylabel('Percentage of Off-Chip Accesses (%)' if i == 0 else '')
                 # Use 45-degree rotation, which is more readable
@@ -151,7 +193,7 @@ def generate_breakdown_per_benchmark_pdf(df, output_filename="report_detailed_br
                 axes[i].set_xlabel('')
 
                 # Add percentage labels in the middle of each segment
-                for j, (benchmark, row) in enumerate(config_perc.iterrows()):
+                for j, (instr_label, row) in enumerate(config_perc.iterrows()):
                     dram_pct = row['dram_accesses']
                     cxl_pct = row['cxl_accesses']
                     # Add DRAM percentage label
@@ -161,12 +203,12 @@ def generate_breakdown_per_benchmark_pdf(df, output_filename="report_detailed_br
 
             handles, labels = axes[0].get_legend_handles_labels()
             fig.legend(handles, ['Serviced by DRAM', 'Serviced by CXL'], title='Memory Type', bbox_to_anchor=(0.5, 0.01), loc='lower center', ncol=2)
-            
+
             # Use subplots_adjust to give more space at the bottom
             plt.subplots_adjust(bottom=0.25)
             pdf.savefig()
             plt.close()
-            
+
     print(f"Successfully saved {output_filename}")
 
 def plot_performance_by_mpki_groups(df, output_filename="summary_perf_by_mpki.png", baseline='dram_only'):
