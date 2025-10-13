@@ -66,7 +66,7 @@ private:
 
   void populate_pages();
   void shuffle_pages();
-  Device select_device(champsim::page_number vaddr);
+  Device select_device(champsim::page_number vpn);
 
 public:
   /**
