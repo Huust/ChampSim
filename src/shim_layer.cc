@@ -364,8 +364,10 @@ ooo_model_instr* SHIM_LAYER::get_rob_entry(uint32_t cpu_id, uint64_t instr_id) {
   O3_CPU& cpu = cpu_view[cpu_id];
 
   // Search through ROB to find matching instruction ID
+  // For write instruction, the only case can be write instruction is older than any instructions in ROB,
+  // which means it will always return false in precedes()
   auto rob_entry = std::partition_point(cpu.ROB.begin(), cpu.ROB.end(), ooo_model_instr::precedes(instr_id));
-  assert(rob_entry != cpu.ROB.end());
-
-  return (rob_entry->instr_id == instr_id) ? &(*rob_entry) : nullptr;
+  if (rob_entry != cpu.ROB.end())
+    assert(rob_entry->instr_id == instr_id);
+  return (rob_entry != cpu.ROB.end()) ? &(*rob_entry) : nullptr;
 }
