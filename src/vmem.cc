@@ -115,8 +115,8 @@ Device VirtualMemory::select_device(champsim::page_number vpn) {
     
     // If hotness allocation is enabled, warmup phase must use DRAM
     // to be consistent with warmup phase in heatmap generation (dram-only mode)
-    if (devices[0]->warmup)
-      return Device{Dram{}};
+    // if (devices[0]->warmup)
+    //   return Device{Dram{}};
 
     // Use heatmap-based allocation
     return champsim::heatmap::is_fast_memory(vpn) ? Device{Dram{}} : Device{Cxl{}};

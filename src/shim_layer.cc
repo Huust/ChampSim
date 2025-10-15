@@ -115,47 +115,35 @@ long SHIM_LAYER::route() {
   return progress;
 }
 
-// Warmup mode: direct pass-through without bandwidth/queue limits (from upper level to lower level)
+// Warmup mode: directly convert requests to responses (like DRAM controller)
 long SHIM_LAYER::warmup_fast_forward() {
   long progress{0};
 
-  // Process all upstream requests directly
-  auto process_direct_transfer = [&](auto& from_queue, char queue_type) {
+  // Process read requests (RQ and PQ): convert to responses immediately
+  auto process_read_queue = [&](auto& from_queue) {
     while (!from_queue.empty()) {
       auto req = from_queue.front();
       from_queue.pop_front();
 
-      // Route to appropriate lower level
-      bool is_cxl_address;
-      if (mode == MODE::CXL_ONLY) {
-        is_cxl_address = true;
-      } else if (mode == MODE::HYBRID) {
-        is_cxl_address = req.address.template to<uint64_t>() >= dram_ptr->size().count();
-      } else if (mode == MODE::DRAM_ONLY) {
-        is_cxl_address = false;
-      } else {
-        assert(0);
-        abort();
-      }
-
-      champsim::channel* dest_channel = ll_queues[0];
-      if (mode == MODE::HYBRID)
-        dest_channel = is_cxl_address ? ll_queues[1] : ll_queues[0];
-
-      // Direct transfer without checking success
-      switch(queue_type) {
-        case 'R': dest_channel->add_rq(req); break;
-        case 'W': dest_channel->add_wq(req); break;
-        case 'P': dest_channel->add_pq(req); break;
-      }
+      // Directly create response and return it
+      champsim::channel::response_type response{req.address, req.v_address, req.data, req.pf_metadata, req.instr_depend_on_me};
+      ul->returned.push_back(response);
 
       progress++;
     }
   };
 
-  process_direct_transfer(ul->RQ, 'R');
-  process_direct_transfer(ul->WQ, 'W');
-  process_direct_transfer(ul->PQ, 'P');
+  // Process write requests (WQ): just discard them
+  auto process_write_queue = [&](auto& from_queue) {
+    while (!from_queue.empty()) {
+      from_queue.pop_front();
+      progress++;
+    }
+  };
+
+  process_read_queue(ul->RQ);
+  process_write_queue(ul->WQ);
+  process_read_queue(ul->PQ);
 
   return progress;
 }
