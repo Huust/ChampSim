@@ -440,7 +440,7 @@ if __name__ == "__main__":
     csv_path = './results/collected_stats.csv'
     
     try:
-        output_dir = './plots_final'
+        output_dir = './plots'
         os.makedirs(output_dir, exist_ok=True)
         
         main_df = load_data(pkl_path, csv_path)

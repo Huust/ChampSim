@@ -3,14 +3,13 @@
 import os
 import sys
 import argparse
-import pandas as pd
 
 def load_heatmap_file(filepath):
     """
     Parses a custom heatmap file with the format 'address: access_count critical_count'.
 
     Returns:
-        A pandas DataFrame with ['vaddr', 'access_count', 'critical_count'] columns.
+        A list of dictionaries with 'vaddr', 'access_count', 'critical_count' keys.
     """
     data = []
     with open(filepath, 'r') as f:
@@ -31,9 +30,13 @@ def load_heatmap_file(filepath):
 
             access_count = int(counts[0])
             critical_count = int(counts[1])
-            data.append([vaddr, access_count, critical_count])
+            data.append({
+                'vaddr': vaddr,
+                'access_count': access_count,
+                'critical_count': critical_count
+            })
 
-    return pd.DataFrame(data, columns=['vaddr', 'access_count', 'critical_count'])
+    return data
 
 def parse_ratio(ratio_str):
     """Parse ratio string like '1:3' into tuple (1, 3)"""
@@ -79,13 +82,13 @@ def analyze_heatmap(filepath, count_type, dram_ratio, cxl_ratio):
     # Load data
     print(f"Loading: {os.path.basename(filepath)}")
     try:
-        df = load_heatmap_file(filepath)
+        data = load_heatmap_file(filepath)
     except Exception as e:
         print(f"Error: Failed to load file: {e}")
         sys.exit(1)
 
     # Filter out zero values
-    df_filtered = df[df[count_column] > 0].copy()
+    data_filtered = [entry for entry in data if entry[count_column] > 0]
 
     # Calculate split
     total_ratio = dram_ratio + cxl_ratio
@@ -93,19 +96,19 @@ def analyze_heatmap(filepath, count_type, dram_ratio, cxl_ratio):
     cxl_percentage = cxl_ratio / total_ratio
 
     # Sort by selected column (descending)
-    df_sorted = df_filtered.sort_values(by=count_column, ascending=False).reset_index(drop=True)
+    data_sorted = sorted(data_filtered, key=lambda x: x[count_column], reverse=True)
 
-    split_index = int(len(df_sorted) * dram_percentage)
+    split_index = int(len(data_sorted) * dram_percentage)
 
     # Calculate statistics
-    total_pages = len(df)
-    nonzero_pages = len(df_filtered)
+    total_pages = len(data)
+    nonzero_pages = len(data_filtered)
 
     dram_pages = split_index
-    cxl_pages = len(df_sorted) - split_index
+    cxl_pages = len(data_sorted) - split_index
 
-    dram_count = df_sorted[count_column].iloc[:split_index].sum()
-    cxl_count = df_sorted[count_column].iloc[split_index:].sum()
+    dram_count = sum(entry[count_column] for entry in data_sorted[:split_index])
+    cxl_count = sum(entry[count_column] for entry in data_sorted[split_index:])
     total_count = dram_count + cxl_count
 
     # Print results
@@ -127,9 +130,9 @@ def analyze_heatmap(filepath, count_type, dram_ratio, cxl_ratio):
 
     # Top 5 pages in DRAM region
     print(f"\n  Top 5 pages in DRAM:")
-    dram_top5 = df_sorted.iloc[:min(5, split_index)]
-    for idx, row in dram_top5.iterrows():
-        print(f"    #{idx+1:2d}  {row['vaddr']:20s}  count: {int(row[count_column]):,}")
+    dram_top5 = data_sorted[:min(5, split_index)]
+    for idx, entry in enumerate(dram_top5):
+        print(f"    #{idx+1:2d}  {entry['vaddr']:20s}  count: {int(entry[count_column]):,}")
 
     print(f"\nCXL Region (Remaining {cxl_percentage*100:.1f}%):")
     print(f"  Pages:           {cxl_pages:,}")
@@ -138,9 +141,9 @@ def analyze_heatmap(filepath, count_type, dram_ratio, cxl_ratio):
 
     # Top 5 pages in CXL region
     print(f"\n  Top 5 pages in CXL:")
-    cxl_top5 = df_sorted.iloc[split_index:min(split_index+5, len(df_sorted))]
-    for idx, row in cxl_top5.iterrows():
-        print(f"    #{idx+1:2d}  {row['vaddr']:20s}  count: {int(row[count_column]):,}")
+    cxl_top5 = data_sorted[split_index:min(split_index+5, len(data_sorted))]
+    for idx, entry in enumerate(cxl_top5, start=split_index):
+        print(f"    #{idx+1:2d}  {entry['vaddr']:20s}  count: {int(entry[count_column]):,}")
 
     print("-"*60)
     print(f"Total count:       {int(total_count):,}")
