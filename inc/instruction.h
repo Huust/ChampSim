@@ -117,7 +117,8 @@ struct ooo_model_instr : champsim::program_ordered<ooo_model_instr> {
   bool executed = false;
   bool completed = false;
   bool caused_rob_stall = false;
-  bool is_llc_miss = false;
+  bool is_load_llc_miss = false;
+  bool is_trans_llc_miss = false;
 
   unsigned completed_mem_ops = 0;
   int num_reg_dependent = 0;
@@ -127,7 +128,8 @@ struct ooo_model_instr : champsim::program_ordered<ooo_model_instr> {
 
   std::vector<champsim::address> destination_memory = {};
   std::vector<champsim::address> source_memory = {};
-  std::unordered_set<uint64_t> llc_miss_source_memory = {};  // Source memory addresses that caused LLC misses (no duplicates)
+  std::unordered_set<uint64_t> llc_miss_source_memory = {};  // Source memory addresses that caused LLC misses (LOAD + TRANSLATION, no duplicates)
+  std::unordered_set<uint64_t> translation_stall_source_memory = {};  // Source memory addresses that caused LLC misses (TRANSLATION only, no duplicates)
 
   // these are indices of instructions in the ROB that depend on me
   std::vector<std::reference_wrapper<ooo_model_instr>> registers_instrs_depend_on_me;
