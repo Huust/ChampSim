@@ -16,6 +16,12 @@ class HeatMapTracker {
   std::unordered_set<uint64_t> fast_vpns; // VPNs allocated to fast memory
   std::unordered_set<uint64_t> slow_vpns; // VPNs allocated to slow memory
 
+  // For debugging: track accesses during use phase
+  std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> use_phase_heatmap; // VPN -> (total_access_count, critical_access_count)
+
+  // Track translation stalls without data cache miss
+  std::unordered_map<uint64_t, uint64_t> translation_stall_heatmap; // VPN -> stall_count
+
 public:
   void enable_heatmap_generation();
   bool is_heatmap_generation_enabled();
@@ -26,7 +32,13 @@ public:
   void enable_hotness_allocation();
   bool is_hotness_allocation_enabled();
   void allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t ratio_first, uint32_t ratio_second);
-  bool is_fast_memory(champsim::page_number vpn) const;
+  bool is_fast_memory(bool warmup, champsim::page_number vpn) const;
+
+  // New functions for use phase tracking
+  void track_use_phase_access(champsim::page_number vpn);
+
+  // Track translation stalls without data cache miss
+  void track_translation_stall(champsim::page_number vpn);
 };
 
 // Global heatmap access interface
@@ -41,8 +53,14 @@ namespace champsim {
     bool is_heatmap_generation_enabled();
     bool is_hotness_allocation_enabled();
     void allocate_vpns(bool sort_by_criticality, uint32_t ratio_first, uint32_t ratio_second);
-    bool is_fast_memory(champsim::page_number vpn);
+    bool is_fast_memory(bool warmup, champsim::page_number vpn);
     void enable_hotness_allocation();
+
+    // New functions for use phase tracking
+    void track_use_phase_access(champsim::address v_address);
+
+    // Track translation stalls without data cache miss
+    void track_translation_stall(champsim::address v_address);
   }
 }
 

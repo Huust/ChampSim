@@ -85,7 +85,14 @@ bool HeatMapTracker::is_hotness_allocation_enabled() {
   return hotness_allocation_enabled;
 }
 
-bool HeatMapTracker::is_fast_memory(champsim::page_number vpn) const {
+bool HeatMapTracker::is_fast_memory(bool warmup, champsim::page_number vpn) const {
+  if (!warmup) {
+    auto in_fast_device = (fast_vpns.find(vpn.to<uint64_t>()) != fast_vpns.end());
+    if (!in_fast_device)
+      assert(slow_vpns.find(vpn.to<uint64_t>()) != slow_vpns.end());
+    return in_fast_device;
+  }
+    
   return (fast_vpns.find(vpn.to<uint64_t>()) != fast_vpns.end());
 }
 
@@ -140,6 +147,16 @@ void HeatMapTracker::allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t
   }
 }
 
+// New functions for use phase tracking
+void HeatMapTracker::track_use_phase_access(champsim::page_number vpn) {
+  use_phase_heatmap[vpn.to<uint64_t>()].first++;
+}
+
+// Track translation stalls without data cache miss
+void HeatMapTracker::track_translation_stall(champsim::page_number vpn) {
+  translation_stall_heatmap[vpn.to<uint64_t>()]++;
+}
+
 // Global heatmap instance and interface implementation
 namespace {
   HeatMapTracker global_heatmap_instance;
@@ -184,8 +201,18 @@ namespace champsim {
       global_heatmap_instance.allocate_vpns_by_heatmap(sort_by_criticality, ratio_first, ratio_second);
     }
 
-    bool is_fast_memory(champsim::page_number vpn) {
-      return global_heatmap_instance.is_fast_memory(vpn);
+    bool is_fast_memory(bool warmup, champsim::page_number vpn) {
+      return global_heatmap_instance.is_fast_memory(warmup, vpn);
+    }
+
+    // New functions for use phase tracking
+    void track_use_phase_access(champsim::address v_address) {
+      global_heatmap_instance.track_use_phase_access(champsim::page_number{v_address});
+    }
+
+    // Track translation stalls without data cache miss
+    void track_translation_stall(champsim::address v_address) {
+      global_heatmap_instance.track_translation_stall(champsim::page_number{v_address});
     }
   }
 }
