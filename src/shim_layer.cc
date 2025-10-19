@@ -2,7 +2,6 @@
 
 #include <cassert>
 #include <cfenv>
-#include <stdexcept>
 #include <fmt/core.h>
 #include "access_type.h"
 #include "deadlock.h"
@@ -72,7 +71,7 @@ long SHIM_LAYER::route() {
       if (mode == MODE::CXL_ONLY) {
         is_cxl_address = true;
       } else if (mode == MODE::HYBRID) {
-        is_cxl_address = pkt.address.template to<uint64_t>() >= dram_ptr->size().count();
+        is_cxl_address = pkt.address.template to<uint64_t>() >= static_cast<uint64_t>(dram_ptr->size().count());
       } else if (mode == MODE::DRAM_ONLY) {
         is_cxl_address = false;
       } else {
@@ -174,7 +173,7 @@ long SHIM_LAYER::populate_requests() {
     // Track four cases of access type
     if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() &&
         ((*rq_it)->type == access_type::LOAD || (*rq_it)->type == access_type::RFO ||
-         (*rq_it)->type == access_type::TRANSLATION || (*rq_it)->type == access_type::PREFETCH)) {
+         (*rq_it)->type == access_type::TRANSLATION)) {
       champsim::heatmap::track_llc_miss((*rq_it)->v_address);
 
       // Set is_llc_miss in corresponding ROB entry as true
@@ -184,13 +183,26 @@ long SHIM_LAYER::populate_requests() {
         // 2. Load instr (or its translation),    branch prediction, return nullptr
         // 3. Translation from write instr, return nullptr
         auto rob_entry = get_rob_entry((*rq_it)->cpu, (*rq_it)->instr_id);
-        if (rob_entry != nullptr) {
-          rob_entry->is_llc_miss = true;
+        if (rob_entry != nullptr && rob_entry->caused_rob_stall == false) {
+          if ((*rq_it)->type == access_type::LOAD)
+            rob_entry->is_load_llc_miss = true;
+          else {
+            rob_entry->is_trans_llc_miss = true;
+            rob_entry->translation_stall_source_memory.insert((*rq_it)->v_address.to<uint64_t>());
+          }
           // Track the source memory address that caused this LLC miss (no duplicates)
           rob_entry->llc_miss_source_memory.insert((*rq_it)->v_address.to<uint64_t>());
         }
       }
     }
+
+    // Track use phase accesses for debugging
+    if (!warmup && champsim::heatmap::is_hotness_allocation_enabled() &&
+        ((*rq_it)->type == access_type::LOAD || (*rq_it)->type == access_type::RFO ||
+         (*rq_it)->type == access_type::TRANSLATION)) {
+      champsim::heatmap::track_use_phase_access((*rq_it)->v_address);
+    }
+
     ul->RQ.pop_front();
     ++rq_it;
     upper_bw.consume();
