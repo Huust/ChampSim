@@ -756,12 +756,8 @@ long O3_CPU::handle_memory_return()
   for (champsim::bandwidth l1d_bw{L1D_BANDWIDTH}; l1d_bw.has_remaining() && l1d_it != std::end(L1D_bus.lower_level->returned); l1d_bw.consume(), ++l1d_it) {
     for (auto& lq_entry : LQ) {
       if (lq_entry.has_value() && lq_entry->fetch_issued && champsim::block_number{lq_entry->virtual_address} == champsim::block_number{l1d_it->v_address}) {
-        auto& rob_entry = lq_entry->finish(std::begin(ROB), std::end(ROB));
+        lq_entry->finish(std::begin(ROB), std::end(ROB));
         lq_entry.reset();
-
-        // if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() && l1d_it->is_llc_miss) {
-        //   rob_entry.is_llc_miss = true;
-        // }
 
         ++progress;
       }
@@ -790,12 +786,23 @@ long O3_CPU::retire_rob()
   for (auto rob_it = retire_begin; rob_it != retire_end; ++rob_it) {
     // Track critical miss for instructions that caused ROB stall and had LLC misses
     if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() &&
-        rob_it->caused_rob_stall && rob_it->is_llc_miss &&
+        rob_it->caused_rob_stall && rob_it->is_load_llc_miss &&
         !rob_it->llc_miss_source_memory.empty()) {
 
       // Only blame source memory addresses that actually caused LLC misses, not all source memory
       std::for_each(rob_it->llc_miss_source_memory.cbegin(), rob_it->llc_miss_source_memory.cend(), [](const auto& smem_uint64){
         champsim::heatmap::track_critical_miss(champsim::address{smem_uint64});
+      });
+    }
+
+    // Only record instructions which cause translation llc miss but didn't cause cache lls miss
+    if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() &&
+        rob_it->caused_rob_stall && !rob_it->is_load_llc_miss &&
+        rob_it->is_trans_llc_miss && !rob_it->translation_stall_source_memory.empty()) {
+
+      // Only blame source memory addresses that actually caused LLC misses, not all source memory
+      std::for_each(rob_it->translation_stall_source_memory.cbegin(), rob_it->translation_stall_source_memory.cend(), [](const auto& smem_uint64){
+        champsim::heatmap::track_translation_stall(champsim::address{smem_uint64});
       });
     }
 
@@ -897,12 +904,11 @@ LSQ_ENTRY::LSQ_ENTRY(champsim::address addr, champsim::program_ordered<LSQ_ENTRY
 {
 }
 
-ooo_model_instr& LSQ_ENTRY::finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const
+void LSQ_ENTRY::finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const
 {
   auto rob_entry = std::partition_point(begin, end, ooo_model_instr::precedes(this->instr_id));
   assert(rob_entry != end);
   finish(*rob_entry);
-  return *rob_entry;
 }
 
 void LSQ_ENTRY::finish(ooo_model_instr& rob_entry) const

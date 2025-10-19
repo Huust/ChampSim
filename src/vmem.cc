@@ -119,7 +119,7 @@ Device VirtualMemory::select_device(champsim::page_number vpn) {
     //   return Device{Dram{}};
 
     // Use heatmap-based allocation
-    return champsim::heatmap::is_fast_memory(vpn) ? Device{Dram{}} : Device{Cxl{}};
+    return champsim::heatmap::is_fast_memory(devices[0]->warmup, vpn) ? Device{Dram{}} : Device{Cxl{}};
   } else {
     // Use traditional interleaving allocation
     // Flip the device, if we do have 2 devices
