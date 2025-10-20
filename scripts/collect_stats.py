@@ -30,8 +30,17 @@ def extract_shim_requests(content):
 
 
 def extract_tlb_metrics(content):
+    # Extract ITLB raw data
+    # Pattern: cpu0->cpu0_ITLB TOTAL        ACCESS:   17534587 HIT:   17532610 MISS:       1977
+    itlb_match = re.search(r'cpu0->cpu0_ITLB TOTAL\s+ACCESS:\s*(\d+)\s+HIT:\s*(\d+)\s+MISS:\s*(\d+)', content)
+    if itlb_match:
+        itlb_access = int(itlb_match.group(1))
+        itlb_miss = int(itlb_match.group(3))
+    else:
+        itlb_access = itlb_miss = 0
+
     # Extract DTLB raw data
-    # Pattern: cpu0->cpu0_DTLB TOTAL        ACCESS:    8836313 HIT:    8745075 MISS:      91238
+    # Pattern: cpu0->cpu0_DTLB TOTAL        ACCESS:   40792749 HIT:   40284213 MISS:     508536
     dtlb_match = re.search(r'cpu0->cpu0_DTLB TOTAL\s+ACCESS:\s*(\d+)\s+HIT:\s*(\d+)\s+MISS:\s*(\d+)', content)
     if dtlb_match:
         dtlb_access = int(dtlb_match.group(1))
@@ -40,7 +49,7 @@ def extract_tlb_metrics(content):
         dtlb_access = dtlb_miss = 0
 
     # Extract STLB raw data
-    # Pattern: cpu0->cpu0_STLB TOTAL        ACCESS:      69912 HIT:      69467 MISS:        445
+    # Pattern: cpu0->cpu0_STLB TOTAL        ACCESS:     110130 HIT:     109334 MISS:        796
     stlb_match = re.search(r'cpu0->cpu0_STLB TOTAL\s+ACCESS:\s*(\d+)\s+HIT:\s*(\d+)\s+MISS:\s*(\d+)', content)
     if stlb_match:
         stlb_access = int(stlb_match.group(1))
@@ -49,15 +58,17 @@ def extract_tlb_metrics(content):
         stlb_access = stlb_miss = 0
 
     # Extract STLB average miss latency
-    # Pattern: cpu0->cpu0_STLB AVERAGE MISS LATENCY: 263.1 cycles
+    # Pattern: cpu0->cpu0_STLB AVERAGE MISS LATENCY: 317 cycles
     stlb_latency_match = re.search(r'cpu0->cpu0_STLB AVERAGE MISS LATENCY:\s*([\d\.]+)\s*cycles', content)
     stlb_avg_miss_latency = float(stlb_latency_match.group(1)) if stlb_latency_match else 0.0
 
     return {
-        'dtlb_miss': dtlb_miss,
+        'itlb_access': itlb_access,
+        'itlb_miss': itlb_miss,
         'dtlb_access': dtlb_access,
-        'stlb_miss': stlb_miss,
+        'dtlb_miss': dtlb_miss,
         'stlb_access': stlb_access,
+        'stlb_miss': stlb_miss,
         'stlb_avg_miss_latency': stlb_avg_miss_latency
     }
 
@@ -92,9 +103,9 @@ def read_stats(file_path):
         return [config, benchmark, ipc, llc_miss_latency,
                 shim_requests['dram_reads'], shim_requests['cxl_reads'],
                 shim_requests['dram_writes'], shim_requests['cxl_writes'],
-                tlb_metrics['dtlb_miss'], tlb_metrics['dtlb_access'],
-                tlb_metrics['stlb_miss'], tlb_metrics['stlb_access'],
-                tlb_metrics['stlb_avg_miss_latency']]
+                tlb_metrics['itlb_access'], tlb_metrics['itlb_miss'],
+                tlb_metrics['dtlb_access'], tlb_metrics['dtlb_miss'],
+                tlb_metrics['stlb_access'], tlb_metrics['stlb_miss'], tlb_metrics['stlb_avg_miss_latency']]
 
     except Exception as e:
         print(f"Error parsing {file_path}: {e}")
@@ -113,7 +124,7 @@ def collect_stats(results_dir, output_file):
 
     # Write header
     with open(output_file, 'w') as f:
-        f.write("config,benchmark,ipc,llc_miss_latency,dram_reads,cxl_reads,dram_writes,cxl_writes,dtlb_miss,dtlb_access,stlb_miss,stlb_access,stlb_avg_miss_latency\n")
+        f.write("config,benchmark,ipc,llc_miss_latency,dram_reads,cxl_reads,dram_writes,cxl_writes,itlb_access,itlb_miss,dtlb_access,dtlb_miss,stlb_access,stlb_miss,stlb_avg_miss_latency\n")
 
     # Process all .out files
     for root, dirs, files in os.walk(results_dir):
