@@ -85,14 +85,7 @@ bool HeatMapTracker::is_hotness_allocation_enabled() {
   return hotness_allocation_enabled;
 }
 
-bool HeatMapTracker::is_fast_memory(bool warmup, champsim::page_number vpn) const {
-  if (!warmup) {
-    auto in_fast_device = (fast_vpns.find(vpn.to<uint64_t>()) != fast_vpns.end());
-    if (!in_fast_device)
-      assert(slow_vpns.find(vpn.to<uint64_t>()) != slow_vpns.end());
-    return in_fast_device;
-  }
-    
+bool HeatMapTracker::is_fast_memory(champsim::page_number vpn) const {
   return (fast_vpns.find(vpn.to<uint64_t>()) != fast_vpns.end());
 }
 
@@ -201,8 +194,8 @@ namespace champsim {
       global_heatmap_instance.allocate_vpns_by_heatmap(sort_by_criticality, ratio_first, ratio_second);
     }
 
-    bool is_fast_memory(bool warmup, champsim::page_number vpn) {
-      return global_heatmap_instance.is_fast_memory(warmup, vpn);
+    bool is_fast_memory(champsim::page_number vpn) {
+      return global_heatmap_instance.is_fast_memory(vpn);
     }
 
     // New functions for use phase tracking

@@ -32,7 +32,7 @@ public:
   void enable_hotness_allocation();
   bool is_hotness_allocation_enabled();
   void allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t ratio_first, uint32_t ratio_second);
-  bool is_fast_memory(bool warmup, champsim::page_number vpn) const;
+  bool is_fast_memory(champsim::page_number vpn) const;
 
   // New functions for use phase tracking
   void track_use_phase_access(champsim::page_number vpn);
@@ -53,7 +53,7 @@ namespace champsim {
     bool is_heatmap_generation_enabled();
     bool is_hotness_allocation_enabled();
     void allocate_vpns(bool sort_by_criticality, uint32_t ratio_first, uint32_t ratio_second);
-    bool is_fast_memory(bool warmup, champsim::page_number vpn);
+    bool is_fast_memory(champsim::page_number vpn);
     void enable_hotness_allocation();
 
     // New functions for use phase tracking
