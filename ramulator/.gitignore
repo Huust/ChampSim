@@ -1,0 +1,5 @@
+libramulator.a
+ramulator
+.obj/
+obj/.depend
+ramulator.dSYM/**
