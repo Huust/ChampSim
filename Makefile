@@ -17,10 +17,11 @@ override REPLACEMENT_ROOT += $(addsuffix /replacement,$(MODULE_ROOT))
 # vcpkg integration
 TRIPLET_DIR = $(patsubst %/,%,$(firstword $(filter-out $(ROOT_DIR)/vcpkg_installed/vcpkg/, $(wildcard $(ROOT_DIR)/vcpkg_installed/*/))))
 override CPPFLAGS += -I$(OBJ_ROOT)
+override CPPFLAGS += -I$(ROOT_DIR)/ramulator/src
 override LDFLAGS  += -L$(TRIPLET_DIR)/lib -L$(TRIPLET_DIR)/lib/manual-link
 override LDLIBS   += -llzma -lz -lbz2 -lfmt -lCLI11
 
-.PHONY: all clean configclean test pytest maketest
+.PHONY: all clean configclean test pytest maketest ramulator
 
 test_main_name=test/bin/000-test-main
 executable_name:=
@@ -80,6 +81,10 @@ relative_path = $(shell python3 -c "import os.path; print(os.path.relpath(\"$1\"
 
 .DEFAULT_GOAL := all
 
+# Build Ramulator subproject
+ramulator:
+	$(MAKE) -C $(ROOT_DIR)/ramulator
+
 generated_files = $(OBJ_ROOT)/module_decl.inc $(OBJ_ROOT)/legacy_bridge.h
 module_dirs = $(foreach d,$(BRANCH_ROOT) $(BTB_ROOT) $(PREFETCH_ROOT) $(REPLACEMENT_ROOT),$(call relative_path,$(abspath $d),$(ROOT_DIR)))
 
@@ -91,6 +96,7 @@ clean:
 	@-$(RM) inc/ooo_cpu_modules.h
 	@-$(RM) src/core_inst.cc
 	@-$(RM) $(test_main_name)
+	@-$(MAKE) clean -C $(ROOT_DIR)/ramulator
 
 # Remove all configuration files
 configclean: clean
@@ -279,7 +285,10 @@ $(test_main_name): $(call get_base_objs,TEST) $(test_base_objs) $(base_module_ob
 $(executable_name): $(call get_base_objs,$$(build_id)) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@)
 
 # Link main executables
-$(executable_name) $(test_main_name):
+$(executable_name): ramulator
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LOADLIBES) $(LDLIBS) $(ROOT_DIR)/ramulator/libramulator.a
+
+$(test_main_name):
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LOADLIBES) $(LDLIBS)
 
 # Tests: build and run
