@@ -65,8 +65,6 @@ public:
   void end_phase(unsigned cpu) final;
   void print_deadlock() final;
 
-  void finish();
-
   [[nodiscard]] champsim::data::bytes size() const;
 };
 

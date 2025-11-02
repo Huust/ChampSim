@@ -44,28 +44,24 @@ RAMULATOR_CONTROLLER::RAMULATOR_CONTROLLER(champsim::chrono::picoseconds cpu_clo
   double champsim_freq_mhz = 1000000.0 / clock_period.count();  // ps to MHz
   double ramulator_freq_mhz = 1000.0 / ramulator_tck_ns;        // ns to MHz
 
-  fmt::print("Ramulator frequency: {:.1f} MHz\n", ramulator_freq_mhz);
-  fmt::print("[RAMULATOR] Initialized successfully\n");
+  fmt::print("[RAMULATOR] Frequency: {:.1f} MHz\n", ramulator_freq_mhz);
 }
 
 void RAMULATOR_CONTROLLER::initialize()
 {
+  fmt::print("Using Ramulator for simulation\n");
   using namespace champsim::data::data_literals;
   using namespace std::literals::chrono_literals;
-  fmt::print("Using Ramulator for simulation\n");
   auto sz = this->size();
   if (champsim::data::gibibytes gb_sz{sz}; gb_sz > 1_GiB) {
-    fmt::print("Off-chip DRAM Size: {}", gb_sz);
+    fmt::print("Off-chip DRAM Size: {}\n", gb_sz);
   } else if (champsim::data::mebibytes mb_sz{sz}; mb_sz > 1_MiB) {
-    fmt::print("Off-chip DRAM Size: {}", mb_sz);
+    fmt::print("Off-chip DRAM Size: {}\n", mb_sz);
   } else if (champsim::data::kibibytes kb_sz{sz}; kb_sz > 1_kiB) {
-    fmt::print("Off-chip DRAM Size: {}", kb_sz);
+    fmt::print("Off-chip DRAM Size: {}\n", kb_sz);
   } else {
-    fmt::print("Off-chip DRAM Size: {}", sz);
+    fmt::print("Off-chip DRAM Size: {}\n", sz);
   }
-  fmt::print("\n");
-  // fmt::print(" Channels: {} Width: {}-bit Data Rate: {} MT/s\n", std::size(channels), champsim::data::bits_per_byte * channel_width.count(),
-  //            1us / (data_bus_period));
 }
 
 long RAMULATOR_CONTROLLER::operate()
@@ -81,6 +77,7 @@ long RAMULATOR_CONTROLLER::operate()
     initiate_requests();
     ramulator_wrapper->tick();
     m_accumulator -= 1.0;
+    assert(m_accumulator < 1.0);  // m_ratio shoule be lower than 1
     progress++;
   }
 
@@ -209,15 +206,18 @@ void RAMULATOR_CONTROLLER::begin_phase()
   ramulator_wrapper->resetStats();
 }
 
-void RAMULATOR_CONTROLLER::end_phase(unsigned)
+void RAMULATOR_CONTROLLER::end_phase(unsigned /*cpu*/)
 {
+  if (!warmup) {
+    ramulator_wrapper->finish();
+  }
 }
 
 champsim::data::bytes RAMULATOR_CONTROLLER::size() const
 {
-  // Return a default size - you may want to get this from Ramulator configuration
-  // 4GB default for now
-  return champsim::data::bytes{4ULL * 1024 * 1024 * 1024};
+  // Get actual memory size from Ramulator
+  // max_address is calculated from DRAM organization (channels * ranks * banks * rows * columns * width)
+  return champsim::data::bytes{ramulator_wrapper->get_capacity()};
 }
 
 void RAMULATOR_CONTROLLER::print_deadlock()
@@ -240,9 +240,4 @@ void RAMULATOR_CONTROLLER::print_deadlock()
     if (count >= 10)
       break; // Limit output
   }
-}
-
-void RAMULATOR_CONTROLLER::finish()
-{
-  ramulator_wrapper->finish();
 }
