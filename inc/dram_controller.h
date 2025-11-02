@@ -213,13 +213,13 @@ public:
                     std::size_t chans, champsim::data::bytes chan_width, std::size_t rows, std::size_t columns, std::size_t ranks, std::size_t bankgroups,
                     std::size_t banks, std::size_t refreshes_per_period);
 
-  void initialize() final;
-  long operate() final;
-  void begin_phase() final;
-  void end_phase(unsigned cpu) final;
-  void print_deadlock() final;
+  void initialize();
+  long operate();
+  void begin_phase();
+  void end_phase(unsigned cpu);
+  void print_deadlock();
 
-  [[nodiscard]] champsim::data::bytes size() const;
+  [[nodiscard]] virtual champsim::data::bytes size() const;
 };
 
 #endif

@@ -29,6 +29,9 @@
 #include "ptw.h"
 #include "vmem.h"
 
+// Forward declaration for Ramulator controller
+class RAMULATOR_CONTROLLER;
+
 namespace champsim
 {
 struct environment {
@@ -38,20 +41,29 @@ struct environment {
   virtual std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() = 0;
   virtual SHIM_LAYER& router_view() = 0;
 
-  // Optional DRAM interface - conditionally exists based on configuration
-  // Note: Uses pointers instead of references because DRAM components may not exist
-  // when DRAM is disabled in configuration. References cannot be null, but pointers
-  // can return nullptr to indicate "component not available"
+  // Memory subsystem presence flags
+  // Note: has_dram() returns true if physical memory subsystem exists (regardless of implementation)
+  // Note: has_cxl() returns true if CXL memory subsystem exists
   virtual bool has_dram() const { return false; }
-  virtual MEMORY_CONTROLLER* dram_view() { return nullptr; }    // Returns nullptr when DRAM disabled
-
-  // Optional CXL interface - conditionally exists based on configuration
-  // Note: Uses pointers instead of references because CXL components may not exist
-  // when CXL is disabled in configuration. References cannot be null, but pointers
-  // can return nullptr to indicate "component not available"
   virtual bool has_cxl() const { return false; }
-  virtual CXL_CONTROLLER* cxl_view() { return nullptr; }        // Returns nullptr when CXL disabled
-  virtual MEMORY_CONTROLLER* cxl_dram_view() { return nullptr; } // Returns nullptr when CXL disabled
+
+  // Memory simulator type flag
+  // Note: uses_ramulator() returns true if using Ramulator for DRAM simulation (applies to all DRAM components)
+  virtual bool uses_ramulator() const { return false; }
+
+  // ChampSim builtin DRAM controller views
+  // Note: Returns nullptr when DRAM disabled or when using Ramulator
+  virtual MEMORY_CONTROLLER* builtin_dram_view() { return nullptr; }
+  virtual MEMORY_CONTROLLER* builtin_cxl_dram_view() { return nullptr; }
+
+  // Ramulator DRAM controller views
+  // Note: Returns nullptr when DRAM disabled or when using builtin implementation
+  virtual RAMULATOR_CONTROLLER* ramulator_dram_view() { return nullptr; }
+  virtual RAMULATOR_CONTROLLER* ramulator_cxl_dram_view() { return nullptr; }
+
+  // CXL controller view
+  // Note: Returns nullptr when CXL disabled
+  virtual CXL_CONTROLLER* cxl_view() { return nullptr; }
 };
 
 namespace configured
