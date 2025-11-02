@@ -23,8 +23,10 @@ import multiprocessing as mp
 from . import util
 from . import cxx
 
-shim_layer_fmtstr = 'champsim::chrono::picoseconds{{{clock_period}}}, {_ulptr}, {{{_llptr}}}, {rq_size}, {wq_size}, {pq_size}, {max_upper_bw}, {max_lower_bw}, {dram_ptr}, {cxl_ptr}, this'
+shim_layer_fmtstr = 'champsim::chrono::picoseconds{{{clock_period}}}, {_ulptr}, {{{_llptr}}}, {rq_size}, {wq_size}, {pq_size}, {max_upper_bw}, {max_lower_bw}, this'
 pmem_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
+ramulator_pmem_fmtstr = 'champsim::chrono::picoseconds{{{clock_period}}}, {{{_ulptr}}}, {ramulator_config_path}, {stats_output_dir}'
+ramulator_cxl_dram_fmtstr = 'champsim::chrono::picoseconds{{{clock_period}}}, {{{_ulptr}}}, {ramulator_config_path}, {stats_output_dir}'
 cxl_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_cxl_io}}}, std::size_t{{{_tCXL}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {respq_size}, champsim::data::bytes{{{channel_width}}}, {RD_BW}, {WR_BW}, {{{_llptr}}}'
 cxl_dram_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
 vmem_fmtstr = 'champsim::data::bytes{{{pte_page_size}}}, {num_levels}, champsim::chrono::picoseconds{{{clock_period}*{minor_fault_penalty}}}, {dram_name}, {_randomization}'
@@ -412,6 +414,10 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     ))
     yield from module_include_files(datas)
 
+    # Conditionally include Ramulator controller header if either pmem or cxl_dram uses Ramulator
+    if pmem.get('use_ramulator', False) or (is_cxl_enabled and cxl_dram.get('use_ramulator', False)):
+        yield '#include "ramulator_controller.h"'
+
     # Get fastest clock period in picoseconds
     global_clock_period = int(1000000/max(x['frequency'] for x in itertools.chain(cores, caches, ptws, (pmem,))))
 
@@ -428,31 +434,44 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
             clock_period=int(1000000/router['frequency']),
             _ulptr=router_ul_ptr,
             _llptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[1] == router['name']),
-            dram_ptr='&DRAM' if is_dram_enabled else 'nullptr',
-            cxl_ptr='&CXL_DRAM' if is_cxl_enabled else 'nullptr',
             max_upper_bw=int(router['upper_bw']),
             max_lower_bw=int(router['lower_bw']),
             **router),
         '},'
     )
 
-    pmem_instantiation_body = (
-        'DRAM{',
-        pmem_fmtstr.format(
-            clock_period_dbus=int(1000000/pmem['data_rate']),
-            clock_period_mc=int(1000000/pmem['frequency']),
-            _tRP=int(pmem['tRP']),
-            _tRCD=int(pmem['tRCD']),
-            _tCAS=int(pmem['tCAS']),
-            _tRAS=int(pmem['tRAS']),
-            _bank_rows=int(pmem['bank_rows']), #added for supporting old configs, mainly column size change
-            _bank_columns=int(pmem['columns']*8 if 'columns' in pmem else pmem['bank_columns']),
-            _refresh_period=int(1000*pmem['refresh_period']),
-            _refreshes_per_period=int(pmem['refreshes_per_period']),
-            _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == pmem['name']),
-            **pmem),
-        '},'
-    )
+    # Choose between Ramulator and traditional DRAM controller
+    if pmem.get('use_ramulator', False):
+        # Use CPU clock_period as the first parameter (Ramulator's internal gearbox will handle frequency conversion)
+        pmem_instantiation_body = (
+            'DRAM{',
+            ramulator_pmem_fmtstr.format(
+                clock_period=int(1000000/cores[0]['frequency']),
+                _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == pmem['name']),
+                ramulator_config_path=f'"{pmem.get("ramulator_config_path", "")}"',
+                stats_output_dir=f'"{pmem.get("stats_output_dir", "./results/ramulator")}"'
+            ),
+            '},'
+        )
+    else:
+        # Traditional DRAM controller
+        pmem_instantiation_body = (
+            'DRAM{',
+            pmem_fmtstr.format(
+                clock_period_dbus=int(1000000/pmem['data_rate']),
+                clock_period_mc=int(1000000/pmem['frequency']),
+                _tRP=int(pmem['tRP']),
+                _tRCD=int(pmem['tRCD']),
+                _tCAS=int(pmem['tCAS']),
+                _tRAS=int(pmem['tRAS']),
+                _bank_rows=int(pmem['bank_rows']), #added for supporting old configs, mainly column size change
+                _bank_columns=int(pmem['columns']*8 if 'columns' in pmem else pmem['bank_columns']),
+                _refresh_period=int(1000*pmem['refresh_period']),
+                _refreshes_per_period=int(pmem['refreshes_per_period']),
+                _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == pmem['name']),
+                **pmem),
+            '},'
+        )
 
     # Conditional CXL instantiation
     if is_cxl_enabled:
@@ -468,23 +487,36 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
             '},'
         )
 
-        cxl_dram_instantiation_body = (
-            'CXL_DRAM{',
-            cxl_dram_fmtstr.format(
-                clock_period_dbus=int(1000000/cxl_dram['data_rate']),
-                clock_period_mc=int(1000000/cxl_dram['frequency']),
-                _tRP=int(cxl_dram['tRP']),
-                _tRCD=int(cxl_dram['tRCD']),
-                _tCAS=int(cxl_dram['tCAS']),
-                _tRAS=int(cxl_dram['tRAS']),
-                _bank_rows=int(cxl_dram['bank_rows']), #added for supporting old configs, mainly column size change
-                _bank_columns=int(cxl_dram['columns']*8 if 'columns' in cxl_dram else cxl_dram['bank_columns']),
-                _refresh_period=int(1000*cxl_dram['refresh_period']),
-                _refreshes_per_period=int(cxl_dram['refreshes_per_period']),
-                _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == cxl_dram['name']),
-                **cxl_dram),
-            '},'
-        )
+        # Choose between Ramulator and traditional DRAM controller for CXL DRAM
+        if cxl_dram.get('use_ramulator', False):
+            cxl_dram_instantiation_body = (
+                'CXL_DRAM{',
+                ramulator_cxl_dram_fmtstr.format(
+                    clock_period=int(1000000/cores[0]['frequency']),
+                    _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == cxl_dram['name']),
+                    ramulator_config_path=f'"{cxl_dram.get("ramulator_config_path", "")}"',
+                    stats_output_dir=f'"{cxl_dram.get("stats_output_dir", "./results/ramulator_cxl")}"'
+                ),
+                '},'
+            )
+        else:
+            cxl_dram_instantiation_body = (
+                'CXL_DRAM{',
+                cxl_dram_fmtstr.format(
+                    clock_period_dbus=int(1000000/cxl_dram['data_rate']),
+                    clock_period_mc=int(1000000/cxl_dram['frequency']),
+                    _tRP=int(cxl_dram['tRP']),
+                    _tRCD=int(cxl_dram['tRCD']),
+                    _tCAS=int(cxl_dram['tCAS']),
+                    _tRAS=int(cxl_dram['tRAS']),
+                    _bank_rows=int(cxl_dram['bank_rows']), #added for supporting old configs, mainly column size change
+                    _bank_columns=int(cxl_dram['columns']*8 if 'columns' in cxl_dram else cxl_dram['bank_columns']),
+                    _refresh_period=int(1000*cxl_dram['refresh_period']),
+                    _refreshes_per_period=int(cxl_dram['refreshes_per_period']),
+                    _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == cxl_dram['name']),
+                    **cxl_dram),
+                '},'
+            )
     else:
         cxl_instantiation_body = ()
         cxl_dram_instantiation_body = ()
@@ -574,34 +606,74 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     yield ''
 
     yield from cxx.function(f'{classname}::router_view', [f'return {router["name"]};'], rtype='SHIM_LAYER&')
+    yield ''
 
-    # Always generate DRAM functions - manually generate has_dram due to const qualifier positioning
+    # Check if using Ramulator (either pmem or cxl_dram uses Ramulator)
+    is_ramulator_enabled = pmem.get('use_ramulator', False) or (is_cxl_enabled and cxl_dram.get('use_ramulator', False))
+
+    # Generate has_dram() - true if physical memory subsystem exists (regardless of implementation)
     yield f'auto {classname}::has_dram() const -> bool'
     yield '{'
     yield f'  return {str(is_dram_enabled).lower()};'
     yield '}'
-    if is_dram_enabled:
-        yield from cxx.function(f'{classname}::dram_view', [f'return &{pmem["name"]};'], rtype='MEMORY_CONTROLLER*')
-    else:
-        yield from cxx.function(f'{classname}::dram_view', ['return nullptr;'], rtype='MEMORY_CONTROLLER*')
+    yield ''
 
-    # Always generate CXL functions - manually generate has_cxl due to const qualifier positioning
+    # Generate has_cxl() - true if CXL memory subsystem exists
     yield f'auto {classname}::has_cxl() const -> bool'
     yield '{'
     yield f'  return {str(is_cxl_enabled).lower()};'
     yield '}'
-    if is_cxl_enabled:
-        yield from cxx.function(f'{classname}::cxl_view', [f'return &{cxl["name"]};'], rtype='CXL_CONTROLLER*')
-        yield from cxx.function(f'{classname}::cxl_dram_view', [f'return &{cxl_dram["name"]};'], rtype='MEMORY_CONTROLLER*')
-    else:
-        yield from cxx.function(f'{classname}::cxl_view', ['return nullptr;'], rtype='CXL_CONTROLLER*')
-        yield from cxx.function(f'{classname}::cxl_dram_view', ['return nullptr;'], rtype='MEMORY_CONTROLLER*')
     yield ''
 
-def get_instantiation_header(num_cpus, env, build_id, is_dram_enabled, is_cxl_enabled):
+    # Generate uses_ramulator() - global flag for memory simulator type
+    yield f'auto {classname}::uses_ramulator() const -> bool'
+    yield '{'
+    yield f'  return {str(is_ramulator_enabled).lower()};'
+    yield '}'
+    yield ''
+
+    # Generate builtin_dram_view() - returns ChampSim builtin DRAM controller
+    if is_dram_enabled and not is_ramulator_enabled:
+        yield from cxx.function(f'{classname}::builtin_dram_view', [f'return &{pmem["name"]};'], rtype='MEMORY_CONTROLLER*')
+    else:
+        yield from cxx.function(f'{classname}::builtin_dram_view', ['return nullptr;'], rtype='MEMORY_CONTROLLER*')
+    yield ''
+
+    # Generate builtin_cxl_dram_view() - returns ChampSim builtin CXL_DRAM controller
+    if is_cxl_enabled and not cxl_dram.get('use_ramulator', False):
+        yield from cxx.function(f'{classname}::builtin_cxl_dram_view', [f'return &{cxl_dram["name"]};'], rtype='MEMORY_CONTROLLER*')
+    else:
+        yield from cxx.function(f'{classname}::builtin_cxl_dram_view', ['return nullptr;'], rtype='MEMORY_CONTROLLER*')
+    yield ''
+
+    # Generate ramulator_dram_view() - returns Ramulator DRAM controller
+    if is_dram_enabled and pmem.get('use_ramulator', False):
+        yield from cxx.function(f'{classname}::ramulator_dram_view', [f'return &{pmem["name"]};'], rtype='RAMULATOR_CONTROLLER*')
+    else:
+        yield from cxx.function(f'{classname}::ramulator_dram_view', ['return nullptr;'], rtype='RAMULATOR_CONTROLLER*')
+    yield ''
+
+    # Generate ramulator_cxl_dram_view() - returns Ramulator CXL_DRAM controller
+    if is_cxl_enabled and cxl_dram.get('use_ramulator', False):
+        yield from cxx.function(f'{classname}::ramulator_cxl_dram_view', [f'return &{cxl_dram["name"]};'], rtype='RAMULATOR_CONTROLLER*')
+    else:
+        yield from cxx.function(f'{classname}::ramulator_cxl_dram_view', ['return nullptr;'], rtype='RAMULATOR_CONTROLLER*')
+    yield ''
+
+    # Generate cxl_view() - returns CXL controller
+    if is_cxl_enabled:
+        yield from cxx.function(f'{classname}::cxl_view', [f'return &{cxl["name"]};'], rtype='CXL_CONTROLLER*')
+    else:
+        yield from cxx.function(f'{classname}::cxl_view', ['return nullptr;'], rtype='CXL_CONTROLLER*')
+    yield ''
+
+def get_instantiation_header(num_cpus, env, build_id, is_dram_enabled, is_cxl_enabled, is_ramulator_enabled, pmem, cxl_dram):
     yield '#include "environment.h"'
     yield '#include "vmem.h"'
     yield '#include <forward_list>'
+    # Conditionally include Ramulator controller header if using Ramulator
+    if is_ramulator_enabled:
+        yield '#include "ramulator_controller.h"'
     yield 'template <>'
 
     # Build struct body conditionally
@@ -612,12 +684,23 @@ def get_instantiation_header(num_cpus, env, build_id, is_dram_enabled, is_cxl_en
     ]
 
     if is_dram_enabled:
-        struct_body.append('MEMORY_CONTROLLER DRAM;')
+        # Use RAMULATOR_CONTROLLER if pmem uses Ramulator, otherwise MEMORY_CONTROLLER
+        if pmem.get('use_ramulator', False):
+            struct_body.append('RAMULATOR_CONTROLLER DRAM;')
+        else:
+            struct_body.append('MEMORY_CONTROLLER DRAM;')
     if is_cxl_enabled:
-        struct_body.extend([
-            'CXL_CONTROLLER CXL;',
-            'MEMORY_CONTROLLER CXL_DRAM;'
-        ])
+        # Use RAMULATOR_CONTROLLER for CXL_DRAM if it uses Ramulator, otherwise MEMORY_CONTROLLER
+        if cxl_dram.get('use_ramulator', False):
+            struct_body.extend([
+                'CXL_CONTROLLER CXL;',
+                'RAMULATOR_CONTROLLER CXL_DRAM;'
+            ])
+        else:
+            struct_body.extend([
+                'CXL_CONTROLLER CXL;',
+                'MEMORY_CONTROLLER CXL_DRAM;'
+            ])
 
     struct_body.extend([
         'VirtualMemory vmem;',
@@ -637,14 +720,25 @@ def get_instantiation_header(num_cpus, env, build_id, is_dram_enabled, is_cxl_en
         'SHIM_LAYER& router_view() final;'
     ])
 
-    # Always declare DRAM and CXL functions for compatibility
+    # Always declare memory subsystem functions for compatibility
     struct_body.extend([
         'std::vector<std::reference_wrapper<operable>> operable_view() final;',
+        '',
+        '// Memory subsystem presence flags',
         'bool has_dram() const final;',
-        'MEMORY_CONTROLLER* dram_view() final;',
         'bool has_cxl() const final;',
-        'CXL_CONTROLLER* cxl_view() final;',
-        'MEMORY_CONTROLLER* cxl_dram_view() final;'
+        'bool uses_ramulator() const final;',
+        '',
+        '// ChampSim builtin DRAM controller views',
+        'MEMORY_CONTROLLER* builtin_dram_view() final;',
+        'MEMORY_CONTROLLER* builtin_cxl_dram_view() final;',
+        '',
+        '// Ramulator DRAM controller views',
+        'RAMULATOR_CONTROLLER* ramulator_dram_view() final;',
+        'RAMULATOR_CONTROLLER* ramulator_cxl_dram_view() final;',
+        '',
+        '// CXL controller view',
+        'CXL_CONTROLLER* cxl_view() final;'
     ])
 
     struct_name = f'champsim::configured::generated_environment<0x{build_id}> final'

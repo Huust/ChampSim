@@ -170,10 +170,12 @@ class Fragment:
         # If both are disabled, default to DRAM only
         if not is_dram_enabled and not is_cxl_enabled:
             is_dram_enabled = True
+        # Check if either pmem or cxl_dram uses Ramulator
+        is_ramulator_enabled = elements['pmem'].get('use_ramulator', False) or (is_cxl_enabled and elements['cxl_dram'].get('use_ramulator', False))
 
         fileparts = [
             # Instantiation file
-            (os.path.join(objdir_name, 'core_inst.inc'), cxx_file(get_instantiation_header(len(elements['cores']), config_file, build_id=build_id, is_dram_enabled=is_dram_enabled, is_cxl_enabled=is_cxl_enabled))),
+            (os.path.join(objdir_name, 'core_inst.inc'), cxx_file(get_instantiation_header(len(elements['cores']), config_file, build_id=build_id, is_dram_enabled=is_dram_enabled, is_cxl_enabled=is_cxl_enabled, is_ramulator_enabled=is_ramulator_enabled, pmem=elements['pmem'], cxl_dram=elements.get('cxl_dram', {})))),
             (os.path.join(objdir_name, 'core_inst.cc.inc'), cxx_file(get_instantiation_lines(build_id=build_id, **elements))),
 
             # Makefile generation
