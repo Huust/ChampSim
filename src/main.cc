@@ -212,16 +212,8 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     cache.impl_replacement_final_stats();
   }
 
-  if (gen_environment.uses_ramulator()) {
-    // Call finish() for physical memory DRAM if using Ramulator
-    if (auto ramulator = gen_environment.ramulator_dram_view()) {
-      ramulator->finish();
-    }
-    // Call finish() for CXL DRAM if using Ramulator
-    if (auto ramulator_cxl = gen_environment.ramulator_cxl_dram_view()) {
-      ramulator_cxl->finish();
-    }
-  }
+  // Ramulator finish() is now called in end_phase() for simulation phase
+  // No need to call it here separately
 
   if (json_option->count() > 0) {
     if (json_file_name.empty()) {
