@@ -284,8 +284,8 @@ $(test_main_name): override LDLIBS += -lCatch2Main -lCatch2
 $(test_main_name): $(call get_base_objs,TEST) $(test_base_objs) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@)
 $(executable_name): $(call get_base_objs,$$(build_id)) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@)
 
-# Link main executables
-$(executable_name): ramulator
+# Link main executables (ramulator must be built first as an order-only prerequisite)
+$(executable_name): | ramulator
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LOADLIBES) $(LDLIBS) $(ROOT_DIR)/ramulator/libramulator.a
 
 $(test_main_name):

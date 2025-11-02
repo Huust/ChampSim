@@ -9,7 +9,9 @@ OBJS := $(patsubst $(SRCDIR)/%.cpp, $(OBJDIR)/%.o, $(SRCS))
 #   g++ 4.x due to an internal compiler error when processing lambda functions.
 CXX := g++
 # CXX := g++-5
-CXXFLAGS := -O3 -std=c++17 -g -Wall
+# Suppress unused lambda capture warnings from template instantiations
+# and unused variable warnings from debug/test code
+CXXFLAGS := -O3 -std=c++17 -g -Wall -Wno-unused-lambda-capture -Wno-unused-but-set-variable
 AR = ar
 ARFLAGS = rcs
 
@@ -18,9 +20,9 @@ ARFLAGS = rcs
 all: depend ramulator libramulator.a
 
 clean:
-	rm -f ramulator
-	rm -rf $(OBJDIR)
-	rm -f libramulator.a
+	@rm -f ramulator
+	@rm -rf $(OBJDIR)
+	@rm -f libramulator.a
 
 depend: $(OBJDIR)/.depend
 
