@@ -36,6 +36,7 @@
 #include "tracereader.h"
 #include "vmem.h"
 #include "heatmap.h"
+#include "ramulator_controller.h"
 
 namespace champsim
 {
@@ -209,6 +210,17 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   for (CACHE& cache : gen_environment.cache_view()) {
     cache.impl_replacement_final_stats();
+  }
+
+  if (gen_environment.uses_ramulator()) {
+    // Call finish() for physical memory DRAM if using Ramulator
+    if (auto ramulator = gen_environment.ramulator_dram_view()) {
+      ramulator->finish();
+    }
+    // Call finish() for CXL DRAM if using Ramulator
+    if (auto ramulator_cxl = gen_environment.ramulator_cxl_dram_view()) {
+      ramulator_cxl->finish();
+    }
   }
 
   if (json_option->count() > 0) {

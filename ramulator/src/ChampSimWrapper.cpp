@@ -28,16 +28,15 @@ static map<string, function<MemoryBase *(const Config &, int)>> name_to_func = {
 
 ChampSimWrapper::ChampSimWrapper(const Config& configs, int cacheline)
 {
-        const string &std_name = configs["standard"];
+    const string &std_name = configs["standard"];
     assert(name_to_func.find(std_name) != name_to_func.end() && "unrecognized standard name");
     mem = name_to_func[std_name](configs, cacheline);
     tCK = mem->clk_ns();
 
     if (configs.contains("stats_dir")) {
         printf("stats_dir: %s\n",
-                (configs["stats_dir"] + "/ramulator_stats_channel" + ".txt").c_str());
-        RamulatorStats::statlist.output(configs["stats_dir"] + "/ramulator_stats_channel" +
-                                ".txt");
+                (configs["stats_dir"]).c_str());
+        RamulatorStats::statlist.output(configs["stats_dir"]);
     } else {
         RamulatorStats::statlist.output(configs["standard"] + ".stats");
     }

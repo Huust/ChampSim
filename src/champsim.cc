@@ -174,14 +174,22 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
   auto router = env.router_view();
   stats.roi_shim_layer_stats.push_back(router.roi_stats);
   stats.sim_shim_layer_stats.push_back(router.sim_stats);
-  
+
+  // Collect DRAM statistics based on simulator type
   if (env.has_dram()) {
-    auto dram = env.dram_view();
-    if (dram) {
-      std::transform(std::begin(dram->channels), std::end(dram->channels), std::back_inserter(stats.sim_dram_stats),
-                     [](const DRAM_CHANNEL& chan) { return chan.sim_stats; });
-      std::transform(std::begin(dram->channels), std::end(dram->channels), std::back_inserter(stats.roi_dram_stats),
-                     [](const DRAM_CHANNEL& chan) { return chan.roi_stats; });
+    if (env.uses_ramulator()) {
+      // Ramulator handles its own statistics internally
+      // Statistics are written by Ramulator's finish() method
+      // No need to collect channel-level stats here
+    } else {
+      // ChampSim builtin DRAM controller
+      auto dram = env.builtin_dram_view();
+      if (dram) {
+        std::transform(std::begin(dram->channels), std::end(dram->channels), std::back_inserter(stats.sim_dram_stats),
+                       [](const DRAM_CHANNEL& chan) { return chan.sim_stats; });
+        std::transform(std::begin(dram->channels), std::end(dram->channels), std::back_inserter(stats.roi_dram_stats),
+                       [](const DRAM_CHANNEL& chan) { return chan.roi_stats; });
+      }
     }
   }
 
@@ -194,13 +202,20 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
       stats.roi_cxl_stats.push_back(cxl->channel.roi_stats);
     }
 
-    auto cxl_dram = env.cxl_dram_view();
-    if (cxl_dram) {
-      // CXL_DRAM is a MEMORY_CONTROLLER with channels vector
-      std::transform(std::begin(cxl_dram->channels), std::end(cxl_dram->channels), std::back_inserter(stats.sim_cxl_dram_stats),
-                     [](const DRAM_CHANNEL& chan) { return chan.sim_stats; });
-      std::transform(std::begin(cxl_dram->channels), std::end(cxl_dram->channels), std::back_inserter(stats.roi_cxl_dram_stats),
-                     [](const DRAM_CHANNEL& chan) { return chan.roi_stats; });
+    // Collect CXL_DRAM statistics based on simulator type
+    if (env.uses_ramulator()) {
+      // Ramulator handles its own statistics internally for CXL_DRAM
+      // No need to collect channel-level stats here
+    } else {
+      // ChampSim builtin CXL_DRAM controller
+      auto cxl_dram = env.builtin_cxl_dram_view();
+      if (cxl_dram) {
+        // CXL_DRAM is a MEMORY_CONTROLLER with channels vector
+        std::transform(std::begin(cxl_dram->channels), std::end(cxl_dram->channels), std::back_inserter(stats.sim_cxl_dram_stats),
+                       [](const DRAM_CHANNEL& chan) { return chan.sim_stats; });
+        std::transform(std::begin(cxl_dram->channels), std::end(cxl_dram->channels), std::back_inserter(stats.roi_cxl_dram_stats),
+                       [](const DRAM_CHANNEL& chan) { return chan.roi_stats; });
+      }
     }
   }
 
