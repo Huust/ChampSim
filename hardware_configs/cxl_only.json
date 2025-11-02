@@ -182,6 +182,9 @@
         "channel_width": 8,
         "lower_level": "CXL_DRAM",
         "dram": {
+            "use_ramulator": true,
+            "ramulator_config_path": "./ramulator/configs/HBM-config.cfg",
+            "stats_output_dir": "./results/ramulator/cxl_only.stats.cxl",
             "data_rate": 3200,
             "channels": 1,
             "ranks": 1,

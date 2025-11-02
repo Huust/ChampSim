@@ -161,8 +161,8 @@
 
     "shim_layer": {
         "frequency": 4000,
-        "cxl": 0,
-        "dram": 1,
+        "cxl": 1,
+        "dram": 0,
         "wq_size": 64,
         "rq_size": 64,
         "pq_size": 64,
@@ -182,6 +182,9 @@
         "channel_width": 8,
         "lower_level": "CXL_DRAM",
         "dram": {
+          "use_ramulator": true,
+          "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
+          "stats_output_dir": "./results/ramulator/stats.cxl",
 			    "data_rate": 3200,
           "channels": 1,
           "ranks": 1,
@@ -202,7 +205,10 @@
     },
 
     "physical_memory": {
-        "data_rate": 3200,
+        "use_ramulator": true,
+        "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
+        "stats_output_dir": "./results/ramulator/stats.dram",
+        "data_rate": 2400,
         "channels": 1,
         "ranks": 1,
         "bankgroups": 8,
