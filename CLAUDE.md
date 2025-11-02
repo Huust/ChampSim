@@ -49,6 +49,14 @@ bin/champsim --warmup_instructions 200000000 --simulation_instructions 500000000
 
 # Using different executables (if multiple configurations built)
 bin/<executable_name> --warmup_instructions <warmup> --simulation_instructions <sim> <trace_file>
+
+# Two-phase heatmap-based simulation (for hybrid memory systems)
+# Phase 1: Generate heatmap
+bin/champsim_hybrid --warmup_instructions 200M --simulation_instructions 500M --generate-heatmap trace.xz
+
+# Phase 2: Use heatmap for allocation (access-count or criticality-based)
+bin/champsim_hybrid --warmup_instructions 200M --simulation_instructions 500M --use-heatmap trace.xz
+bin/champsim_hybrid --warmup_instructions 200M --simulation_instructions 500M --use-heatmap --sort-by-criticality trace.xz
 ```
 
 ### Building Multiple Hardware Configurations (Repository-Specific)
@@ -121,7 +129,9 @@ CPU (O3_CPU) → L1I/L1D Caches → L2C Cache → LLC Cache → SHIM_LAYER (Rout
 - `O3_CPU`: Out-of-order CPU core with detailed pipeline modeling
 - `CACHE`: Unified cache implementation with configurable prefetchers and replacement policies
 - `SHIM_LAYER`: Address-based router that directs memory requests between DRAM and CXL memory
-- `MEMORY_CONTROLLER`/`DRAM_CONTROLLER`: Models DDR memory with banks, timing, and refresh
+- `MEMORY_CONTROLLER`: Base class for memory controllers (virtual interface)
+- `DRAM_CONTROLLER`: Native ChampSim memory controller with bank/rank/row/column modeling
+- `RAMULATOR_CONTROLLER`: Ramulator-based memory controller for detailed DRAM simulation
 - `CXL_CONTROLLER`/`CXL_CHANNEL`: Models CXL memory devices with protocol overhead and internal DRAM
 - `PageTableWalker`: Handles virtual-to-physical address translation with page table caches
 
@@ -132,6 +142,13 @@ CPU (O3_CPU) → L1I/L1D Caches → L2C Cache → LLC Cache → SHIM_LAYER (Rout
 - `config.sh` (Python script) parses JSON and generates C++ instantiation code
 - Modular design allows swapping branch predictors, prefetchers, and replacement policies
 - Configuration generates build-specific files in `.csconfig/` directory
+
+**Ramulator Configuration:**
+- Set `"use_ramulator": true` in `physical_memory` or `cxl_memory.dram` sections
+- Specify Ramulator config file: `"ramulator_config_path": "./ramulator/configs/DDR4-config.cfg"`
+- Specify stats output directory: `"stats_output_dir": "./results/ramulator/stats.dram"`
+- Available Ramulator configs: DDR3, DDR4, LPDDR3, LPDDR4, GDDR5, HBM, WideIO, WideIO2, and more
+- When `use_ramulator` is false or unset, ChampSim uses native `DRAM_CONTROLLER`
 
 **Module Directories:**
 - `branch/`: Branch predictor implementations (bimodal, gshare, perceptron, etc.)
@@ -153,6 +170,18 @@ CPU (O3_CPU) → L1I/L1D Caches → L2C Cache → LLC Cache → SHIM_LAYER (Rout
 - Connected to internal DRAM controller for CXL device memory
 - Implements collision detection and write forwarding
 - Located in `inc/cxl_memory.h` and `src/cxl_memory.cc`
+
+**Ramulator Integration (Repository-Specific):**
+- `RAMULATOR_CONTROLLER`: Alternative memory controller using Ramulator for detailed DRAM simulation
+- Inherits from `MEMORY_CONTROLLER` base class alongside `DRAM_CONTROLLER`
+- Supports multiple DRAM standards (DDR3/4, LPDDR3/4, GDDR5, HBM, WideIO, etc.)
+- Clock domain adaptation via accumulator-based "gearbox" (m_ratio and m_accumulator)
+- Configuration via `.cfg` files in `ramulator/configs/` directory
+- Enable by setting `"use_ramulator": true` in JSON config's `physical_memory` or `cxl_memory.dram` sections
+- Ramulator config path and stats output directory are configurable per memory controller
+- Callbacks handle read/write completion and return responses to upper-level caches
+- Located in `inc/ramulator_controller.h` and `src/ramulator_controller.cc`
+- Ramulator wrapper interface in `ramulator/src/ChampSimWrapper.{h,cpp}`
 
 **Heatmap-Based Memory Allocation (Repository-Specific):**
 - Two-phase simulation for intelligent memory placement
@@ -198,6 +227,13 @@ When adding new memory components or modifying existing ones:
 5. Add appropriate statistics collection (distinguish warmup vs simulation phases)
 6. Test with both single and multi-level memory hierarchies
 
+**Dual Memory Controller Architecture:**
+- Both `DRAM_CONTROLLER` and `RAMULATOR_CONTROLLER` inherit from virtual base `MEMORY_CONTROLLER`
+- Selection controlled by `"use_ramulator"` flag in JSON configuration
+- Allows transparent switching between native ChampSim and Ramulator simulation
+- Each CXL device and physical memory can independently choose controller type
+- When extending memory controller functionality, consider both implementations
+
 ### Module Development
 
 **Creating Custom Modules:**
@@ -225,7 +261,8 @@ cp prefetcher/no_l2c/no.cc prefetcher/my_prefetcher/my_prefetcher.cc
 - `src/main.cc`: Simulation entry point and main loop
 - `src/cache.cc`: Cache implementation with MSHR management
 - `src/ooo_cpu.cc`: Out-of-order CPU core with pipeline stages
-- `src/dram_controller.cc`: DDR memory controller with bank modeling
+- `src/dram_controller.cc`: Native ChampSim DDR memory controller with bank modeling
+- `src/ramulator_controller.cc`: Ramulator-based memory controller (custom to this repository)
 - `src/shim_layer.cc`: Memory routing layer (custom to this repository)
 - `src/cxl_memory.cc`: CXL memory device modeling (custom to this repository)
 
@@ -233,6 +270,12 @@ cp prefetcher/no_l2c/no.cc prefetcher/my_prefetcher/my_prefetcher.cc
 - `config/`: Python scripts for parsing JSON and generating build files
 - `config/instantiation_file.py`: Main configuration parser and code generator
 - `champsim_config.json`: Example configuration with all available options
+
+**Ramulator Files:**
+- `ramulator/`: Ramulator submodule for detailed DRAM simulation
+- `ramulator/configs/`: Ramulator configuration files for different DRAM standards
+- `ramulator/src/ChampSimWrapper.{h,cpp}`: ChampSim-Ramulator integration interface
+- Statistics output to directories specified in JSON config (e.g., `results/ramulator/`)
 
 **Analysis and Visualization Scripts:**
 - `scripts/runall_pelle.py`: Batch job submission for SLURM cluster
