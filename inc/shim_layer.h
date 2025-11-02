@@ -31,11 +31,7 @@ class SHIM_LAYER final: public champsim::operable {
   queue_type PQ;
   std::deque<response_type> RespQ;  // No limited sizd
 
-  // Memory controller pointers for size access
-  MEMORY_CONTROLLER* dram_ptr = nullptr;        // pointer to DRAM controller, nullptr if not enabled
-  MEMORY_CONTROLLER* cxl_ptr = nullptr;         // pointer to CXL DRAM controller, nullptr if not enabled
-
-  // Environment access for ROB operations
+  // Environment access for ROB operations and memory controller views
   champsim::environment* env_ptr = nullptr;
 
   enum class MODE {
@@ -77,7 +73,6 @@ public:
   SHIM_LAYER(champsim::chrono::picoseconds clock_period, champsim::channel *ul, std::vector<channel_type*>&& ll,
              std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
              long int max_upper_bw, long int max_lower_bw,
-             MEMORY_CONTROLLER* dram_ptr, MEMORY_CONTROLLER* cxl_ptr,
              champsim::environment* env_ptr
              );
 

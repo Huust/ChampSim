@@ -8,6 +8,7 @@
 #include "operable.h"
 #include "util/bits.h"
 #include "dram_controller.h"
+#include "ramulator_controller.h"
 #include "heatmap.h"
 #include "environment.h"
 #include "ooo_cpu.h"
@@ -15,15 +16,14 @@
 SHIM_LAYER::SHIM_LAYER(champsim::chrono::picoseconds clock_period, champsim::channel *ul, std::vector<channel_type*>&& ll,
                        std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
                        long int max_upper_bw, long int max_lower_bw,
-                       MEMORY_CONTROLLER* dram_ptr, MEMORY_CONTROLLER* cxl_ptr,
                        champsim::environment* env_ptr
                       )
   : champsim::operable(clock_period),
     ul(ul), ll_queues(ll), WQ(wq_size), RQ(rq_size), PQ(pq_size),
-    dram_ptr(dram_ptr), cxl_ptr(cxl_ptr), env_ptr(env_ptr),
+    env_ptr(env_ptr),
     UPPER_STREAM_MAX_BW{max_upper_bw}, LOWER_STREAM_MAX_BW{max_lower_bw}
 {
-  this->mode = get_operate_mode(dram_ptr != nullptr, cxl_ptr != nullptr);
+  this->mode = get_operate_mode(env_ptr->has_dram(), env_ptr->has_cxl());
 }
 
 // 1. Move the response from lower level's champsim channel (connected to potential memory) into local queue
@@ -71,7 +71,17 @@ long SHIM_LAYER::route() {
       if (mode == MODE::CXL_ONLY) {
         is_cxl_address = true;
       } else if (mode == MODE::HYBRID) {
-        is_cxl_address = pkt.address.template to<uint64_t>() >= static_cast<uint64_t>(dram_ptr->size().count());
+        // Get DRAM size dynamically based on whether using Ramulator or builtin
+        champsim::data::bytes dram_size{0};
+        if (env_ptr->uses_ramulator()) {
+          auto* ramulator_dram = env_ptr->ramulator_dram_view();
+          dram_size = ramulator_dram->size();
+        } else {
+          auto* builtin_dram = env_ptr->builtin_dram_view();
+          assert(builtin_dram);
+          dram_size = builtin_dram->size();
+        }
+        is_cxl_address = pkt.address.template to<uint64_t>() >= static_cast<uint64_t>(dram_size.count());
       } else if (mode == MODE::DRAM_ONLY) {
         is_cxl_address = false;
       } else {
