@@ -2,7 +2,7 @@
 
 namespace ramulator {
 
-// Global variables for statistics
+// Global variables for statistics (for backward compatibility)
 std::vector<StatBase*> all_stats_global;
 std::ofstream stats_output;
 uint64_t current_tick = 0;
@@ -10,6 +10,42 @@ uint64_t current_tick = 0;
 // Function to get the global stats vector
 std::vector<StatBase*>& get_all_stats() {
     return all_stats_global;
+}
+
+// StatContext member functions
+void StatContext::reset_stats() {
+    for (auto* stat : all_stats_) {
+        if (stat) {
+            stat->reset();
+        }
+    }
+}
+
+void StatContext::print_stats() {
+    std::string filename = output_filename_.empty() ? "ramulator.stats" : output_filename_;
+
+    std::ofstream output_file(filename.c_str(), std::ios_base::out);
+    if (!output_file.good()) {
+        std::cerr << "Error: Could not open statistics output file: " << filename << std::endl;
+        return;
+    }
+
+    output_file << std::endl;
+    output_file << "---------- Begin Simulation Statistics ----------" << std::endl;
+
+    int displayed_count = 0;
+    for (auto* stat : all_stats_) {
+        if (stat) {
+            stat->prepare();
+            stat->print(output_file);
+            displayed_count++;
+        }
+    }
+
+    output_file << "# Displayed " << displayed_count << " statistics" << std::endl;
+    output_file << std::endl;
+    output_file << "---------- End Simulation Statistics ----------" << std::endl;
+    output_file.close();
 }
 
 void reset_stats() {

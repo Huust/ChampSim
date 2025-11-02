@@ -44,8 +44,38 @@ namespace ramulator {
 
 // Forward declarations
 class StatBase;
+class StatContext;
 
-// Statistics storage and management
+// Statistics Context - encapsulates all statistics state for one Ramulator instance
+class StatContext {
+public:
+    StatContext() : current_tick_(0) {}
+    ~StatContext() = default;
+
+    // Disable copy/move to prevent sharing state between instances
+    StatContext(const StatContext&) = delete;
+    StatContext& operator=(const StatContext&) = delete;
+    StatContext(StatContext&&) = delete;
+    StatContext& operator=(StatContext&&) = delete;
+
+    // Accessors
+    std::vector<StatBase*>& get_all_stats() { return all_stats_; }
+    uint64_t& get_current_tick() { return current_tick_; }
+
+    void set_output_filename(const std::string& filename) { output_filename_ = filename; }
+    const std::string& get_output_filename() const { return output_filename_; }
+
+    // Statistics operations
+    void reset_stats();
+    void print_stats();
+
+private:
+    std::vector<StatBase*> all_stats_;
+    uint64_t current_tick_ = 0;
+    std::string output_filename_;
+};
+
+// Global functions (for backward compatibility - delegate to global context)
 extern std::vector<StatBase*>& get_all_stats();
 extern std::ofstream stats_output;
 extern uint64_t current_tick;
@@ -61,10 +91,17 @@ protected:
     int stat_precision = 1;
     bool display_flag = true;
     bool nozero_flag = false;
+    StatContext* context_ = nullptr;
 
 public:
-    StatBase() {
-        get_all_stats().push_back(this);
+    // Constructor accepting StatContext for instance-specific statistics
+    explicit StatBase(StatContext* ctx = nullptr) : context_(ctx) {
+        if (context_) {
+            context_->get_all_stats().push_back(this);
+        } else {
+            // Fallback to global for backward compatibility
+            get_all_stats().push_back(this);
+        }
     }
 
     virtual ~StatBase() = default;
@@ -116,7 +153,7 @@ private:
     double value_;
 
 public:
-    ScalarStat() : value_(0.0) {}
+    explicit ScalarStat(StatContext* ctx = nullptr) : StatBase(ctx), value_(0.0) {}
 
     double value() const { return value_; }
 
@@ -191,12 +228,15 @@ private:
     uint64_t start_tick_;
 
     uint64_t get_current_tick() const {
-        // Use RamulatorStats::curTick for compatibility
+        // Use context's tick if available, otherwise fall back to global
+        if (context_) {
+            return context_->get_current_tick();
+        }
         return RamulatorStats::curTick;
     }
 
 public:
-    AverageStat() : current_value_(0.0), total_value_(0.0) {
+    explicit AverageStat(StatContext* ctx = nullptr) : StatBase(ctx), current_value_(0.0), total_value_(0.0) {
         last_tick_ = get_current_tick();
         start_tick_ = get_current_tick();
     }
@@ -335,7 +375,7 @@ private:
     std::vector<std::string> subdescs_;
 
 public:
-    VectorStat() {}
+    explicit VectorStat(StatContext* ctx = nullptr) : StatBase(ctx) {}
 
     VectorStat& init(size_t size) {
         elements_.resize(size);
@@ -430,13 +470,18 @@ private:
     double total_value_;
     uint64_t last_tick_;
     uint64_t start_tick_;
+    StatContext* context_;
 
     uint64_t get_current_tick() const {
+        if (context_) {
+            return context_->get_current_tick();
+        }
         return RamulatorStats::curTick;
     }
 
 public:
-    AverageElement() : current_value_(0.0), total_value_(0.0) {
+    explicit AverageElement(StatContext* ctx = nullptr)
+        : current_value_(0.0), total_value_(0.0), context_(ctx) {
         last_tick_ = get_current_tick();
         start_tick_ = get_current_tick();
     }
@@ -500,10 +545,14 @@ private:
     std::vector<std::string> subdescs_;
 
 public:
-    AverageVectorStat() {}
+    explicit AverageVectorStat(StatContext* ctx = nullptr) : StatBase(ctx) {}
 
     AverageVectorStat& init(size_t size) {
-        elements_.resize(size);
+        elements_.clear();
+        elements_.reserve(size);
+        for (size_t i = 0; i < size; ++i) {
+            elements_.emplace_back(context_);
+        }
         subnames_.resize(size);
         subdescs_.resize(size);
         return *this;
@@ -511,7 +560,10 @@ public:
 
     AverageElement& operator[](size_t index) {
         if (index >= elements_.size()) {
-            elements_.resize(index + 1);
+            size_t old_size = elements_.size();
+            for (size_t i = old_size; i <= index; ++i) {
+                elements_.emplace_back(context_);
+            }
             subnames_.resize(index + 1);
             subdescs_.resize(index + 1);
         }
@@ -577,9 +629,9 @@ class DistributionStat : public StatBase {
 private:
     // Based on gem5's DistStor implementation
     double min_track_;      // Minimum value to track in buckets
-    double max_track_;      // Maximum value to track in buckets  
+    double max_track_;      // Maximum value to track in buckets
     double bucket_size_;    // Size of each bucket
-    
+
     double min_val_;        // Smallest value sampled
     double max_val_;        // Largest value sampled
     uint64_t underflow_;    // Count of values < min_track
@@ -588,15 +640,15 @@ private:
     double squares_;        // Sum of squares
     uint64_t samples_;      // Total number of samples
     std::vector<uint64_t> buckets_;  // Bucket counters
-    
+
     size_t num_buckets_;
 
 public:
-    DistributionStat() 
-        : min_track_(0), max_track_(0), bucket_size_(0),
+    explicit DistributionStat(StatContext* ctx = nullptr)
+        : StatBase(ctx), min_track_(0), max_track_(0), bucket_size_(0),
           min_val_(std::numeric_limits<double>::max()),
           max_val_(std::numeric_limits<double>::lowest()),
-          underflow_(0), overflow_(0), sum_(0), squares_(0), 
+          underflow_(0), overflow_(0), sum_(0), squares_(0),
           samples_(0), num_buckets_(0) {}
 
     // Initialize with min, max, and bucket size (like gem5's DistStor)
@@ -759,20 +811,20 @@ class HistogramStat : public StatBase {
 private:
     // Based on gem5's HistStor implementation
     double min_bucket_;     // Lower bound of the first bucket's range
-    double max_bucket_;     // Lower bound of the last bucket's range  
+    double max_bucket_;     // Lower bound of the last bucket's range
     double bucket_size_;    // The number of entries in each bucket
-    
+
     double sum_;            // The current sum
     double logs_;           // Sum of logarithms (for geometric mean)
     double squares_;        // Sum of squares
     uint64_t samples_;      // Number of samples
     std::vector<uint64_t> buckets_;  // Counter for each bucket
-    
+
     size_t num_buckets_;
 
 public:
-    HistogramStat() 
-        : min_bucket_(0), max_bucket_(0), bucket_size_(1),
+    explicit HistogramStat(StatContext* ctx = nullptr)
+        : StatBase(ctx), min_bucket_(0), max_bucket_(0), bucket_size_(1),
           sum_(0), logs_(0), squares_(0), samples_(0), num_buckets_(0) {}
 
     // Initialize with number of buckets (like gem5's Histogram)
@@ -1031,7 +1083,8 @@ private:
     double sum_, sum_squares_;
 
 public:
-    StandardDeviationStat() : num_samples_(0), sum_(0), sum_squares_(0) {}
+    explicit StandardDeviationStat(StatContext* ctx = nullptr)
+        : StatBase(ctx), num_samples_(0), sum_(0), sum_squares_(0) {}
 
     template<typename T>
     void sample(const T& value, int count = 1) {
@@ -1082,7 +1135,8 @@ private:
     double sum_, sum_squares_;
 
 public:
-    AverageDeviationStat() : num_samples_(0), sum_(0), sum_squares_(0) {}
+    explicit AverageDeviationStat(StatContext* ctx = nullptr)
+        : StatBase(ctx), num_samples_(0), sum_(0), sum_squares_(0) {}
 
     template<typename T>
     void sample(const T& value, int count = 1) {

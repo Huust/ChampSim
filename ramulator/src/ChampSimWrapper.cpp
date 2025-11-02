@@ -5,6 +5,7 @@
 #include "Request.h"
 #include "MemoryFactory.h"
 #include "Memory.h"
+#include "Statistics.h"
 #include "DDR3.h"
 #include "DDR4.h"
 #include "LPDDR3.h"
@@ -17,7 +18,7 @@
 
 using namespace ramulator;
 
-static map<string, function<MemoryBase *(const Config &, int)>> name_to_func = {
+static map<string, function<MemoryBase *(const Config &, int, StatContext*)>> name_to_func = {
     {"DDR3", &MemoryFactory<DDR3>::create},       {"DDR4", &MemoryFactory<DDR4>::create},
     {"LPDDR3", &MemoryFactory<LPDDR3>::create},   {"LPDDR4", &MemoryFactory<LPDDR4>::create},
     {"GDDR5", &MemoryFactory<GDDR5>::create},     {"WideIO", &MemoryFactory<WideIO>::create},
@@ -28,17 +29,23 @@ static map<string, function<MemoryBase *(const Config &, int)>> name_to_func = {
 
 ChampSimWrapper::ChampSimWrapper(const Config& configs, int cacheline)
 {
+    // Create stat context for this instance
+    stat_context_ = std::make_unique<StatContext>();
+
     const string &std_name = configs["standard"];
     assert(name_to_func.find(std_name) != name_to_func.end() && "unrecognized standard name");
-    mem = name_to_func[std_name](configs, cacheline);
+    mem = name_to_func[std_name](configs, cacheline, stat_context_.get());
     tCK = mem->clk_ns();
 
+    // Set output filename in the context
     if (configs.contains("stats_dir")) {
-        printf("stats_dir: %s\n",
-                (configs["stats_dir"]).c_str());
-        RamulatorStats::statlist.output(configs["stats_dir"]);
+        std::string output_file = configs["stats_dir"];
+        stat_context_->set_output_filename(output_file);
+        printf("[RAMULATOR] %s statistics will be written to: %s\n", std_name.c_str(), output_file.c_str());
     } else {
-        RamulatorStats::statlist.output(configs["standard"] + ".stats");
+        std::string output_file = configs["standard"] + ".stats";
+        stat_context_->set_output_filename(output_file);
+        printf("[RAMULATOR] %s statistics will be written to: %s (default)\n", std_name.c_str(), output_file.c_str());
     }
 }
 
@@ -56,16 +63,21 @@ bool ChampSimWrapper::send(Request req) {
 }
 
 void ChampSimWrapper::finish() {
-  std::cout << "[RAMULATOR] Finished Ramulator" << std::endl;
   mem->finish();
-  RamulatorStats::statlist.printall();
+  // Use instance-specific stat context instead of global
+  stat_context_->print_stats();
 }
 
 void ChampSimWrapper::resetStats() {
-    RamulatorStats::reset_stats();
+    // Use instance-specific stat context instead of global
+    stat_context_->reset_stats();
     mem->resetStats();
 }
 
 double ChampSimWrapper::get_tCK() {
     return tCK;
+}
+
+long ChampSimWrapper::get_capacity() {
+    return mem->get_max_address();
 }

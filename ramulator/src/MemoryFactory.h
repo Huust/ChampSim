@@ -16,6 +16,8 @@ using namespace std;
 namespace ramulator
 {
 
+class StatContext;  // Forward declaration
+
 template <typename T>
 class MemoryFactory {
 public:
@@ -33,7 +35,7 @@ public:
         spec->channel_width *= gang_number;
     }
 
-    static Memory<T> *populate_memory(const Config& configs, T *spec, int channels, int ranks) {
+    static Memory<T> *populate_memory(const Config& configs, T *spec, int channels, int ranks, StatContext* stat_ctx) {
         int& default_ranks = spec->org_entry.count[int(T::Level::Rank)];
         int& default_channels = spec->org_entry.count[int(T::Level::Channel)];
 
@@ -48,16 +50,16 @@ public:
         int channel_id = stoi(configs["gem5_channel_id"], NULL, 0);
         DRAM<T>* channel = new DRAM<T>(spec, T::Level::Channel);
         channel->id = channel_id;
-        channel->regStats("");
+        channel->regStats("", stat_ctx);
         ctrls.push_back(new Controller<T>(configs, channel));
 #else
         for (int c = 0; c < channels; c++){
             DRAM<T>* channel = new DRAM<T>(spec, T::Level::Channel);
             channel->id = c;
-            channel->regStats("");
+            channel->regStats("", stat_ctx);
             ctrls.push_back(new Controller<T>(configs, channel));
         }
-#endif        
+#endif
         return new Memory<T>(configs, ctrls);
     }
 
@@ -65,7 +67,7 @@ public:
         assert(channels > 0 && ranks > 0);
     }
 
-    static MemoryBase *create(const Config& configs, int cacheline)
+    static MemoryBase *create(const Config& configs, int cacheline, StatContext* stat_ctx = nullptr)
     {
         int channels = stoi(configs["channels"], NULL, 0);
         int ranks = stoi(configs["ranks"], NULL, 0);
@@ -73,7 +75,7 @@ public:
         if(configs.contains("gem5_num_channels")) {
             assert(stoi(configs["gem5_num_channels"]) == channels && "num_channels does not match");
         }
-        
+
         validate(channels, ranks, configs);
 
         const string& org_name = configs["org"];
@@ -83,14 +85,14 @@ public:
 
         extend_channel_width(spec, cacheline);
 
-        return (MemoryBase *)populate_memory(configs, spec, channels, ranks);
+        return (MemoryBase *)populate_memory(configs, spec, channels, ranks, stat_ctx);
     }
 };
 
 template <>
-MemoryBase *MemoryFactory<WideIO2>::create(const Config& configs, int cacheline);
+MemoryBase *MemoryFactory<WideIO2>::create(const Config& configs, int cacheline, StatContext* stat_ctx);
 template <>
-MemoryBase *MemoryFactory<SALP>::create(const Config& configs, int cacheline);
+MemoryBase *MemoryFactory<SALP>::create(const Config& configs, int cacheline, StatContext* stat_ctx);
 
 } /*namespace ramulator*/
 

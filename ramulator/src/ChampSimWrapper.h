@@ -2,6 +2,7 @@
 #define __CHAMPSIM_WRAPPER_H
 
 #include <string>
+#include <memory>
 
 #include "Config.h"
 
@@ -12,12 +13,14 @@ namespace ramulator
 
 class Request;
 class MemoryBase;
+class StatContext;
 
 class ChampSimWrapper
 {
 private:
     MemoryBase *mem;
     double tCK;
+    std::unique_ptr<StatContext> stat_context_;
 
 public:
     ChampSimWrapper(const Config& configs, int cacheline);
@@ -27,6 +30,10 @@ public:
     void finish(void);
     void resetStats();
     double get_tCK();
+    long get_capacity();
+
+    // Get the statistics context for this instance
+    StatContext* get_stat_context() { return stat_context_.get(); }
 };
 
 } /*namespace ramulator*/

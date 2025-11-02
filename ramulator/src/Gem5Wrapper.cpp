@@ -18,7 +18,7 @@
 
 using namespace ramulator;
 
-static map<string, function<MemoryBase *(const Config &, int)>> name_to_func = {
+static map<string, function<MemoryBase *(const Config &, int, StatContext*)>> name_to_func = {
     {"DDR3", &MemoryFactory<DDR3>::create},       {"DDR4", &MemoryFactory<DDR4>::create},
     {"LPDDR3", &MemoryFactory<LPDDR3>::create},   {"LPDDR4", &MemoryFactory<LPDDR4>::create},
     {"GDDR5", &MemoryFactory<GDDR5>::create},     {"WideIO", &MemoryFactory<WideIO>::create},
@@ -30,7 +30,7 @@ static map<string, function<MemoryBase *(const Config &, int)>> name_to_func = {
 Gem5Wrapper::Gem5Wrapper(const Config &configs, int cacheline) {
     const string &std_name = configs["standard"];
     assert(name_to_func.find(std_name) != name_to_func.end() && "unrecognized standard name");
-    mem = name_to_func[std_name](configs, cacheline);
+    mem = name_to_func[std_name](configs, cacheline, nullptr);
     tCK = mem->clk_ns();
 
     assert(configs.contains("gem5_channel_id") && "channel_id is not set!");

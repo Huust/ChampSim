@@ -41,6 +41,7 @@ public:
     virtual long page_allocator(long addr, int coreid) = 0;
     virtual void set_high_writeq_watermark(const float watermark) = 0;
     virtual void set_low_writeq_watermark(const float watermark) = 0;
+    virtual long get_max_address() = 0;
 };
 
 template <class T, template<typename> class Controller = Controller >
@@ -626,6 +627,10 @@ public:
     void set_low_writeq_watermark(const float watermark) {
     for (auto ctrl: ctrls)
         ctrl->set_low_writeq_watermark(watermark);
+    }
+
+    long get_max_address() {
+        return max_address;
     }
 
     void resetStats() {

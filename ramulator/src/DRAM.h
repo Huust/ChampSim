@@ -20,13 +20,13 @@ template <typename T>
 class DRAM
 {
 public:
-    ScalarStat active_cycles;
-    ScalarStat refresh_cycles;
-    ScalarStat busy_cycles;
-    ScalarStat active_refresh_overlap_cycles;
+    ScalarStat* active_cycles = nullptr;
+    ScalarStat* refresh_cycles = nullptr;
+    ScalarStat* busy_cycles = nullptr;
+    ScalarStat* active_refresh_overlap_cycles = nullptr;
 
-    ScalarStat serving_requests;
-    ScalarStat average_serving_requests;
+    ScalarStat* serving_requests = nullptr;
+    AverageStat* average_serving_requests = nullptr;
 
     // Constructor
     DRAM(T* spec, typename T::Level level);
@@ -85,7 +85,7 @@ public:
     std::vector<std::pair<long, long>> refresh_intervals;
 
     // register statistics
-    void regStats(const std::string& identifier);
+    void regStats(const std::string& identifier, StatContext* stat_ctx = nullptr);
 
     void finish(long dram_cycles);
 
@@ -124,39 +124,39 @@ private:
 
 // register statistics
 template <typename T>
-void DRAM<T>::regStats(const std::string& identifier) {
-    active_cycles
-        .name("active_cycles" + identifier + "_" + to_string(id))
+void DRAM<T>::regStats(const std::string& identifier, StatContext* stat_ctx) {
+    // Create statistics with the provided context
+    active_cycles = new ScalarStat(stat_ctx);
+    active_cycles->name("active_cycles" + identifier + "_" + to_string(id))
         .desc("Total active cycles for level " + identifier + "_" + to_string(id))
-        .precision(0)
-        ;
-    refresh_cycles
-        .name("refresh_cycles" + identifier + "_" + to_string(id))
+        .precision(0);
+
+    refresh_cycles = new ScalarStat(stat_ctx);
+    refresh_cycles->name("refresh_cycles" + identifier + "_" + to_string(id))
         .desc("(All-bank refresh only, only valid for rank level) The sum of cycles that is under refresh per memory cycle for level " + identifier + "_" + to_string(id))
         .precision(0)
-        .flags(RamulatorStats::nozero)
-        ;
-    busy_cycles
-        .name("busy_cycles" + identifier + "_" + to_string(id))
+        .flags(RamulatorStats::nozero);
+
+    busy_cycles = new ScalarStat(stat_ctx);
+    busy_cycles->name("busy_cycles" + identifier + "_" + to_string(id))
         .desc("(All-bank refresh only. busy cycles only include refresh time in rank level) The sum of cycles that the DRAM part is active or under refresh for level " + identifier + "_" + to_string(id))
-        .precision(0)
-        ;
-    active_refresh_overlap_cycles
-        .name("active_refresh_overlap_cycles" + identifier + "_" + to_string(id))
+        .precision(0);
+
+    active_refresh_overlap_cycles = new ScalarStat(stat_ctx);
+    active_refresh_overlap_cycles->name("active_refresh_overlap_cycles" + identifier + "_" + to_string(id))
         .desc("(All-bank refresh only, only valid for rank level) The sum of cycles that are both active and under refresh per memory cycle for level " + identifier + "_" + to_string(id))
         .precision(0)
-        .flags(RamulatorStats::nozero)
-        ;
-    serving_requests
-        .name("serving_requests" + identifier + "_" + to_string(id))
+        .flags(RamulatorStats::nozero);
+
+    serving_requests = new ScalarStat(stat_ctx);
+    serving_requests->name("serving_requests" + identifier + "_" + to_string(id))
         .desc("The sum of read and write requests that are served in this DRAM element per memory cycle for level " + identifier + "_" + to_string(id))
-        .precision(0)
-        ;
-    average_serving_requests
-        .name("average_serving_requests" + identifier + "_" + to_string(id))
+        .precision(0);
+
+    average_serving_requests = new AverageStat(stat_ctx);
+    average_serving_requests->name("average_serving_requests" + identifier + "_" + to_string(id))
         .desc("The average of read and write requests that are served in this DRAM element per memory cycle for level " + identifier + "_" + to_string(id))
-        .precision(6)
-        ;
+        .precision(6);
 
     if (!children.size()) {
       return;
@@ -164,17 +164,21 @@ void DRAM<T>::regStats(const std::string& identifier) {
 
     // recursively register children statistics
     for (auto child : children) {
-      child->regStats(identifier + "_" + to_string(id));
+      child->regStats(identifier + "_" + to_string(id), stat_ctx);
     }
 }
 
 template <typename T>
 void DRAM<T>::finish(long dram_cycles) {
   // finalize busy cycles
-  busy_cycles = active_cycles.value() + refresh_cycles.value() - active_refresh_overlap_cycles.value();
+  if (busy_cycles && active_cycles && refresh_cycles && active_refresh_overlap_cycles) {
+    *busy_cycles = active_cycles->value() + refresh_cycles->value() - active_refresh_overlap_cycles->value();
+  }
 
   // finalize average serving requests
-  average_serving_requests = serving_requests.value() / dram_cycles;
+  if (average_serving_requests && serving_requests) {
+    *average_serving_requests = serving_requests->value() / dram_cycles;
+  }
 
   if (!children.size()) {
     return;
@@ -230,6 +234,15 @@ DRAM<T>::DRAM(T* spec, typename T::Level level) :
 template <typename T>
 DRAM<T>::~DRAM()
 {
+    // Clean up statistics
+    delete active_cycles;
+    delete refresh_cycles;
+    delete busy_cycles;
+    delete active_refresh_overlap_cycles;
+    delete serving_requests;
+    delete average_serving_requests;
+
+    // Clean up children
     for (auto child: children)
         delete child;
 }
@@ -387,7 +400,9 @@ void DRAM<T>::update_timing(typename T::Command cmd, const int* addr, long clk)
           assert(past == clk);
           begin_of_refreshing = clk;
           end_of_refreshing = max(end_of_refreshing, next[int(t.cmd)]);
-          refresh_cycles += end_of_refreshing - clk;
+          if (refresh_cycles) {
+            *refresh_cycles += end_of_refreshing - clk;
+          }
           if (cur_serving_requests > 0) {
             refresh_intervals.push_back(make_pair(begin_of_refreshing, end_of_refreshing));
           }
@@ -411,8 +426,12 @@ void DRAM<T>::update_serving_requests(const int* addr, int delta, long clk) {
   assert(delta == 1 || delta == -1);
   // update total serving requests
   if (begin_of_cur_reqcnt != -1 && cur_serving_requests > 0) {
-    serving_requests += (clk - begin_of_cur_reqcnt) * cur_serving_requests;
-    active_cycles += clk - begin_of_cur_reqcnt;
+    if (serving_requests) {
+      *serving_requests += (clk - begin_of_cur_reqcnt) * cur_serving_requests;
+    }
+    if (active_cycles) {
+      *active_cycles += clk - begin_of_cur_reqcnt;
+    }
   }
   // update begin of current request number
   begin_of_cur_reqcnt = clk;
@@ -422,18 +441,22 @@ void DRAM<T>::update_serving_requests(const int* addr, int delta, long clk) {
   if (delta == 1 && cur_serving_requests == 1) {
     // transform from inactive to active
     begin_of_serving = clk;
-    if (end_of_refreshing > begin_of_serving) {
-      active_refresh_overlap_cycles += end_of_refreshing - begin_of_serving;
+    if (end_of_refreshing > begin_of_serving && active_refresh_overlap_cycles) {
+      *active_refresh_overlap_cycles += end_of_refreshing - begin_of_serving;
     }
   } else if (cur_serving_requests == 0) {
     // transform from active to inactive
     assert(begin_of_serving != -1);
     assert(delta == -1);
-    active_cycles += clk - begin_of_cur_reqcnt;
+    if (active_cycles) {
+      *active_cycles += clk - begin_of_cur_reqcnt;
+    }
     end_of_serving = clk;
 
-    for (const auto& ref: refresh_intervals) {
-      active_refresh_overlap_cycles += min(end_of_serving, ref.second) - ref.first;
+    if (active_refresh_overlap_cycles) {
+      for (const auto& ref: refresh_intervals) {
+        *active_refresh_overlap_cycles += min(end_of_serving, ref.second) - ref.first;
+      }
     }
     refresh_intervals.clear();
   }
