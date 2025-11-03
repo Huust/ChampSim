@@ -65,6 +65,9 @@ public:
   void end_phase(unsigned cpu) final;
   void print_deadlock() final;
 
+  // Manual statistics output (called from main.cc after ChampSim stats)
+  void print_ramulator_stats();
+
   [[nodiscard]] champsim::data::bytes size() const;
 };
 

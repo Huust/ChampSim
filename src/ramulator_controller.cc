@@ -208,6 +208,15 @@ void RAMULATOR_CONTROLLER::begin_phase()
 
 void RAMULATOR_CONTROLLER::end_phase(unsigned /*cpu*/)
 {
+  // Note: finish() is no longer called here to control output order.
+  // Statistics will be printed manually in main.cc after ChampSim stats.
+  // The warmup check is preserved for future reference.
+}
+
+void RAMULATOR_CONTROLLER::print_ramulator_stats()
+{
+  // Manually trigger Ramulator statistics output
+  // This is called from main.cc after ChampSim statistics are printed
   if (!warmup) {
     ramulator_wrapper->finish();
   }
