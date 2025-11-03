@@ -169,8 +169,6 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     }
   }
 
-  // std::iota 是 C++ 标准库 <numeric> 中提供的一个算法，用来为一个范围内的元素赋予连续递增的数值序列。具体来说：
-	// 参数： 它接受三个参数：起始迭代器、结束迭代器和一个初始值。
   for (auto& p : phases) {
     std::iota(std::begin(p.trace_index), std::end(p.trace_index), 0);
   }
@@ -212,9 +210,6 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     cache.impl_replacement_final_stats();
   }
 
-  // Ramulator finish() is now called in end_phase() for simulation phase
-  // No need to call it here separately
-
   if (json_option->count() > 0) {
     if (json_file_name.empty()) {
       champsim::json_printer{std::cout}.print(phase_stats);
@@ -222,6 +217,17 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       std::ofstream json_file{json_file_name};
       champsim::json_printer{json_file}.print(phase_stats);
     }
+  }
+
+  // Print Ramulator statistics after ChampSim statistics
+  // This ensures proper output order: ChampSim stats first, then Ramulator stats
+  if (auto* ramulator_dram = gen_environment.ramulator_dram_view(); ramulator_dram != nullptr) {
+    fmt::print("\n---------- DRAM Ramulator Statistics ----------");
+    ramulator_dram->print_ramulator_stats();
+  }
+  if (auto* ramulator_cxl = gen_environment.ramulator_cxl_dram_view(); ramulator_cxl != nullptr) {
+    fmt::print("\n---------- CXL Ramulator Statistics ----------");
+    ramulator_cxl->print_ramulator_stats();
   }
 
   return 0;
