@@ -37,16 +37,19 @@ ChampSimWrapper::ChampSimWrapper(const Config& configs, int cacheline)
     mem = name_to_func[std_name](configs, cacheline, stat_context_.get());
     tCK = mem->clk_ns();
 
-    // Set output filename in the context
+    // Note: Statistics output configuration
+    // By default, Ramulator statistics are printed to stdout (command line) after simulation.
+    // To enable file output, modify StatContext::print_stats() in StatType.cpp.
+    // The stats_dir config below will be used when file output is enabled.
     if (configs.contains("stats_dir")) {
         std::string output_file = configs["stats_dir"];
         stat_context_->set_output_filename(output_file);
-        printf("[RAMULATOR] %s statistics will be written to: %s\n", std_name.c_str(), output_file.c_str());
+        // File output is currently disabled - statistics will print to stdout
     } else {
         std::string output_file = configs["standard"] + ".stats";
         stat_context_->set_output_filename(output_file);
-        printf("[RAMULATOR] %s statistics will be written to: %s (default)\n", std_name.c_str(), output_file.c_str());
     }
+    printf("[RAMULATOR] %s initialized. Statistics will be printed to stdout after simulation.\n", std_name.c_str());
 }
 
 

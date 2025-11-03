@@ -137,7 +137,7 @@ public:
         return *this;
     }
 
-    virtual void print(std::ofstream& file) = 0;
+    virtual void print(std::ostream& file) = 0;
     virtual void reset() = 0;
     virtual bool zero() const = 0;
     virtual void prepare() {}
@@ -198,7 +198,7 @@ public:
         return *this;
     }
 
-    void print(std::ofstream& file) override {
+    void print(std::ostream& file) override {
         std::string stat_full_name = "ramulator." + stat_name;
         file << std::setw(40) << std::right << stat_full_name;
         file << std::setw(20) << std::right << std::fixed;
@@ -295,7 +295,7 @@ public:
         return (total_value_ + current_value_) / total_ticks;
     }
 
-    void print(std::ofstream& file) override {
+    void print(std::ostream& file) override {
         std::string stat_full_name = "ramulator." + stat_name;
         file << std::setw(40) << std::right << stat_full_name;
         file << std::setw(20) << std::right << std::fixed;
@@ -428,7 +428,7 @@ public:
         return sum;
     }
 
-    void print(std::ofstream& file) override {
+    void print(std::ostream& file) override {
         for (size_t i = 0; i < elements_.size(); ++i) {
             std::string stat_full_name = "ramulator." + stat_name;
             if (!subnames_[i].empty()) {
@@ -590,7 +590,7 @@ public:
         return *this;
     }
 
-    void print(std::ofstream& file) override {
+    void print(std::ostream& file) override {
         for (size_t i = 0; i < elements_.size(); ++i) {
             std::string stat_full_name = "ramulator." + stat_name;
             if (!subnames_[i].empty()) {
@@ -723,7 +723,7 @@ public:
     double max_track() const { return max_track_; }
 
     // StatBase interface implementation
-    void print(std::ofstream &file) override {
+    void print(std::ostream &file) override {
         std::string base_name = "ramulator." + stat_name;
 
         // Print basic statistics
@@ -921,7 +921,7 @@ public:
     }
 
     // StatBase interface implementation
-    void print(std::ofstream &file) override {
+    void print(std::ostream &file) override {
         std::string base_name = "ramulator." + stat_name;
 
         // Print basic statistics
@@ -1104,7 +1104,7 @@ public:
         return std::sqrt((sum_squares_ / num_samples_) - (m * m));
     }
 
-    void print(std::ofstream& file) override {
+    void print(std::ostream& file) override {
         if (num_samples_ > 0) {
             std::string stat_full_name = "ramulator." + stat_name + ".stddev";
             file << std::setw(40) << std::right << stat_full_name;
@@ -1150,7 +1150,7 @@ public:
         return num_samples_ > 0 ? sum_ / num_samples_ : 0.0;
     }
 
-    void print(std::ofstream& file) override {
+    void print(std::ostream& file) override {
         if (num_samples_ > 0) {
             std::string stat_full_name = "ramulator." + stat_name + ".mean";
             file << std::setw(40) << std::right << stat_full_name;

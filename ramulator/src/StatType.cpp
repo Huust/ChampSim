@@ -22,30 +22,54 @@ void StatContext::reset_stats() {
 }
 
 void StatContext::print_stats() {
-    std::string filename = output_filename_.empty() ? "ramulator.stats" : output_filename_;
+    // NOTE: By default, statistics are printed to stdout (command line).
+    // To enable file output instead, uncomment the file output code below
+    // and comment out the stdout section. When file output is enabled,
+    // the "stats_output_dir" setting in JSON config will be used.
 
-    std::ofstream output_file(filename.c_str(), std::ios_base::out);
-    if (!output_file.good()) {
-        std::cerr << "Error: Could not open statistics output file: " << filename << std::endl;
-        return;
-    }
+    // ========== STDOUT OUTPUT (Active by default) ==========
+    std::ostream& output = std::cout;
 
-    output_file << std::endl;
-    output_file << "---------- Begin Simulation Statistics ----------" << std::endl;
+    output << std::endl;
+    output << "---------- Begin Ramulator Statistics ----------" << std::endl;
 
     int displayed_count = 0;
     for (auto* stat : all_stats_) {
         if (stat) {
             stat->prepare();
-            stat->print(output_file);
+            stat->print(output);
             displayed_count++;
         }
     }
 
-    output_file << "# Displayed " << displayed_count << " statistics" << std::endl;
-    output_file << std::endl;
-    output_file << "---------- End Simulation Statistics ----------" << std::endl;
-    output_file.close();
+    output << "# Displayed " << displayed_count << " Ramulator statistics" << std::endl;
+    output << std::endl;
+    output << "---------- End Ramulator Statistics ----------" << std::endl;
+
+    // ========== FILE OUTPUT (Commented out - uncomment to enable) ==========
+    // std::string filename = output_filename_.empty() ? "ramulator.stats" : output_filename_;
+    // std::ofstream output_file(filename.c_str(), std::ios_base::out);
+    // if (!output_file.good()) {
+    //     std::cerr << "Error: Could not open statistics output file: " << filename << std::endl;
+    //     return;
+    // }
+    //
+    // output_file << std::endl;
+    // output_file << "---------- Begin Ramulator Statistics ----------" << std::endl;
+    //
+    // int displayed_count = 0;
+    // for (auto* stat : all_stats_) {
+    //     if (stat) {
+    //         stat->prepare();
+    //         stat->print(output_file);
+    //         displayed_count++;
+    //     }
+    // }
+    //
+    // output_file << "# Displayed " << displayed_count << " Ramulator statistics" << std::endl;
+    // output_file << std::endl;
+    // output_file << "---------- End Ramulator Statistics ----------" << std::endl;
+    // output_file.close();
 }
 
 void reset_stats() {
