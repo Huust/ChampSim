@@ -29,8 +29,12 @@
 #include "chrono.h"
 
 class MEMORY_CONTROLLER;
+class VirtualMemory;  // Forward declaration
 
 using pte_entry = champsim::data::size<long long, std::ratio<8>>;
+
+// Global pointer to virtual memory for easy access
+extern VirtualMemory* g_vmem;
 
 struct Single {int id = 0;};  // single mode
 struct Dram {int id = 0;};    // hybrid-dram

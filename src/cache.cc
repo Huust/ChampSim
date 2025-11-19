@@ -33,6 +33,7 @@
 #include "deadlock.h"
 #include "heatmap.h"
 #include "instruction.h"
+#include "vmem.h"
 #include "util/algorithm.h"
 #include "util/bits.h"
 #include "util/span.h"
@@ -484,8 +485,24 @@ long CACHE::operate()
           ? (champsim::bandwidth::maximum_type)std::max((size_t)initiate_tag_bw.amount_remaining() / std::size(upper_levels), size_t{1})
           : champsim::bandwidth::maximum_type{};
 
+  auto skip_translation = false;
+  // First check if this is L1D or L1I cache, e.g. "cpu0_L1D"
+  if (champsim::heatmap::is_hotness_allocation_enabled() && (NAME.size() >= 3) &&
+          (NAME.compare(NAME.size() - 3, 3, "L1D") == 0 || NAME.compare(NAME.size() - 3, 3, "L1I") == 0))
+    skip_translation = true;
+
   for (auto* ul : upper_levels) {
     for (auto q : {std::ref(ul->WQ), std::ref(ul->RQ), std::ref(ul->PQ)}) {
+      if (skip_translation && g_vmem) {
+        for (auto& q_entry : q.get()) {
+          if (!q_entry.is_translated && !champsim::heatmap::is_fast_memory(champsim::page_number{q_entry.v_address})) {
+            // If cxl memory, skip translation
+            auto [ppage, penalty] = g_vmem->va_to_pa(q_entry.cpu, champsim::page_number{q_entry.v_address});
+            q_entry.address = champsim::address{champsim::splice(ppage, champsim::page_offset{q_entry.v_address})};
+            q_entry.is_translated = true;
+          }
+        }
+      }
       // this needs to be in this loop, we need to ensure that for cases where bandwidth doesn't divide nicely across upstreams,
       // we don't accidentally consume more bandwidth than expected
       champsim::bandwidth per_upper_tag_bw{std::min(per_upper_bandwidth, champsim::bandwidth::maximum_type{initiate_tag_bw.amount_remaining()})};

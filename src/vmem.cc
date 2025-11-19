@@ -29,6 +29,9 @@
 
 using namespace champsim::data::data_literals;
 
+// Global pointer to virtual memory for easy access
+VirtualMemory* g_vmem = nullptr;
+
 VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::size_t page_table_levels, champsim::chrono::clock::duration minor_penalty,
                              std::vector<MEMORY_CONTROLLER*> dram_, std::optional<uint64_t> randomization_seed_)
     : randomization_seed(randomization_seed_), devices(dram_), minor_fault_penalty(minor_penalty), pt_levels(page_table_levels),
