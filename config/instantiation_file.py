@@ -572,6 +572,7 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     yield from cache_instantiation_body
     yield from core_instantiation_body
     yield '{'
+    yield '  g_vmem = &vmem;  // Initialize global vmem pointer'
     yield '}'
     yield ''
 

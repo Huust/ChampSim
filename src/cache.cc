@@ -487,7 +487,7 @@ long CACHE::operate()
 
   auto skip_translation = false;
   // First check if this is L1D or L1I cache, e.g. "cpu0_L1D"
-  if (champsim::heatmap::is_hotness_allocation_enabled() && (NAME.size() >= 3) &&
+  if (champsim::heatmap::is_hotness_allocation_enabled() && NAME.size() >= 3 &&
           (NAME.compare(NAME.size() - 3, 3, "L1D") == 0 || NAME.compare(NAME.size() - 3, 3, "L1I") == 0))
     skip_translation = true;
 
