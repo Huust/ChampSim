@@ -20,6 +20,7 @@
 #include <cassert>
 #include <fmt/core.h>
 #include <numeric>
+#include <sys/types.h>
 #include <variant>
 
 #include "champsim.h"
@@ -37,7 +38,7 @@ VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::si
     // Here the fault penalty is set to 0 because:
     // We should assume the benchmark won't do any page allocation as they are done before the instructions of benchmark (benchmark record critical part, like a
     // for loop, and page allocation won't happen during this heavy and critical for loop as it's so slow)
-    : randomization_seed(randomization_seed_), devices(dram_), minor_fault_penalty(0), pt_levels(page_table_levels),
+    : randomization_seed(randomization_seed_), devices(dram_), minor_fault_penalty(minor_penalty), pt_levels(page_table_levels),
       pte_page_size(page_table_page_size),
       next_pte_page(
           champsim::dynamic_extent{champsim::data::bits{LOG2_PAGE_SIZE}, champsim::data::bits{champsim::lg2(champsim::data::bytes{pte_page_size}.count())}}, 0)
