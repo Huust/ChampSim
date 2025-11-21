@@ -182,32 +182,32 @@
         "channel_width": 8,
         "lower_level": "CXL_DRAM",
         "dram": {
-            "use_ramulator": true,
-            "ramulator_config_path": "./ramulator/configs/GDDR5-config.cfg",
-            "stats_output_dir": "./results/ramulator/hybrid.stats.cxl",
-            "data_rate": 3200,
-            "channels": 1,
-            "ranks": 1,
-            "bankgroups": 8,
-            "banks": 4,
-            "bank_rows": 65536,
-            "bank_columns": 1024,
-            "channel_width": 8,
-            "wq_size": 64,
-            "rq_size": 64,
-            "tCAS":  24,
-            "tRCD": 24,
-            "tRP": 24,
-            "tRAS": 52,
-            "refresh_period": 32,
-            "refreshes_per_period": 8192
+          "use_ramulator": true,
+          "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
+          "stats_output_dir": "./results/ramulator/stats.cxl",
+			    "data_rate": 3200,
+          "channels": 1,
+          "ranks": 1,
+          "bankgroups": 8,
+          "banks": 4,
+          "bank_rows": 65536,
+          "bank_columns": 1024,
+          "channel_width": 8,
+          "wq_size": 64,
+          "rq_size": 64,
+          "tCAS":  24,
+          "tRCD": 24,
+          "tRP": 24,
+          "tRAS": 52,
+          "refresh_period": 32,
+          "refreshes_per_period": 8192
         }
     },
 
     "physical_memory": {
         "use_ramulator": true,
-        "ramulator_config_path": "./ramulator/configs/GDDR5-config.cfg",
-        "stats_output_dir": "./results/ramulator/hybrid.stats.dram",
+        "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
+        "stats_output_dir": "./results/ramulator/stats.dram",
         "data_rate": 3200,
         "channels": 1,
         "ranks": 1,
@@ -229,7 +229,7 @@
     "virtual_memory": {
         "pte_page_size": 4096,
         "num_levels": 5,
-        "minor_fault_penalty": 200,
+        "minor_fault_penalty": 0,
         "randomization": 1
     }
 }

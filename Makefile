@@ -18,6 +18,7 @@ override REPLACEMENT_ROOT += $(addsuffix /replacement,$(MODULE_ROOT))
 TRIPLET_DIR = $(patsubst %/,%,$(firstword $(filter-out $(ROOT_DIR)/vcpkg_installed/vcpkg/, $(wildcard $(ROOT_DIR)/vcpkg_installed/*/))))
 override CPPFLAGS += -I$(OBJ_ROOT)
 override CPPFLAGS += -I$(ROOT_DIR)/ramulator/src
+override CPPFLAGS += -I$(TRIPLET_DIR)/include
 override LDFLAGS  += -L$(TRIPLET_DIR)/lib -L$(TRIPLET_DIR)/lib/manual-link
 override LDLIBS   += -llzma -lz -lbz2 -lfmt -lCLI11
 
@@ -106,7 +107,7 @@ configclean: clean
 reverse = $(if $(wordlist 2,2,$(1)),$(call reverse,$(call tail,$1)) $(firstword $(1)),$(1))
 
 absolute.options:
-	@echo "-I$(realpath inc) -isystem $(realpath $(TRIPLET_DIR)/include)" > $@
+	@echo "-I$(realpath inc) -I$(realpath $(OBJ_ROOT)) -isystem $(realpath $(TRIPLET_DIR)/include)" > $@
 
 attach_options = $(call reverse, $(addprefix @,$(filter %.options, $^)))
 
