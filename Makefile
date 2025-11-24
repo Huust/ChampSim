@@ -14,6 +14,10 @@ override BTB_ROOT += $(addsuffix /btb,$(MODULE_ROOT))
 override PREFETCH_ROOT += $(addsuffix /prefetcher,$(MODULE_ROOT))
 override REPLACEMENT_ROOT += $(addsuffix /replacement,$(MODULE_ROOT))
 
+# Experimental features control
+# Set SKIP_TRANSLATION=1 to enable skipping translation for CXL memory
+SKIP_TRANSLATION ?= 0
+
 # vcpkg integration
 TRIPLET_DIR = $(patsubst %/,%,$(firstword $(filter-out $(ROOT_DIR)/vcpkg_installed/vcpkg/, $(wildcard $(ROOT_DIR)/vcpkg_installed/*/))))
 override CPPFLAGS += -I$(OBJ_ROOT)
@@ -21,6 +25,11 @@ override CPPFLAGS += -I$(ROOT_DIR)/ramulator/src
 override CPPFLAGS += -I$(TRIPLET_DIR)/include
 override LDFLAGS  += -L$(TRIPLET_DIR)/lib -L$(TRIPLET_DIR)/lib/manual-link
 override LDLIBS   += -llzma -lz -lbz2 -lfmt -lCLI11
+
+# Enable experimental features based on configuration
+ifeq ($(SKIP_TRANSLATION),1)
+    override CPPFLAGS += -DENABLE_SKIP_CXL_TRANSLATION
+endif
 
 .PHONY: all clean configclean test pytest maketest ramulator
 

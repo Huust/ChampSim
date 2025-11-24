@@ -493,6 +493,7 @@ long CACHE::operate()
 
   for (auto* ul : upper_levels) {
     for (auto q : {std::ref(ul->WQ), std::ref(ul->RQ), std::ref(ul->PQ)}) {
+#ifdef ENABLE_SKIP_CXL_TRANSLATION
       if (skip_translation && g_vmem) {
         for (auto& q_entry : q.get()) {
           if (!q_entry.is_translated && !champsim::heatmap::is_fast_memory(champsim::page_number{q_entry.v_address})) {
@@ -503,6 +504,7 @@ long CACHE::operate()
           }
         }
       }
+#endif
       // this needs to be in this loop, we need to ensure that for cases where bandwidth doesn't divide nicely across upstreams,
       // we don't accidentally consume more bandwidth than expected
       champsim::bandwidth per_upper_tag_bw{std::min(per_upper_bandwidth, champsim::bandwidth::maximum_type{initiate_tag_bw.amount_remaining()})};
