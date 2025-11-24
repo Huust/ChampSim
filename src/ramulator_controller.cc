@@ -41,7 +41,6 @@ RAMULATOR_CONTROLLER::RAMULATOR_CONTROLLER(champsim::chrono::picoseconds cpu_clo
   m_ratio = cpu_clock_period.count() / ramulator_tck_ps;
 
   // Print configuration info
-  double champsim_freq_mhz = 1000000.0 / clock_period.count();  // ps to MHz
   double ramulator_freq_mhz = 1000.0 / ramulator_tck_ns;        // ns to MHz
 
   fmt::print("[RAMULATOR] Frequency: {:.1f} MHz\n", ramulator_freq_mhz);
