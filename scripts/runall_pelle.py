@@ -1,20 +1,27 @@
 import os
 import subprocess
+import shutil
 
 # Configuration matrix for our ChampSim project
-# Three binary configurations based on shim_layer settings:
-# - cxl_only: cxl=1, dram=0 (CXL-only memory system)
-# - dram_only: cxl=0, dram=1 (DRAM-only memory system)
-# - hybrid variants: cxl=1, dram=1 (with 2 different allocation policies)
+# Memory system configurations:
+# - cxl_only: CXL memory system
+# - dram_only: Local DRAM memory system
+# - interleaving: Tiered memory with interleaving allocation
+# - access_r1_X: Access-count-based heatmap with ratio 1:X
+# - criticality_r1_X: Criticality-based heatmap with ratio 1:X
 configs_outputs = [
     # Single-phase configurations
-    ('cxl_only', 'results_cxl_only'),
-    ('dram_only', 'results_dram_only'),
-    ('hybrid-roundrobin', 'results_hybrid_roundrobin'),
+    ('cxl_only', 'cxl_only'),
+    ('dram_only', 'dram_only'),
+    ('interleaving', 'interleaving'),
 
-    # Two-phase heatmap-based configurations (both use hybrid binary)
-    ('hybrid-hotness-access', 'results_hybrid_hotness_access'),
-    ('hybrid-hotness-criticality', 'results_hybrid_hotness_criticality'),
+    # Heatmap-based configurations with ratio 1:1
+    ('access_r1_1', 'access_r1_1'),
+    ('criticality_r1_1', 'criticality_r1_1'),
+
+    # Heatmap-based configurations with ratio 1:3
+    ('access_r1_3', 'access_r1_3'),
+    ('criticality_r1_3', 'criticality_r1_3'),
 ]
 
 
@@ -34,10 +41,19 @@ def run_champsim(path_to_traces, champsim_run):
     print(f"Will submit {len(configs_outputs)} configurations per trace")
     print(f"Total jobs to submit: {len(trace_files) * len(configs_outputs)}")
 
-    # Create output directories
+    # Clean and create output directories
+    print(f"Cleaning output directories in {resultsdir}...")
     for conf, outputdir in configs_outputs:
         full_outputdir = os.path.join(resultsdir, outputdir)
-        os.makedirs(full_outputdir, exist_ok=True)
+        if os.path.exists(full_outputdir):
+            shutil.rmtree(full_outputdir)
+        os.makedirs(full_outputdir)
+
+    # Clean heatmaps directory
+    heatmap_dir = os.path.join(resultsdir, 'heatmaps')
+    if os.path.exists(heatmap_dir):
+        shutil.rmtree(heatmap_dir)
+    os.makedirs(heatmap_dir)
 
     # Submit jobs for each trace and configuration combination
     for trace_file in trace_files:

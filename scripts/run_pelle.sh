@@ -1,18 +1,20 @@
 #!/bin/bash
 #SBATCH --account=uppmax2025-2-337 # Project account
 #SBATCH --ntasks=1                    # Number of cores
-#SBATCH --time=12:00:00               # Time limit (hh:mm:ss)
+#SBATCH --time=24:00:00               # Time limit (hh:mm:ss)
 
 # Check if we have the right number of arguments
 if [[ $# -ne 3 ]]; then
     echo "Incorrect # of arguments passed to this script! See below:"
     echo "Usage: $0 <configuration> <results_dir> <full_trace_path>"
     echo "Configurations:"
-    echo "  cxl_only                   : CXL-only memory system"
-    echo "  dram_only                  : DRAM-only memory system"
-    echo "  hybrid-roundrobin          : Hybrid with round-robin allocation"
-    echo "  hybrid-hotness-access      : Hybrid with access-count-based heatmap"
-    echo "  hybrid-hotness-criticality : Hybrid with criticality-based heatmap"
+    echo "  cxl_only                : CXL memory system"
+    echo "  dram_only               : Local DRAM memory system"
+    echo "  interleaving            : Tiered memory with interleaving allocation, ratio 1:1"
+    echo "  access_r1_1             : Access-count-based heatmap, ratio 1:1"
+    echo "  access_r1_3             : Access-count-based heatmap, ratio 1:3 (default)"
+    echo "  criticality_r1_1        : Criticality-based heatmap, ratio 1:1"
+    echo "  criticality_r1_3        : Criticality-based heatmap, ratio 1:3 (default)"
     exit 1
 fi
 
@@ -29,6 +31,11 @@ ARGS="-w $WARMUP_INSTRUCTIONS -i $SIMULATION_INSTRUCTIONS"
 # Project base directory
 CHAMPSIM_BASE="/proj/uart_chp_cxl_trans/songtao/ChampSim-dev"
 
+# Binary paths
+DRAM_BINARY="$CHAMPSIM_BASE/bin/champsim_dram_only"
+TIERED_BINARY="$CHAMPSIM_BASE/bin/champsim_tiered_memory"
+CXL_BINARY="$CHAMPSIM_BASE/bin/champsim_cxl_only"
+
 # Heatmap file path with trace name for identification
 HEATMAP_DIR="$RESULTS_DIR/heatmaps"
 TRACE_NAME=$(basename "$FULL_TRACE_PATH" .xz)
@@ -36,73 +43,77 @@ TRACE_NAME=$(basename "$FULL_TRACE_PATH" .xz)
 # Configure based on the configuration argument
 case "$CONFIGURATION" in
     "cxl_only")
-        BINARY="$CHAMPSIM_BASE/bin/champsim_cxl_only"
-        COMMAND="$BINARY $ARGS $FULL_TRACE_PATH"
+        CONFIG_TYPE="single"
+        COMMAND="$CXL_BINARY $ARGS $FULL_TRACE_PATH"
         ;;
     "dram_only")
-        BINARY="$CHAMPSIM_BASE/bin/champsim_dram_only"
-        COMMAND="$BINARY $ARGS $FULL_TRACE_PATH"
+        CONFIG_TYPE="single"
+        COMMAND="$DRAM_BINARY $ARGS $FULL_TRACE_PATH"
         ;;
-    "hybrid-roundrobin")
-        BINARY="$CHAMPSIM_BASE/bin/champsim_hybrid"
-        COMMAND="$BINARY $ARGS $FULL_TRACE_PATH"
+    "interleaving")
+        CONFIG_TYPE="single"
+        COMMAND="$TIERED_BINARY $ARGS $FULL_TRACE_PATH"
         ;;
-    "hybrid-hotness-access")
-        # Two-phase execution for access-count-based heatmap allocation
-        # Use dram-only mode to generate heatmap
-        # Use hybrid mode to use heatmap
-        DRAM_BINARY="$CHAMPSIM_BASE/bin/champsim_dram_only"
-        HYBRID_BINARY="$CHAMPSIM_BASE/bin/champsim_hybrid"
-        HEATMAP_FILE="$HEATMAP_DIR/${TRACE_NAME}_access"
-
-        # Clean old heatmap data to ensure fresh start
-        echo "=== Cleaning old heatmap data ==="
-        rm "$HEATMAP_FILE" 2>/dev/null
-        touch "$HEATMAP_FILE"
-
-        echo "=== PHASE 1: Generating heatmap ==="
-        GENERATE_COMMAND="$DRAM_BINARY $ARGS --generate-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
-        echo "Executing: $GENERATE_COMMAND"
-        $GENERATE_COMMAND
-
-        if [ $? -ne 0 ]; then
-            echo "ERROR: Heatmap generation failed!"
-            exit 1
-        fi
-
-        echo "=== PHASE 2: Using heatmap for simulation (access-count based) ==="
-        COMMAND="$HYBRID_BINARY $ARGS --use-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
+    "access_r1_1")
+        CONFIG_TYPE="heatmap"
+        HEATMAP_TYPE="access"
+        RATIO="1:1"
+        RATIO_STR="r1_1"
+        SORT_FLAG=""
         ;;
-    "hybrid-hotness-criticality")
-        # Two-phase execution for criticality-based heatmap allocation
-        DRAM_BINARY="$CHAMPSIM_BASE/bin/champsim_dram_only"
-        HYBRID_BINARY="$CHAMPSIM_BASE/bin/champsim_hybrid"
-        HEATMAP_FILE="$HEATMAP_DIR/${TRACE_NAME}_criticality"
-
-        # Clean old heatmap data to ensure fresh start
-        echo "=== Cleaning old heatmap data ==="
-        rm "$HEATMAP_FILE" 2>/dev/null
-        touch "$HEATMAP_FILE" 
-
-        echo "=== PHASE 1: Generating heatmap ==="
-        GENERATE_COMMAND="$DRAM_BINARY $ARGS --generate-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
-        echo "Executing: $GENERATE_COMMAND"
-        $GENERATE_COMMAND
-
-        if [ $? -ne 0 ]; then
-            echo "ERROR: Heatmap generation failed!"
-            exit 1
-        fi
-
-        echo "=== PHASE 2: Using heatmap for simulation (criticality based) ==="
-        COMMAND="$HYBRID_BINARY $ARGS --use-heatmap $HEATMAP_FILE --sort-by-criticality $FULL_TRACE_PATH"
+    "access_r1_3")
+        CONFIG_TYPE="heatmap"
+        HEATMAP_TYPE="access"
+        RATIO="1:3"
+        RATIO_STR="r1_3"
+        SORT_FLAG=""
+        ;;
+    "criticality_r1_1")
+        CONFIG_TYPE="heatmap"
+        HEATMAP_TYPE="criticality"
+        RATIO="1:1"
+        RATIO_STR="r1_1"
+        SORT_FLAG="--sort-by-criticality"
+        ;;
+    "criticality_r1_3")
+        CONFIG_TYPE="heatmap"
+        HEATMAP_TYPE="criticality"
+        RATIO="1:3"
+        RATIO_STR="r1_3"
+        SORT_FLAG="--sort-by-criticality"
         ;;
     *)
         echo "Invalid configuration: $CONFIGURATION"
-        echo "Valid configurations: cxl_only, dram_only, hybrid-roundrobin, hybrid-hotness-access, hybrid-hotness-criticality"
+        echo "Valid configurations: cxl_only, dram_only, interleaving, access_r1_1, access_r1_3, criticality_r1_1, criticality_r1_3"
         exit 1
         ;;
 esac
+
+# Execute based on configuration type
+if [ "$CONFIG_TYPE" = "heatmap" ]; then
+    # Two-phase execution for heatmap-based allocation
+    HEATMAP_FILE="$HEATMAP_DIR/${TRACE_NAME}_${HEATMAP_TYPE}_${RATIO_STR}"
+
+    # Clean old heatmap data
+    echo "=== Cleaning old heatmap data ==="
+    rm "$HEATMAP_FILE" 2>/dev/null
+    touch "$HEATMAP_FILE"
+
+    # Phase 1: Generate heatmap
+    echo "=== PHASE 1: Generating heatmap ==="
+    GENERATE_COMMAND="$DRAM_BINARY $ARGS --generate-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
+    echo "Executing: $GENERATE_COMMAND"
+    $GENERATE_COMMAND
+
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Heatmap generation failed!"
+        exit 1
+    fi
+
+    # Phase 2: Use heatmap for simulation
+    echo "=== PHASE 2: Using heatmap for simulation ($HEATMAP_TYPE based, ratio $RATIO) ==="
+    COMMAND="$TIERED_BINARY $ARGS --use-heatmap $HEATMAP_FILE $SORT_FLAG --ratio $RATIO $FULL_TRACE_PATH"
+fi
 
 # Run the final command
 echo "Executing: $COMMAND"
