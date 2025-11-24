@@ -58,18 +58,20 @@ def run_champsim(path_to_traces, champsim_run):
     # Submit jobs for each trace and configuration combination
     for trace_file in trace_files:
         full_trace_path = os.path.join(path_to_traces, trace_file)
-        trace_name = os.path.splitext(trace_file)[0]  # Remove .xz extension
+        # Clean trace name: remove extensions and .champsimtrace suffix
+        trace_name = trace_file.replace('.champsimtrace.xz', '').replace('.xz', '')
 
         cmds = []
 
         for conf, outputdir in configs_outputs:
             outputdir = os.path.join(resultsdir, outputdir)
-            conf_prefix = f"{conf}_{trace_name}"    # {conf} field is unnecessary
+            # No prefix needed - directory already indicates config
+            output_filename = trace_name
 
             cmd = [
                 'sbatch',
-                f'--output={outputdir}/{conf_prefix}.out',
-                f'--error={outputdir}/{conf_prefix}.err',
+                f'--output={outputdir}/{output_filename}.out',
+                f'--error={outputdir}/{output_filename}.err',
                 champsim_run,
                 conf,                           # configuration
                 resultsdir,                     # results directory (used for storing heatmap collection in run_pelle.sh)
