@@ -58,36 +58,37 @@ def run_champsim(path_to_traces, champsim_run):
     # Submit jobs for each trace and configuration combination
     for trace_file in trace_files:
         full_trace_path = os.path.join(path_to_traces, trace_file)
-        trace_name = os.path.splitext(trace_file)[0]  # Remove .xz extension
-
-        cmds = []
+        # Clean trace name: remove extensions and .champsimtrace suffix
+        trace_name = trace_file.replace('.champsimtrace.xz', '').replace('.xz', '')
 
         for conf, outputdir in configs_outputs:
             outputdir = os.path.join(resultsdir, outputdir)
-            conf_prefix = f"{conf}_{trace_name}"    # {conf} field is unnecessary
+            # No prefix needed - directory already indicates config
+            output_filename = trace_name
 
             cmd = [
                 'sbatch',
-                f'--output={outputdir}/{conf_prefix}.out',
-                f'--error={outputdir}/{conf_prefix}.err',
+                f'--output={outputdir}/{output_filename}.out',
+                f'--error={outputdir}/{output_filename}.err',
                 champsim_run,
                 conf,                           # configuration
                 resultsdir,                     # results directory (used for storing heatmap collection in run_pelle.sh)
                 full_trace_path,                # trace file path
             ]
-            cmds.append(cmd)
 
-        # Run the commands
-        try:
-            for cmd in cmds:
+            # Submit the job
+            try:
                 result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                print(f"Jobs for {trace_name} submitted successfully!")
-                print("SLURM output:", result.stdout)
-        except subprocess.CalledProcessError as e:
-            print("Failed to submit some command.")
-            print("Error message:", e.stderr)
-            fail_count += 1
-    print(f"{len(trace_files)} traces submitted successfully, {fail_count} submissions failed")
+                print(f"Job submitted: {conf}/{output_filename}")
+                print("  SLURM output:", result.stdout.strip())
+            except subprocess.CalledProcessError as e:
+                print(f"Failed to submit job: {conf}/{output_filename}")
+                print("  Error message:", e.stderr)
+                fail_count += 1
+
+    total_jobs = len(trace_files) * len(configs_outputs)
+    success_jobs = total_jobs - fail_count
+    print(f"\nSummary: {success_jobs}/{total_jobs} jobs submitted successfully, {fail_count} failed")
 
 
 # Example usage

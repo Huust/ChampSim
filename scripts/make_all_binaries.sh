@@ -24,9 +24,9 @@ echo "Building cxl_only configuration..."
 # Tiered memory with SKIP_TRANSLATION
 # Modify output file name (add suffix '_skip'), after compilation, recover its name
 echo "Building tiered_memory with skip configuration..."
-sed -i '' 's/"champsim_tiered_memory"/"champsim_tiered_memory_skip"/' hardware_configs/tiered_memory.json
+perl -i -pe 's/"champsim_tiered_memory"/"champsim_tiered_memory_skip"/' hardware_configs/tiered_memory.json
 ./config.sh hardware_configs/tiered_memory.json && make -j SKIP_TRANSLATION=1 && make clean
-sed -i '' 's/"champsim_tiered_memory_skip"/"champsim_tiered_memory"/' hardware_configs/tiered_memory.json
+perl -i -pe 's/"champsim_tiered_memory_skip"/"champsim_tiered_memory"/' hardware_configs/tiered_memory.json
 
 echo "All binaries built successfully!"
 echo "Available binaries:"

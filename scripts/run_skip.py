@@ -47,8 +47,8 @@ def run_simple_champsim(path_to_traces, bin_dir, output_dir, heatmap_dir):
     # Submit jobs for each trace and config combination
     for trace_file in trace_files:
         full_trace_path = os.path.join(path_to_traces, trace_file)
-        # Remove .xz extension, keep rest of the name
-        trace_name = os.path.splitext(trace_file)[0]
+        # Clean trace name: remove extensions and .champsimtrace suffix
+        trace_name = trace_file.replace('.champsimtrace.xz', '').replace('.xz', '')
 
         for config_name, heatmap_type, ratio, ratio_str, sort_by_criticality in configs:
             # Paths for binaries
@@ -60,7 +60,8 @@ def run_simple_champsim(path_to_traces, bin_dir, output_dir, heatmap_dir):
 
             # Output file naming and path
             config_output_dir = os.path.join(output_dir, config_name)
-            output_name = f"{config_name}_{trace_name}"
+            # No prefix needed - directory already indicates config
+            output_filename = trace_name
 
             # Two-phase command:
             # Phase 1: Generate heatmap using champsim_dram_only
@@ -80,8 +81,8 @@ def run_simple_champsim(path_to_traces, bin_dir, output_dir, heatmap_dir):
                 '--account=uppmax2025-2-337',  # Project account
                 '--ntasks=1',                   # Number of cores
                 '--time=24:00:00',              # Time limit
-                f'--output={config_output_dir}/{output_name}.out',
-                f'--error={config_output_dir}/{output_name}.err',
+                f'--output={config_output_dir}/{output_filename}.out',
+                f'--error={config_output_dir}/{output_filename}.err',
                 '--wrap',
                 combined_cmd
             ]
@@ -89,10 +90,10 @@ def run_simple_champsim(path_to_traces, bin_dir, output_dir, heatmap_dir):
             # Submit the job
             try:
                 result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                print(f"Job submitted: {output_name}")
+                print(f"Job submitted: {config_name}/{output_filename}")
                 print("  SLURM output:", result.stdout.strip())
             except subprocess.CalledProcessError as e:
-                print(f"Failed to submit job: {output_name}")
+                print(f"Failed to submit job: {config_name}/{output_filename}")
                 print("  Error message:", e.stderr)
                 fail_count += 1
 
