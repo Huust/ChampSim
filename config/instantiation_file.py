@@ -634,7 +634,7 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     yield ''
 
     # Generate builtin_dram_view() - returns ChampSim builtin DRAM controller
-    if is_dram_enabled and not is_ramulator_enabled:
+    if is_dram_enabled and not pmem.get('use_ramulator', False):
         yield from cxx.function(f'{classname}::builtin_dram_view', [f'return &{pmem["name"]};'], rtype='MEMORY_CONTROLLER*')
     else:
         yield from cxx.function(f'{classname}::builtin_dram_view', ['return nullptr;'], rtype='MEMORY_CONTROLLER*')

@@ -71,15 +71,18 @@ long SHIM_LAYER::route() {
       if (mode == MODE::CXL_ONLY) {
         is_cxl_address = true;
       } else if (mode == MODE::HYBRID) {
-        // Get DRAM size dynamically based on whether using Ramulator or builtin
+        // Get DRAM size from whichever controller is used for physical memory
         champsim::data::bytes dram_size{0};
-        if (env_ptr->uses_ramulator()) {
-          auto* ramulator_dram = env_ptr->ramulator_dram_view();
+        if (auto* ramulator_dram = env_ptr->ramulator_dram_view()) {
+          // Physical memory using Ramulator
           dram_size = ramulator_dram->size();
-        } else {
-          auto* builtin_dram = env_ptr->builtin_dram_view();
-          assert(builtin_dram);
+        } else if (auto* builtin_dram = env_ptr->builtin_dram_view()) {
+          // Physical memory using builtin DRAM controller
           dram_size = builtin_dram->size();
+        } else {
+          // No physical DRAM controller found - this should not happen
+          assert(false && "No physical DRAM controller view available");
+          abort();
         }
         is_cxl_address = pkt.address.template to<uint64_t>() >= static_cast<uint64_t>(dram_size.count());
       } else if (mode == MODE::DRAM_ONLY) {
