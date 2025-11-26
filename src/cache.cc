@@ -485,16 +485,20 @@ long CACHE::operate()
           ? (champsim::bandwidth::maximum_type)std::max((size_t)initiate_tag_bw.amount_remaining() / std::size(upper_levels), size_t{1})
           : champsim::bandwidth::maximum_type{};
 
-  auto skip_translation = false;
-  // First check if this is L1D or L1I cache, e.g. "cpu0_L1D"
-  if (champsim::heatmap::is_hotness_allocation_enabled() && NAME.size() >= 3 &&
-          (NAME.compare(NAME.size() - 3, 3, "L1D") == 0 || NAME.compare(NAME.size() - 3, 3, "L1I") == 0))
-    skip_translation = true;
+  auto is_L1_cache = NAME.size() >= 3 && (NAME.compare(NAME.size() - 3, 3, "L1D") == 0 || NAME.compare(NAME.size() - 3, 3, "L1I") == 0);
+  auto skip_translation = champsim::heatmap::is_hotness_allocation_enabled() && is_L1_cache && g_vmem;
 
   for (auto* ul : upper_levels) {
     for (auto q : {std::ref(ul->WQ), std::ref(ul->RQ), std::ref(ul->PQ)}) {
+      // Track all page accesses at L1 during heatmap generation phase
+      if (is_L1_cache && champsim::heatmap::is_heatmap_generation_enabled()) {
+        for (auto& q_entry : q.get()) {
+          champsim::heatmap::track_page_access(q_entry.v_address);
+        }
+      }
+
 #ifdef ENABLE_SKIP_CXL_TRANSLATION
-      if (skip_translation && g_vmem) {
+      if (skip_translation) {
         for (auto& q_entry : q.get()) {
           if (!q_entry.is_translated && !champsim::heatmap::is_fast_memory(champsim::page_number{q_entry.v_address})) {
             // If cxl memory, skip translation

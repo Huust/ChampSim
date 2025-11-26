@@ -9,7 +9,7 @@
 
 void HeatMapTracker::enable_heatmap_generation() {
   heatmap_generation_enabled = true;
-  llc_miss_heatmap.clear();
+  page_heatmap.clear();
   fmt::print("Heatmap generation enabled\n");
 }
 
@@ -18,17 +18,23 @@ bool HeatMapTracker::is_heatmap_generation_enabled() {
 }
 
 void HeatMapTracker::track_llc_miss(champsim::page_number vpn) {
-  llc_miss_heatmap[vpn.to<uint64_t>()].first++;
+  page_heatmap[vpn.to<uint64_t>()].first++;
 }
 
 void HeatMapTracker::track_critical_miss(champsim::page_number vpn) {
-  llc_miss_heatmap[vpn.to<uint64_t>()].second++;
+  page_heatmap[vpn.to<uint64_t>()].second++;
+}
+
+void HeatMapTracker::track_page_access(champsim::page_number vpn) {
+  // Ensure this VPN exists in heatmap, initialize to (0, 0) if not present
+  // Using [] operator will create entry with default value (0, 0) if it doesn't exist
+  page_heatmap[vpn.to<uint64_t>()];
 }
 
 
 void HeatMapTracker::save_heatmap(const std::string& file_path) {
-  if (llc_miss_heatmap.empty()) {
-    fmt::print("ERROR: Cannot save heatmap file due to empty llc_miss_heatmap\n");
+  if (page_heatmap.empty()) {
+    fmt::print("ERROR: Cannot save heatmap file due to empty page_heatmap\n");
     exit(1);
   }
 
@@ -39,11 +45,11 @@ void HeatMapTracker::save_heatmap(const std::string& file_path) {
   }
 
   // Write into it!
-  for (const auto& entry : llc_miss_heatmap) {
+  for (const auto& entry : page_heatmap) {
     file << std::hex << entry.first << ": " << std::dec << entry.second.first << " " << entry.second.second << std::endl;
   }
   file.close();
-  fmt::print("Heatmap saved to: {} with {} virtual pages\n", file_path, llc_miss_heatmap.size());
+  fmt::print("Heatmap saved to: {} with {} virtual pages\n", file_path, page_heatmap.size());
 }
 
 void HeatMapTracker::load_heatmap(const std::string& file_path) {
@@ -53,7 +59,7 @@ void HeatMapTracker::load_heatmap(const std::string& file_path) {
     exit(1);
   }
 
-  llc_miss_heatmap.clear();
+  page_heatmap.clear();
   std::string line;
 
   while (std::getline(file, line)) {
@@ -68,13 +74,13 @@ void HeatMapTracker::load_heatmap(const std::string& file_path) {
 
       uint64_t total_count = 0, critical_count = 0;
       if (iss >> total_count >> critical_count) {
-        llc_miss_heatmap[vpn] = std::make_pair(total_count, critical_count);
+        page_heatmap[vpn] = std::make_pair(total_count, critical_count);
       }
     }
   }
 
   file.close();
-  fmt::print("Heatmap loaded from: {} with {} virtual pages\n", file_path, llc_miss_heatmap.size());
+  fmt::print("Heatmap loaded from: {} with {} virtual pages\n", file_path, page_heatmap.size());
 }
 
 void HeatMapTracker::enable_hotness_allocation() {
@@ -90,27 +96,34 @@ bool HeatMapTracker::is_fast_memory(champsim::page_number vpn) const {
 }
 
 void HeatMapTracker::allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t ratio_first, uint32_t ratio_second) {
-  if (llc_miss_heatmap.empty()) {
+  if (page_heatmap.empty()) {
     fmt::print("Warning: No heatmap data loaded, cannot allocate VPNs\n");
     return;
   }
 
   // Convert to vector for sorting
   std::vector<std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> vpn_data;
-  for (const auto& entry : llc_miss_heatmap) {
+  for (const auto& entry : page_heatmap) {
     vpn_data.push_back({entry.first, entry.second});
   }
 
   // Sort by total access count or criticality
+  // Use VPN as tie-breaker for deterministic allocation
+  // Example: if 1000 pages all have count=0, and ratio splits at 600/400,
+  //          the 600 smallest VPNs always go to fast memory consistently
   if (sort_by_criticality) {
     std::sort(vpn_data.begin(), vpn_data.end(),
               [](const auto& a, const auto& b) {
-                return a.second.second > b.second.second; // Sort by critical_count descending
+                if (a.second.second != b.second.second)
+                  return a.second.second > b.second.second; // Sort by critical_count descending
+                return a.first < b.first; // Tie-break by VPN ascending
               });
   } else {
     std::sort(vpn_data.begin(), vpn_data.end(),
               [](const auto& a, const auto& b) {
-                return a.second.first > b.second.first; // Sort by total_count descending
+                if (a.second.first != b.second.first)
+                  return a.second.first > b.second.first; // Sort by total_count descending
+                return a.first < b.first; // Tie-break by VPN ascending
               });
   }
 
@@ -171,6 +184,10 @@ namespace champsim {
 
     void track_critical_miss(champsim::address v_address) {
       global_heatmap_instance.track_critical_miss(champsim::page_number{v_address});
+    }
+
+    void track_page_access(champsim::address v_address) {
+      global_heatmap_instance.track_page_access(champsim::page_number{v_address});
     }
 
 

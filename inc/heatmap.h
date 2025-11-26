@@ -12,7 +12,7 @@
 class HeatMapTracker {
   bool heatmap_generation_enabled = false;  // Enable LLC miss data collection mode
   bool hotness_allocation_enabled = false;  // Enable hotness-based memory allocation mode
-  std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> llc_miss_heatmap; // VPN -> (total_access_count, critical_access_count)
+  std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> page_heatmap; // VPN -> (total_access_count, critical_access_count)
   std::unordered_set<uint64_t> fast_vpns; // VPNs allocated to fast memory
   std::unordered_set<uint64_t> slow_vpns; // VPNs allocated to slow memory
 
@@ -27,6 +27,7 @@ public:
   bool is_heatmap_generation_enabled();
   void track_llc_miss(champsim::page_number vpn);
   void track_critical_miss(champsim::page_number vpn);
+  void track_page_access(champsim::page_number vpn);  // Track all page accesses at L1
   void save_heatmap(const std::string& file_path);
   void load_heatmap(const std::string& file_path);
   void enable_hotness_allocation();
@@ -48,6 +49,7 @@ namespace champsim {
     void enable_hotness_allocation();
     void track_llc_miss(champsim::address v_address);
     void track_critical_miss(champsim::address v_address);
+    void track_page_access(champsim::address v_address);  // Track all page accesses at L1
     void save(const std::string& file_path);
     void load(const std::string& file_path);
     bool is_heatmap_generation_enabled();
