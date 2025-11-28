@@ -13,9 +13,13 @@ import statistics
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Base directories
-RESULTS_SKIP_DIR = "/proj/uart_chp_cxl_trans/songtao/results_skip"
-RESULTS_DIR = "/proj/uart_chp_cxl_trans/songtao/results"
-OUTPUT_DIR = "/proj/uart_chp_cxl_trans/songtao/analysis"
+# RESULTS_SKIP_DIR = "/proj/uart_chp_cxl_trans/songtao/results_skip"
+# RESULTS_DIR = "/proj/uart_chp_cxl_trans/songtao/results"
+# OUTPUT_DIR = "/proj/uart_chp_cxl_trans/songtao/analysis"
+
+RESULTS_SKIP_DIR = "../results_skip"
+RESULTS_DIR = "../results"
+OUTPUT_DIR = "./analysis"
 
 # Configurations to compare
 CONFIGS = ['access_r1_1', 'access_r1_3', 'criticality_r1_1', 'criticality_r1_3']

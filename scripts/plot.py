@@ -16,9 +16,9 @@ sns.set_theme(style="whitegrid", palette="colorblind")
 # Define the order for configurations to ensure consistent plotting
 CONFIG_ORDER = ['dram_only', 'cxl_only', 'interleaving', 'access_r1_1', 'access_r1_3', 'criticality_r1_1', 'criticality_r1_3']
 
-# Define sophisticated color palette with brighter colors
-SOPHISTICATED_COLORS = ['#2E1065', '#7C3AED', '#EC4899', '#FF6B35', '#FFD700', '#00CED1', '#32CD32']  # Deep purple, purple, pink, bright orange, bright yellow, dark turquoise, lime green
-HYBRID_BREAKDOWN_COLORS = ['#7C3AED', '#FF6B35']  # Purple for DRAM, Bright orange for CXL
+# Define sophisticated color palette - Academic research paper style (colorblind-safe)
+SOPHISTICATED_COLORS = ['#4C72B0', '#DD8452', '#55A868', '#C44E52', '#8172B3', '#937860', '#DA8BC3']  # Blue, orange, green, red, purple, brown, pink
+HYBRID_BREAKDOWN_COLORS = ['#4C72B0', '#DD8452']  # Blue for DRAM, Orange for CXL
 
 # --- Helper Function for Naming ---
 def shorten_benchmark_name(full_name):
@@ -118,12 +118,12 @@ def generate_speedup_per_benchmark_pdf(df, output_filename="speedup_by_workload.
     print(f"\n--- Generating PDF 1: Per-Benchmark Speedup vs {baseline} ---")
 
     # Extract workload info: workload_key for grouping, instruction_label for x-axis
-    df[['workload_key', 'instruction_label', 'drop_num', 'length_num']] = df['benchmark'].apply(
+    df[['workload_key', 'instruction_label', 'drop_num', 'length_num']] = df['trace'].apply(
         lambda x: pd.Series(extract_workload_info(x))
     )
 
-    baseline_ipc = df[df['config'] == baseline].set_index('benchmark')['ipc']
-    df['normalized_ipc'] = df.apply(lambda row: row['ipc'] / baseline_ipc.get(row['benchmark'], 1), axis=1)
+    baseline_ipc = df[df['config'] == baseline].set_index('trace')['ipc']
+    df['normalized_ipc'] = df.apply(lambda row: row['ipc'] / baseline_ipc.get(row['trace'], 1), axis=1)
 
     with PdfPages(output_filename) as pdf:
         # Group by workload_key so same workload appears on same page
@@ -169,7 +169,7 @@ def generate_breakdown_per_benchmark_pdf(df, output_filename="memory_breakdown_b
         return
 
     # Extract workload info: workload_key for grouping, instruction_label for x-axis
-    hybrid_df[['workload_key', 'instruction_label', 'drop_num', 'length_num']] = hybrid_df['benchmark'].apply(
+    hybrid_df[['workload_key', 'instruction_label', 'drop_num', 'length_num']] = hybrid_df['trace'].apply(
         lambda x: pd.Series(extract_workload_info(x))
     )
 
@@ -192,7 +192,7 @@ def generate_breakdown_per_benchmark_pdf(df, output_filename="memory_breakdown_b
                 if config_name not in workload_df['config'].values:
                     continue # Skip if this config doesn't exist for this workload
 
-                config_data = workload_df[workload_df['config'] == config_name][['benchmark', 'instruction_label', 'drop_num', 'length_num', 'dram_accesses', 'cxl_accesses']].copy()
+                config_data = workload_df[workload_df['config'] == config_name][['trace', 'instruction_label', 'drop_num', 'length_num', 'dram_accesses', 'cxl_accesses']].copy()
 
                 # Sort by instruction counts: first by drop_num, then by length_num
                 config_data = config_data.sort_values(['drop_num', 'length_num'])
@@ -252,16 +252,16 @@ def generate_mpki_analysis_pdf(df, output_filename="mpki_analysis.pdf", baseline
         baseline_df = df_copy1[df_copy1['config'] == baseline].copy()
         baseline_df['llc_mpki'] = ((baseline_df['dram_reads'] + baseline_df['cxl_reads']) * 1000) / 100_000_000
 
-        mpki_map = baseline_df.set_index('benchmark')['llc_mpki']
-        df_copy1['llc_mpki'] = df_copy1['benchmark'].map(mpki_map)
+        mpki_map = baseline_df.set_index('trace')['llc_mpki']
+        df_copy1['llc_mpki'] = df_copy1['trace'].map(mpki_map)
 
         # Add "Very Low" category for MPKI < 1 to better distinguish cache-friendly workloads
         bins = [0, 1, 10, 50, float('inf')]
         labels = ['Very Low (MPKI < 1)', 'Low (1-10)', 'Medium (10-50)', 'High (MPKI >= 50)']
         df_copy1['mpki_group'] = pd.cut(df_copy1['llc_mpki'], bins=bins, labels=labels, right=False)
 
-        baseline_ipc = df_copy1[df_copy1['config'] == baseline].set_index('benchmark')['ipc']
-        df_copy1['normalized_ipc'] = df_copy1.apply(lambda row: row['ipc'] / baseline_ipc.get(row['benchmark'], 1), axis=1)
+        baseline_ipc = df_copy1[df_copy1['config'] == baseline].set_index('trace')['ipc']
+        df_copy1['normalized_ipc'] = df_copy1.apply(lambda row: row['ipc'] / baseline_ipc.get(row['trace'], 1), axis=1)
 
         grouped_perf = df_copy1.groupby(['mpki_group', 'config'], observed=False)['normalized_ipc'].apply(gmean).reset_index()
 
@@ -293,33 +293,33 @@ def generate_mpki_analysis_pdf(df, output_filename="mpki_analysis.pdf", baseline
         df_copy2['llc_mpki'] = ((df_copy2['dram_reads'] + df_copy2['cxl_reads']) * 1000) / 100_000_000
 
         # Calculate average MPKI across all configs for each trace
-        avg_mpki = df_copy2.groupby('benchmark')['llc_mpki'].mean().sort_values(ascending=False)
+        avg_mpki = df_copy2.groupby('trace')['llc_mpki'].mean().sort_values(ascending=False)
         top_traces = avg_mpki.head(top_n).index.tolist()
 
         # Filter data for top traces and sort by average MPKI
-        top_df = df_copy2[df_copy2['benchmark'].isin(top_traces)].copy()
+        top_df = df_copy2[df_copy2['trace'].isin(top_traces)].copy()
 
         # Create unique labels that preserve ordering
         # Use shorten_benchmark_name but ensure uniqueness by keeping original order
-        benchmark_to_label = {}
+        trace_to_label = {}
         for trace in top_traces:
             # Generate short label
             short = shorten_benchmark_name(trace)
             # Ensure uniqueness by appending counter if needed
             base_short = short
             counter = 1
-            while short in benchmark_to_label.values():
+            while short in trace_to_label.values():
                 short = f"{base_short}_{counter}"
                 counter += 1
-            benchmark_to_label[trace] = short
+            trace_to_label[trace] = short
 
-        top_df['short_label'] = top_df['benchmark'].map(benchmark_to_label)
+        top_df['short_label'] = top_df['trace'].map(trace_to_label)
 
         # Create pivot table for plotting - now each row is unique
         pivot_df = top_df.pivot_table(index='short_label', columns='config', values='llc_mpki', aggfunc='mean')
 
         # Sort by the original top_traces order (which is sorted by avg MPKI descending)
-        sorted_labels = [benchmark_to_label[trace] for trace in top_traces]
+        sorted_labels = [trace_to_label[trace] for trace in top_traces]
         pivot_df = pivot_df.reindex(sorted_labels)
 
         # Plot
@@ -358,14 +358,14 @@ def plot_top_mpki_traces(df, output_filename="top_mpki_traces.png", top_n=30):
     df_copy['llc_mpki'] = ((df_copy['dram_reads'] + df_copy['cxl_reads']) * 1000) / 100_000_000
 
     # Calculate average MPKI across all configs for each trace
-    avg_mpki = df_copy.groupby('benchmark')['llc_mpki'].mean().sort_values(ascending=False)
+    avg_mpki = df_copy.groupby('trace')['llc_mpki'].mean().sort_values(ascending=False)
     top_traces = avg_mpki.head(top_n).index.tolist()
 
     # Filter data for top traces
-    top_df = df_copy[df_copy['benchmark'].isin(top_traces)].copy()
+    top_df = df_copy[df_copy['trace'].isin(top_traces)].copy()
 
     # Create shortened labels for better readability
-    top_df['short_label'] = top_df['benchmark'].apply(shorten_benchmark_name)
+    top_df['short_label'] = top_df['trace'].apply(shorten_benchmark_name)
 
     # Create a mapping from short_label to average MPKI for sorting
     label_to_avg = {}
@@ -409,16 +409,16 @@ def plot_performance_by_mpki_groups(df, output_filename="performance_by_memory_i
     baseline_df = df[df['config'] == baseline].copy()
     baseline_df['llc_mpki'] = ((baseline_df['dram_reads'] + baseline_df['cxl_reads']) * 1000) / 1_0000_0000
 
-    mpki_map = baseline_df.set_index('benchmark')['llc_mpki']
-    df['llc_mpki'] = df['benchmark'].map(mpki_map)
+    mpki_map = baseline_df.set_index('trace')['llc_mpki']
+    df['llc_mpki'] = df['trace'].map(mpki_map)
 
     # Add "Very Low" category for MPKI < 1 to better distinguish cache-friendly workloads
     bins = [0, 1, 10, 50, float('inf')]
     labels = ['Very Low (MPKI < 1)', 'Low (1-10)', 'Medium (10-50)', 'High (MPKI >= 50)']
     df['mpki_group'] = pd.cut(df['llc_mpki'], bins=bins, labels=labels, right=False)
-    
-    baseline_ipc = df[df['config'] == baseline].set_index('benchmark')['ipc']
-    df['normalized_ipc'] = df.apply(lambda row: row['ipc'] / baseline_ipc.get(row['benchmark'], 1), axis=1)
+
+    baseline_ipc = df[df['config'] == baseline].set_index('trace')['ipc']
+    df['normalized_ipc'] = df.apply(lambda row: row['ipc'] / baseline_ipc.get(row['trace'], 1), axis=1)
 
     grouped_perf = df.groupby(['mpki_group', 'config'], observed=False)['normalized_ipc'].apply(gmean).reset_index()
 
@@ -442,11 +442,15 @@ def plot_performance_by_mpki_groups(df, output_filename="performance_by_memory_i
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    pkl_path = '/proj/uart_chp_cxl_trans/songtao/analysis/collected_stats.pkl'
-    csv_path = '/proj/uart_chp_cxl_trans/songtao/analysis/collected_stats.csv'
+    # pkl_path = '/proj/uart_chp_cxl_trans/songtao/analysis/collected_stats.pkl'
+    # csv_path = '/proj/uart_chp_cxl_trans/songtao/analysis/collected_stats.csv'
+    # output_dir = '/proj/uart_chp_cxl_trans/songtao/analysis/plots'
+
+    pkl_path = './analysis/collected_stats.pkl'
+    csv_path = './analysis/collected_stats.csv'
+    output_dir = './analysis/plots'
 
     try:
-        output_dir = '/proj/uart_chp_cxl_trans/songtao/analysis/plots'
         os.makedirs(output_dir, exist_ok=True)
 
         main_df = load_data(pkl_path, csv_path)

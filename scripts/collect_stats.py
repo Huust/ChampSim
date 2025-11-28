@@ -3,6 +3,8 @@
 import os
 import re
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Optional
 
 
 def extract_ipc(content):
@@ -73,12 +75,12 @@ def extract_tlb_metrics(content):
     }
 
 
-def parse_file_path(file_path):
+def parse_file_path(file_path, add_skip_suffix=False):
     """
     Extract config and benchmark from file path.
-    New structure: results/{config}/{benchmark}.out
+    New structure: results/{config}/{benchmark}.out or results_skip/{config}/{benchmark}.out
     Example: results/access_r1_3/403.gcc-16B.out
-    Returns: ('access_r1_3', '403.gcc-16B')
+    Returns: ('access_r1_3', '403.gcc-16B') or ('access_r1_3_skip', '403.gcc-16B') if add_skip_suffix=True
     """
     # Get the parent directory name as config
     parent_dir = os.path.basename(os.path.dirname(file_path))
@@ -92,10 +94,17 @@ def parse_file_path(file_path):
     if parent_dir in ['results', 'results_skip', 'heatmaps']:
         return None, None
 
-    return parent_dir, benchmark
+    # Add _skip suffix if this is from results_skip directory
+    config = parent_dir
+    if add_skip_suffix and 'results_skip' in file_path:
+        # Don't add _skip to dram_only, cxl_only, or interleaving (these don't have skip variants)
+        if config not in ['dram_only', 'cxl_only', 'interleaving']:
+            config = f"{parent_dir}_skip"
+
+    return config, benchmark
 
 
-def read_stats(file_path):
+def read_stats(file_path, add_skip_suffix=False):
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
@@ -103,7 +112,7 @@ def read_stats(file_path):
         if "Region of Interest Statistics" not in content:
             return None
 
-        config, benchmark = parse_file_path(file_path)
+        config, benchmark = parse_file_path(file_path, add_skip_suffix=add_skip_suffix)
 
         # Skip if config/benchmark couldn't be parsed
         if config is None or benchmark is None:
@@ -126,12 +135,15 @@ def read_stats(file_path):
         return None
 
 
-def collect_stats(results_dir, output_file):
-    if not os.path.exists(results_dir):
-        print(f"ERROR: Results directory not found: {results_dir}")
-        print("Check 'results_dir' path in this script")
-        return False
+def collect_stats(results_dirs, output_file, num_workers=8):
+    """
+    Collect stats from multiple results directories.
 
+    Args:
+        results_dirs: List of tuples (directory_path, add_skip_suffix)
+        output_file: Path to output CSV file
+        num_workers: Number of parallel worker threads
+    """
     # Create output directory if it doesn't exist
     output_dir = os.path.dirname(output_file)
     if output_dir and not os.path.exists(output_dir):
@@ -142,28 +154,64 @@ def collect_stats(results_dir, output_file):
             print(f"Reason: {e}")
             return False
 
-    # Write header
+    # Collect all .out file paths from all directories
+    out_files = []  # List of tuples (file_path, add_skip_suffix)
+
+    for results_dir, add_skip_suffix in results_dirs:
+        if not os.path.exists(results_dir):
+            print(f"WARNING: Results directory not found: {results_dir} (skipping)")
+            continue
+
+        print(f"Scanning for .out files in {results_dir}...")
+        dir_count = 0
+        for root, dirs, files in os.walk(results_dir):
+            for file in files:
+                if file.endswith('.out'):
+                    out_files.append((os.path.join(root, file), add_skip_suffix))
+                    dir_count += 1
+        print(f"  Found {dir_count} .out files")
+
+    print(f"\nTotal: {len(out_files)} .out files to process")
+    if not out_files:
+        print("No .out files found to process")
+        return False
+
+    # Process files in parallel using ThreadPoolExecutor
+    print(f"Processing with {num_workers} worker threads...")
+    all_stats = []
+
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        # Submit all tasks
+        future_to_file = {executor.submit(read_stats, fp, add_skip): (fp, add_skip)
+                         for fp, add_skip in out_files}
+
+        # Collect results as they complete
+        completed = 0
+        for future in as_completed(future_to_file):
+            file_path, add_skip = future_to_file[future]
+            try:
+                stats = future.result()
+                if stats:
+                    all_stats.append(stats)
+                completed += 1
+                if completed % 10 == 0 or completed == len(out_files):
+                    print(f"  Progress: {completed}/{len(out_files)} files processed")
+            except Exception as e:
+                print(f"Error processing {file_path}: {e}")
+
+    # Write all results to CSV
+    print(f"Writing {len(all_stats)} results to {output_file}...")
     try:
         with open(output_file, 'w') as f:
-            f.write("config,benchmark,ipc,llc_miss_latency,dram_reads,cxl_reads,dram_writes,cxl_writes,itlb_access,itlb_miss,dtlb_access,dtlb_miss,stlb_access,stlb_miss,stlb_avg_miss_latency\n")
+            f.write("config,trace,ipc,llc_miss_latency,dram_reads,cxl_reads,dram_writes,cxl_writes,itlb_access,itlb_miss,dtlb_access,dtlb_miss,stlb_access,stlb_miss,stlb_avg_miss_latency\n")
+            for stats in all_stats:
+                f.write(','.join(map(str, stats)) + '\n')
     except Exception as e:
         print(f"ERROR: Cannot write to: {output_file}")
         print(f"Reason: {e}")
         return False
 
-    # Process all .out files
-    file_count = 0
-    for root, dirs, files in os.walk(results_dir):
-        for file in files:
-            if file.endswith('.out'):
-                file_path = os.path.join(root, file)
-                stats = read_stats(file_path)
-                if stats:
-                    with open(output_file, 'a') as f:
-                        f.write(','.join(map(str, stats)) + '\n')
-                    file_count += 1
-
-    print(f"Processed {file_count} files")
+    print(f"Successfully processed {len(all_stats)} files")
     return True
 
 
@@ -212,12 +260,44 @@ def generate_pickles(csv_path, pkl_path):
 #     └── collected_stats.pkl
 
 if __name__ == '__main__':
-    results_dir = "/proj/uart_chp_cxl_trans/songtao/results"
-    output_file = "/proj/uart_chp_cxl_trans/songtao/analysis/collected_stats.csv"
-    output_pkl = '/proj/uart_chp_cxl_trans/songtao/analysis/collected_stats.pkl'
+    import argparse
 
-    if not collect_stats(results_dir, output_file):
+    parser = argparse.ArgumentParser(description='Collect ChampSim statistics from .out files')
+    parser.add_argument('-d', '--results-dir', default='../results',
+                        help='Results directory for no-skip configurations (default: ../results)')
+    parser.add_argument('-s', '--results-skip-dir', default='../results_skip',
+                        help='Results directory for skip-translation configurations (default: ../results_skip)')
+    parser.add_argument('-o', '--output', default='./analysis/collected_stats.csv',
+                        help='Output CSV file path (default: ./analysis/collected_stats.csv)')
+    parser.add_argument('-p', '--pickle', default='./analysis/collected_stats.pkl',
+                        help='Output pickle file path (default: ./analysis/collected_stats.pkl)')
+    parser.add_argument('-j', '--jobs', type=int, default=8,
+                        help='Number of parallel worker threads (default: 8)')
+    parser.add_argument('--skip-only', action='store_true',
+                        help='Only collect from skip-translation directory')
+    parser.add_argument('--no-skip-only', action='store_true',
+                        help='Only collect from no-skip directory')
+
+    args = parser.parse_args()
+
+    # Prepare list of directories to process
+    results_dirs = []
+
+    if args.skip_only:
+        # Only process skip directory
+        results_dirs.append((args.results_skip_dir, True))
+    elif args.no_skip_only:
+        # Only process no-skip directory
+        results_dirs.append((args.results_dir, False))
+    else:
+        # Process both directories (default)
+        results_dirs.append((args.results_dir, False))
+        results_dirs.append((args.results_skip_dir, True))
+
+    print(f"Collecting statistics from {len(results_dirs)} directory/directories...")
+
+    if not collect_stats(results_dirs, args.output, num_workers=args.jobs):
         exit(1)
 
-    if not generate_pickles(output_file, output_pkl):
+    if not generate_pickles(args.output, args.pickle):
         exit(1)
