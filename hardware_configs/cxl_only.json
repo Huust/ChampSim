@@ -167,7 +167,7 @@
         "rq_size": 64,
         "pq_size": 64,
         "upper_bw": 4,
-        "lower_bw": 2
+        "lower_bw": 4
     },
 
     "cxl_memory": {
@@ -182,48 +182,26 @@
         "channel_width": 8,
         "lower_level": "CXL_DRAM",
         "dram": {
-          "use_ramulator": true,
-          "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
-          "stats_output_dir": "./results/ramulator/stats.cxl",
-			    "data_rate": 3200,
-          "channels": 1,
-          "ranks": 1,
-          "bankgroups": 8,
-          "banks": 4,
-          "bank_rows": 65536,
-          "bank_columns": 1024,
-          "channel_width": 8,
-          "wq_size": 64,
-          "rq_size": 64,
-          "tCAS":  24,
-          "tRCD": 24,
-          "tRP": 24,
-          "tRAS": 52,
-          "refresh_period": 32,
-          "refreshes_per_period": 8192
+            "use_ramulator": false,
+            "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
+            "stats_output_dir": "./results/ramulator/stats.dram",
+            "data_rate": 4800,
+            "channels": 2,
+            "ranks": 1,
+            "bankgroups": 8,
+            "banks": 4,
+            "bank_rows": 65536,
+            "bank_columns": 1024,
+            "channel_width": 8,
+            "wq_size": 96,
+            "rq_size": 96,
+            "tCAS": 36,
+            "tRCD": 36,
+            "tRP": 36,
+            "tRAS": 70,
+            "refresh_period": 32,
+            "refreshes_per_period": 8192
         }
-    },
-
-    "physical_memory": {
-        "use_ramulator": true,
-        "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
-        "stats_output_dir": "./results/ramulator/stats.dram",
-        "data_rate": 3200,
-        "channels": 1,
-        "ranks": 1,
-        "bankgroups": 8,
-        "banks": 4,
-        "bank_rows": 65536,
-        "bank_columns": 1024,
-        "channel_width": 8,
-        "wq_size": 64,
-        "rq_size": 64,
-        "tCAS":  24,
-        "tRCD": 24,
-        "tRP": 24,
-        "tRAS": 52,
-        "refresh_period": 32,
-        "refreshes_per_period": 8192
     },
 
     "virtual_memory": {
