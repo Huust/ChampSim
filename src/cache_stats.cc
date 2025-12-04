@@ -16,5 +16,14 @@ cache_stats operator-(cache_stats lhs, cache_stats rhs)
 
   result.total_miss_latency_cycles = lhs.total_miss_latency_cycles - rhs.total_miss_latency_cycles;
   result.mshr_congestion_cycles = lhs.mshr_congestion_cycles - rhs.mshr_congestion_cycles;
+
+  // CXL/DRAM split statistics
+  result.total_miss_latency_cycles_dram = lhs.total_miss_latency_cycles_dram - rhs.total_miss_latency_cycles_dram;
+  result.total_miss_latency_cycles_cxl = lhs.total_miss_latency_cycles_cxl - rhs.total_miss_latency_cycles_cxl;
+  result.misses_to_dram = lhs.misses_to_dram - rhs.misses_to_dram;
+  result.misses_to_cxl = lhs.misses_to_cxl - rhs.misses_to_cxl;
+  result.mshr_merge_to_dram = lhs.mshr_merge_to_dram - rhs.mshr_merge_to_dram;
+  result.mshr_merge_to_cxl = lhs.mshr_merge_to_cxl - rhs.mshr_merge_to_cxl;
+
   return result;
 }

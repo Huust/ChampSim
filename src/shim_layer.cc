@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cfenv>
+#include <fstream>
 #include <fmt/core.h>
 #include "access_type.h"
 #include "deadlock.h"
@@ -31,21 +32,34 @@ SHIM_LAYER::SHIM_LAYER(champsim::chrono::picoseconds clock_period, champsim::cha
 long SHIM_LAYER::handle_responses() {
   long progress{0};
   // 1
-  for (auto lower_level : ll_queues) {
+  for (size_t i = 0; i < ll_queues.size(); ++i) {
+    auto lower_level = ll_queues[i];
+    bool is_cxl_channel = (i == 1); // ll_queues[0] = DRAM, ll_queues[1] = CXL
+
     for (auto& ret : lower_level->returned) {
+        ret.is_cxl_memory = is_cxl_channel;
         RespQ.push_back(ret);
         progress++;
+
+        // Track bandwidth: count read responses
+        if (!warmup) {
+          if (is_cxl_channel) {
+            cxl_read_responses++;
+          } else {
+            dram_read_responses++;
+          }
+        }
     }
     lower_level->returned.clear();
   }
-  
+
   // 2
   for (auto& ret : RespQ) {
     ret.is_llc_miss = true;
     ul->returned.push_back(ret);
     progress++;
   }
-  RespQ.clear(); 
+  RespQ.clear();
 
   return progress;
 }
@@ -117,11 +131,11 @@ long SHIM_LAYER::route() {
     }
   };
 
-  process_queue(RQ, [&]{ sim_stats.dram_requests_read++; sim_stats.dram_requests_total++; }, 
+  process_queue(RQ, [&]{ sim_stats.dram_requests_read++; sim_stats.dram_requests_total++; },
                     [&]{ sim_stats.cxl_requests_read++; sim_stats.cxl_requests_total++; }, 'R');
-  process_queue(WQ, [&]{ sim_stats.dram_requests_write++; sim_stats.dram_requests_total++; }, 
-                    [&]{ sim_stats.cxl_requests_write++; sim_stats.cxl_requests_total++; }, 'W');
-  process_queue(PQ, [&]{ sim_stats.dram_requests_prefetch++; sim_stats.dram_requests_total++; }, 
+  process_queue(WQ, [&]{ sim_stats.dram_requests_write++; sim_stats.dram_requests_total++; dram_write_requests++; },
+                    [&]{ sim_stats.cxl_requests_write++; sim_stats.cxl_requests_total++; cxl_write_requests++; }, 'W');
+  process_queue(PQ, [&]{ sim_stats.dram_requests_prefetch++; sim_stats.dram_requests_total++; },
                     [&]{ sim_stats.cxl_requests_prefetch++; sim_stats.cxl_requests_total++; }, 'P');
   
   return progress;
@@ -207,13 +221,6 @@ long SHIM_LAYER::populate_requests() {
           rob_entry->llc_miss_source_memory.insert((*rq_it)->v_address.to<uint64_t>());
         }
       }
-    }
-
-    // Track use phase accesses for debugging
-    if (!warmup && champsim::heatmap::is_hotness_allocation_enabled() &&
-        ((*rq_it)->type == access_type::LOAD || (*rq_it)->type == access_type::RFO ||
-         (*rq_it)->type == access_type::TRANSLATION)) {
-      champsim::heatmap::track_use_phase_access((*rq_it)->v_address);
     }
 
     ul->RQ.pop_front();
@@ -305,6 +312,9 @@ long SHIM_LAYER::operate() {
     // Normal mode: full bandwidth modeling and queue management
     progress += route();
     progress += populate_requests();
+
+    // Check if we need to save a bandwidth sample
+    sample_bandwidth();
   }
 
   return progress;
@@ -331,6 +341,14 @@ void SHIM_LAYER::begin_phase() {
   shim_stats new_roi_stats;
   new_roi_stats.name = "router";
   roi_stats = new_roi_stats;
+
+  // Reset bandwidth sampling counters
+  current_sample_start_cycle = current_cycle();
+  dram_read_responses = 0;
+  dram_write_requests = 0;
+  cxl_read_responses = 0;
+  cxl_write_requests = 0;
+  bandwidth_samples.clear();
 
   // Update upper level's and lower levels' channel stats
   for(auto levels : {std::vector{ul}, ll_queues}) {
@@ -373,4 +391,66 @@ ooo_model_instr* SHIM_LAYER::get_rob_entry(uint32_t cpu_id, uint64_t instr_id) {
 
   auto rob_entry = std::partition_point(cpu.ROB.begin(), cpu.ROB.end(), ooo_model_instr::precedes(instr_id));
   return (rob_entry != cpu.ROB.end() && rob_entry->instr_id == instr_id) ? &(*rob_entry) : nullptr;
+}
+
+// Check if it's time to save a bandwidth sample
+void SHIM_LAYER::sample_bandwidth() {
+  uint64_t cycle = current_cycle();
+  uint64_t elapsed = cycle - current_sample_start_cycle;
+
+  if (elapsed >= bandwidth_sample_interval) {
+    // Save current sample
+    BandwidthSample sample;
+    sample.cycle_start = current_sample_start_cycle;
+    sample.cycle_end = cycle;
+    sample.dram_read_count = dram_read_responses;
+    sample.dram_write_count = dram_write_requests;
+    sample.cxl_read_count = cxl_read_responses;
+    sample.cxl_write_count = cxl_write_requests;
+    bandwidth_samples.push_back(sample);
+
+    // Reset for next interval
+    current_sample_start_cycle = cycle;
+    dram_read_responses = 0;
+    dram_write_requests = 0;
+    cxl_read_responses = 0;
+    cxl_write_requests = 0;
+  }
+}
+
+// Save bandwidth samples to file
+void SHIM_LAYER::save_bandwidth_samples(const std::string& filename) {
+  std::ofstream outfile(filename);
+  if (!outfile.is_open()) {
+    fmt::print("Warning: Cannot open bandwidth samples file: {}\n", filename);
+    return;
+  }
+
+  // Header
+  outfile << "cycle_start,cycle_end,dram_read_bw_GBps,dram_total_bw_GBps,cxl_read_bw_GBps,cxl_write_bw_GBps\n";
+
+  // Calculate frequency in GHz: 1000 ps = 1 ns = 1 GHz
+  double frequency_GHz = 1000.0 / clock_period.count();
+
+  // Data: calculate bandwidth in GB/s
+  for (const auto& sample : bandwidth_samples) {
+    uint64_t cycles = sample.cycle_end - sample.cycle_start;
+    if (cycles == 0) continue;
+
+    // Bandwidth (bytes/cycle) × frequency (GHz) = Bandwidth (GB/s)
+    double dram_read_bw = (sample.dram_read_count * BLOCK_SIZE * frequency_GHz) / cycles;
+    double dram_total_bw = ((sample.dram_read_count + sample.dram_write_count) * BLOCK_SIZE * frequency_GHz) / cycles;
+    double cxl_read_bw = (sample.cxl_read_count * BLOCK_SIZE * frequency_GHz) / cycles;
+    double cxl_write_bw = (sample.cxl_write_count * BLOCK_SIZE * frequency_GHz) / cycles;
+
+    outfile << sample.cycle_start << ","
+            << sample.cycle_end << ","
+            << dram_read_bw << ","
+            << dram_total_bw << ","
+            << cxl_read_bw << ","
+            << cxl_write_bw << "\n";
+  }
+
+  outfile.close();
+  fmt::print("Bandwidth samples saved to: {} ({} samples)\n", filename, bandwidth_samples.size());
 }

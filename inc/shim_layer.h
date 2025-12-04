@@ -4,6 +4,7 @@
 #include <cstddef>  // for size_t
 #include <deque>    // for deque
 #include <optional> // for gcc to compile
+#include <vector>   // for vector
 
 #include "address.h"
 #include "channel.h"
@@ -40,6 +41,24 @@ class SHIM_LAYER final: public champsim::operable {
     HYBRID
   };
   MODE mode;
+
+  // Bandwidth sampling for periodic statistics
+  struct BandwidthSample {
+    uint64_t cycle_start;
+    uint64_t cycle_end;
+    uint64_t dram_read_count;
+    uint64_t dram_write_count;
+    uint64_t cxl_read_count;
+    uint64_t cxl_write_count;
+  };
+
+  uint64_t bandwidth_sample_interval = 1000000;  // Sample every 1M cycles
+  uint64_t current_sample_start_cycle = 0;
+  uint64_t dram_read_responses = 0;
+  uint64_t dram_write_requests = 0;
+  uint64_t cxl_read_responses = 0;
+  uint64_t cxl_write_requests = 0;
+  std::vector<BandwidthSample> bandwidth_samples;
 
 public:
   struct shim_stats {
@@ -85,6 +104,10 @@ public:
 
   // ROB access function
   ooo_model_instr* get_rob_entry(uint32_t cpu_id, uint64_t instr_id);
+
+  // Bandwidth sampling functions
+  void sample_bandwidth();
+  void save_bandwidth_samples(const std::string& filename);
 
   // inherit from operable
   void initialize();

@@ -78,6 +78,8 @@ class channel
     std::vector<uint64_t> instr_depend_on_me{};
     bool is_llc_miss = false; // the request response is caused by llc miss
                               // this flag is only set when returning responses from shim layer to upper level LLC
+    bool is_cxl_memory = false; // the request was served by CXL memory (vs DRAM)
+                                // this flag is only set when returning responses from shim layer to upper level LLC
 
     response(champsim::address addr, champsim::address v_addr, champsim::address data_, uint32_t pf_meta, std::vector<uint64_t> deps)
         : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), instr_depend_on_me(deps)

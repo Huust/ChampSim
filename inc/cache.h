@@ -94,6 +94,8 @@ public:
     uint64_t instr_id;
     bool is_llc_miss = false; // if this mshr entry will cause llc miss
                               // this flag can only be set when a response is returned
+    bool is_cxl_memory = false; // if this mshr entry was served by CXL memory (vs DRAM)
+                                // this flag can only be set when a response is returned
 
     struct returned_value {
       champsim::address data;

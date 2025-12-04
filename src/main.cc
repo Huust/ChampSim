@@ -71,6 +71,9 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   std::string use_heatmap_path;
   bool sort_by_criticality = false;
   std::string ratio_str = "1:3";
+  std::string save_bandwidth_path;
+  std::string track_interleaving_path;
+  std::string use_allocation_path;
 
   auto set_heartbeat_callback = [&](auto) {
     for (O3_CPU& cpu : gen_environment.cpu_view()) {
@@ -95,6 +98,9 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   app.add_option("--use-heatmap", use_heatmap_path, "Use existing heatmap file for memory allocation during simulation");
   app.add_flag("--sort-by-criticality", sort_by_criticality, "Sort virtual pages by criticality when allocating (for simulation mode)");
   app.add_option("--ratio", ratio_str, "Ratio for memory allocation (format: N:M, for simulation mode)")->default_val("1:3");
+  app.add_option("--save-bandwidth", save_bandwidth_path, "Save bandwidth statistics to specified file path");
+  app.add_option("--generate-interleaving", track_interleaving_path, "Track page allocations in interleaving mode and save to specified file");
+  app.add_option("--use-interleaving", use_allocation_path, "Use precomputed allocation mapping (CSV format: vpage,device)");
 
   app.add_option("traces", trace_names, "The paths to the traces")->required()->expected(NUM_CPUS)->check(CLI::ExistingFile);
 
@@ -187,6 +193,16 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     fmt::print("\n");
   }
 
+  // Load precomputed allocation mapping if requested
+  if (!use_allocation_path.empty()) {
+    g_vmem->load_allocation_mapping(use_allocation_path);
+  }
+
+  // Enable interleaving allocation tracking if requested
+  if (!track_interleaving_path.empty()) {
+    g_vmem->enable_interleaving_allocation_tracking(track_interleaving_path);
+  }
+
   // in champsim.cc
   auto phase_stats = champsim::main(gen_environment, phases, traces);
 
@@ -217,6 +233,16 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       std::ofstream json_file{json_file_name};
       champsim::json_printer{json_file}.print(phase_stats);
     }
+  }
+
+  // Save bandwidth statistics if requested
+  if (!save_bandwidth_path.empty()) {
+    gen_environment.router_view().save_bandwidth_samples(save_bandwidth_path);
+  }
+
+  // Save interleaving allocation tracking if requested
+  if (!track_interleaving_path.empty()) {
+    g_vmem->save_allocation_tracking();
   }
 
   // Print Ramulator statistics after ChampSim statistics

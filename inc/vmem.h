@@ -51,6 +51,10 @@ private:
   std::vector<MEMORY_CONTROLLER*> devices; // may have both dram and cxl memory device
   Device active_device; // current active device for physical page allocation (this variable is only valid in interleaving mode)
 
+  // Page allocation tracking/replay (vpage -> is_cxl: 0=DRAM, 1=CXL)
+  std::map<champsim::page_number, bool> allocation_map;
+  std::string allocation_file;
+
 private:
   // Helper function to get device index for array access
   [[nodiscard]] std::size_t get_device_index(const Device& device) const;
@@ -59,6 +63,8 @@ public:
   const champsim::chrono::clock::duration minor_fault_penalty;
   const std::size_t pt_levels;
   const pte_entry pte_page_size; // Size of a PTE page (存放pte的页，大小通常和一般页一致，例如4KB；每个pte大小是8字节，所以一个页表页可以存储512个entries；正好是9bits)
+  bool track_allocations = false;  // If true, record allocations
+  bool use_allocation_map = false; // If true, use preloaded map for allocation
 
 private:
   std::vector<std::deque<champsim::page_number>> ppage_free_list;
@@ -111,6 +117,25 @@ public:
   [[nodiscard]] std::size_t available_ppages(const Device&) const;
 
   /**
+   * Enable tracking of page allocations in interleaving mode.
+   * When enabled, records which device (DRAM/CXL) each virtual page is mapped to.
+   */
+  void enable_interleaving_allocation_tracking(const std::string& output_file);
+
+  /**
+   * Save the allocation tracking records to file.
+   * Should be called at the end of simulation.
+   */
+  void save_allocation_tracking();
+
+  /**
+   * Load precomputed allocation mapping from file.
+   * When loaded, page allocations will follow this mapping instead of interleaving.
+   * File format: CSV with "vpage,device" where device is 0 (DRAM) or 1 (CXL).
+   */
+  void load_allocation_mapping(const std::string& input_file);
+
+  /**
    * Translate the given address from the virtual space to the physical space.
    * If a page translation does not already exist, one will be created and the minor fault penalty will be applied.
    *
@@ -120,6 +145,22 @@ public:
    * :returns: A pair of the physical address and the latency to be applied to the translation.
    */
   std::pair<champsim::page_number, champsim::chrono::clock::duration> va_to_pa(uint32_t cpu_num, champsim::page_number vaddr);
+
+  /**
+   * Allocate physical page using preloaded allocation mapping and return device type.
+   * This function uses the allocation_map loaded from file to determine device placement.
+   *
+   * :param cpu_num: The cpu index of the core making the request.
+   * :param vaddr: The virtual address to translate and allocate.
+   *
+   * :returns: A pair of (physical page number, is_cxl). is_cxl is true if allocated to CXL, false if allocated to DRAM.
+   *
+   * Requirements:
+   * - use_allocation_map must be true (allocation mapping must be loaded)
+   * - vaddr must exist in allocation_map
+   * - System must have 2 devices (tiered memory)
+   */
+  std::pair<champsim::page_number, bool> va_to_pa_using_map(uint32_t cpu_num, champsim::page_number vaddr);
 
   /**
    * Find the address for the page table page for the given virtual address (under translation), and the given level.

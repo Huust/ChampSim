@@ -122,6 +122,26 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
     uint64_t total_downstream_demands = total_mshr_return - stats.mshr_return.value_or(std::pair{access_type::PREFETCH, cpu}, mshr_return_value_type{});
     lines.push_back(
         fmt::format("cpu{}->{} AVERAGE MISS LATENCY: {} cycles", cpu, stats.name, ::print_ratio(stats.total_miss_latency_cycles, total_downstream_demands)));
+
+    // Print CXL/DRAM split statistics
+    if (stats.misses_to_dram > 0 || stats.misses_to_cxl > 0) {
+      uint64_t actual_requests_to_dram = stats.misses_to_dram - stats.mshr_merge_to_dram;
+      uint64_t actual_requests_to_cxl = stats.misses_to_cxl - stats.mshr_merge_to_cxl;
+
+      lines.push_back(
+          fmt::format("cpu{}->{} DRAM: {} misses, {} MSHR merges, {} actual requests sent", cpu, stats.name,
+                      stats.misses_to_dram, stats.mshr_merge_to_dram, actual_requests_to_dram));
+      lines.push_back(
+          fmt::format("cpu{}->{} CXL: {} misses, {} MSHR merges, {} actual requests sent", cpu, stats.name,
+                      stats.misses_to_cxl, stats.mshr_merge_to_cxl, actual_requests_to_cxl));
+      lines.push_back(
+          fmt::format("cpu{}->{} AVERAGE MISS LATENCY TO DRAM: {} cycles", cpu, stats.name,
+                      ::print_ratio(stats.total_miss_latency_cycles_dram, stats.misses_to_dram)));
+      lines.push_back(
+          fmt::format("cpu{}->{} AVERAGE MISS LATENCY TO CXL: {} cycles", cpu, stats.name,
+                      ::print_ratio(stats.total_miss_latency_cycles_cxl, stats.misses_to_cxl)));
+    }
+
     lines.push_back(
         fmt::format("cpu{}->{} MSHR CONGESTION CYCLES: {:10} ({}% of total cycles)", cpu, stats.name, stats.mshr_congestion_cycles,
                     stats.mshr_congestion_cycles * 100.0 / std::max(uint64_t{1}, stats.mshr_congestion_cycles + total_hits + total_misses)));

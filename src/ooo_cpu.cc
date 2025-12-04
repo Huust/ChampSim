@@ -578,6 +578,11 @@ void O3_CPU::do_memory_scheduling(ooo_model_instr& instr)
     assert(q_entry != std::end(LQ));
     q_entry->emplace(smem, instr.instr_id, instr.ip, instr.asid); // add this inst (and address) to the load queue
 
+    // Track page access for heatmap generation (at LSQ entry point, before any filtering)
+    if (!warmup && champsim::heatmap::is_heatmap_generation_enabled()) {
+      champsim::heatmap::track_page_access(smem);
+    }
+
     // Check for forwarding (fetch data from store queue)
     auto sq_it = std::max_element(std::begin(SQ), std::end(SQ), [smem](const auto& lhs, const auto& rhs) {
       return lhs.virtual_address != smem || (rhs.virtual_address == smem && LSQ_ENTRY::program_order(lhs, rhs));
@@ -601,6 +606,11 @@ void O3_CPU::do_memory_scheduling(ooo_model_instr& instr)
   // store
   for (auto& dmem : instr.destination_memory) {
     SQ.emplace_back(dmem, instr.instr_id, instr.ip, instr.asid); // add it to the store queue
+
+    // Track page access for heatmap generation (at LSQ entry point, before any filtering)
+    if (!warmup && champsim::heatmap::is_heatmap_generation_enabled()) {
+      champsim::heatmap::track_page_access(dmem);
+    }
   }
 
   if constexpr (champsim::debug_print) {
@@ -792,17 +802,6 @@ long O3_CPU::retire_rob()
       // Only blame source memory addresses that actually caused LLC misses, not all source memory
       std::for_each(rob_it->llc_miss_source_memory.cbegin(), rob_it->llc_miss_source_memory.cend(), [](const auto& smem_uint64){
         champsim::heatmap::track_critical_miss(champsim::address{smem_uint64});
-      });
-    }
-
-    // Only record instructions which cause translation llc miss but didn't cause cache lls miss
-    if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() &&
-        rob_it->caused_rob_stall && !rob_it->is_load_llc_miss &&
-        rob_it->is_trans_llc_miss && !rob_it->translation_stall_source_memory.empty()) {
-
-      // Only blame source memory addresses that actually caused LLC misses, not all source memory
-      std::for_each(rob_it->translation_stall_source_memory.cbegin(), rob_it->translation_stall_source_memory.cend(), [](const auto& smem_uint64){
-        champsim::heatmap::track_translation_stall(champsim::address{smem_uint64});
       });
     }
 

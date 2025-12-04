@@ -108,6 +108,12 @@ CACHE::mshr_type::mshr_type(const tag_lookup_type& req, champsim::chrono::clock:
     : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), cpu(req.cpu), type(req.type),
       prefetch_from_this(req.prefetch_from_this), time_enqueued(_time_enqueued), instr_depend_on_me(req.instr_depend_on_me), to_return(req.to_return)
 {
+  // Set is_cxl_memory flag based on heatmap (if hotness allocation is enabled)
+  // This allows forward (proactive) marking instead of waiting for SHIM_LAYER response
+  if (champsim::heatmap::is_hotness_allocation_enabled()) {
+    bool is_fast = champsim::heatmap::is_fast_memory(champsim::page_number{v_address});
+    is_cxl_memory = !is_fast;  // If not fast memory (DRAM), then it's CXL
+  }
 }
 
 CACHE::mshr_type CACHE::mshr_type::merge(mshr_type predecessor, mshr_type successor)
@@ -241,12 +247,22 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   }
 
   // COLLECT STATS
-  if (fill_mshr.type != access_type::PREFETCH)
-    sim_stats.total_miss_latency_cycles += (current_time - (fill_mshr.time_enqueued + clock_period)) / clock_period;
+  if (fill_mshr.type != access_type::PREFETCH) {
+    long miss_latency = (current_time - (fill_mshr.time_enqueued + clock_period)) / clock_period;
+    sim_stats.total_miss_latency_cycles += miss_latency;
+
+    // Track CXL/DRAM split latency (count is already tracked in handle_miss/handle_write)
+    if (fill_mshr.is_cxl_memory) {
+      sim_stats.total_miss_latency_cycles_cxl += miss_latency;
+    } else {
+      sim_stats.total_miss_latency_cycles_dram += miss_latency;
+    }
+  }
   sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
 
   response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me};
   response.is_llc_miss = fill_mshr.is_llc_miss;
+  response.is_cxl_memory = fill_mshr.is_cxl_memory;
   for (auto* ret : fill_mshr.to_return) {
     ret->push_back(response);
   }
@@ -359,6 +375,13 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     // COLLECT STATS
     sim_stats.mshr_merge.increment(std::pair{to_allocate.type, to_allocate.cpu});
 
+    // Track CXL/DRAM split MSHR merge statistics
+    if (to_allocate.is_cxl_memory) {
+      sim_stats.mshr_merge_to_cxl++;
+    } else {
+      sim_stats.mshr_merge_to_dram++;
+    }
+
     *mshr_entry = mshr_type::merge(*mshr_entry, to_allocate);
   } else {
     if (mshr_full) { // not enough MSHR resource
@@ -380,6 +403,13 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     }
   }
 
+  // Track CXL/DRAM split statistics (count all misses by memory type, including MSHR merges)
+  if (to_allocate.is_cxl_memory) {
+    sim_stats.misses_to_cxl++;
+  } else {
+    sim_stats.misses_to_dram++;
+  }
+
   sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
   return true;
@@ -393,11 +423,21 @@ bool CACHE::handle_write(const tag_lookup_type& handle_pkt)
                current_time.time_since_epoch() / clock_period);
   }
 
+  // Note: handle_write processes writebacks (evicted dirty lines), not user store instructions
+  // User stores are handled by handle_miss, so we don't track page access here
+
   mshr_type to_allocate{handle_pkt, current_time};
   to_allocate.data_promise.ready_at(current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY));
   inflight_writes.push_back(to_allocate);
 
   sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+
+  // Track CXL/DRAM split statistics (count misses by memory type)
+  if (to_allocate.is_cxl_memory) {
+    sim_stats.misses_to_cxl++;
+  } else {
+    sim_stats.misses_to_dram++;
+  }
 
   return true;
 }
@@ -485,24 +525,26 @@ long CACHE::operate()
           ? (champsim::bandwidth::maximum_type)std::max((size_t)initiate_tag_bw.amount_remaining() / std::size(upper_levels), size_t{1})
           : champsim::bandwidth::maximum_type{};
 
-  auto is_L1_cache = NAME.size() >= 3 && (NAME.compare(NAME.size() - 3, 3, "L1D") == 0 || NAME.compare(NAME.size() - 3, 3, "L1I") == 0);
-  auto skip_translation = champsim::heatmap::is_hotness_allocation_enabled() && is_L1_cache && g_vmem;
-
   for (auto* ul : upper_levels) {
     for (auto q : {std::ref(ul->WQ), std::ref(ul->RQ), std::ref(ul->PQ)}) {
-      // Track all page accesses at L1 during heatmap generation phase
-      if (is_L1_cache && champsim::heatmap::is_heatmap_generation_enabled()) {
-        for (auto& q_entry : q.get()) {
-          champsim::heatmap::track_page_access(q_entry.v_address);
-        }
-      }
-
 #ifdef ENABLE_SKIP_CXL_TRANSLATION
-      if (skip_translation) {
+      auto is_L1_cache = NAME.size() >= 3 && (NAME.compare(NAME.size() - 3, 3, "L1D") == 0 || NAME.compare(NAME.size() - 3, 3, "L1I") == 0);
+      auto skip_translation_with_heatmap = champsim::heatmap::is_hotness_allocation_enabled() && is_L1_cache && g_vmem;
+      auto skip_translation_with_interleaving = is_L1_cache && g_vmem && g_vmem->use_allocation_map;
+
+      if (skip_translation_with_heatmap) {
         for (auto& q_entry : q.get()) {
           if (!q_entry.is_translated && !champsim::heatmap::is_fast_memory(champsim::page_number{q_entry.v_address})) {
             // If cxl memory, skip translation
             auto [ppage, penalty] = g_vmem->va_to_pa(q_entry.cpu, champsim::page_number{q_entry.v_address});
+            q_entry.address = champsim::address{champsim::splice(ppage, champsim::page_offset{q_entry.v_address})};
+            q_entry.is_translated = true;
+          }
+        }
+      } else if (skip_translation_with_interleaving) {
+        for (auto& q_entry : q.get()) {
+          if (auto [ppage, is_cxl] = g_vmem->va_to_pa_using_map(q_entry.cpu, champsim::page_number{q_entry.v_address});
+              !q_entry.is_translated && is_cxl) {
             q_entry.address = champsim::address{champsim::splice(ppage, champsim::page_offset{q_entry.v_address})};
             q_entry.is_translated = true;
           }
@@ -657,6 +699,8 @@ void CACHE::finish_packet(const response_type& packet)
   // MSHR holds the most updated information about this request
   mshr_type::returned_value finished_value{packet.data, packet.pf_metadata};
   mshr_entry->is_llc_miss = packet.is_llc_miss;
+  // is_cxl_memory is already set in MSHR constructor based on heatmap (forward marking)
+  // No need to update from response packet
   mshr_entry->data_promise = champsim::waitable{finished_value, current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY)};
   if constexpr (champsim::debug_print) {
     fmt::print("[{}_MSHR] finish_packet instr_id: {} address: {} data: {} type: {} current: {} llc_miss {}\n", this->NAME, mshr_entry->instr_id, mshr_entry->address,
@@ -902,6 +946,14 @@ void CACHE::end_phase(unsigned finished_cpu)
 {
   finished_cpu = finished_cpu;
   roi_stats.total_miss_latency_cycles = sim_stats.total_miss_latency_cycles;
+
+  // CXL/DRAM split statistics
+  roi_stats.total_miss_latency_cycles_dram = sim_stats.total_miss_latency_cycles_dram;
+  roi_stats.total_miss_latency_cycles_cxl = sim_stats.total_miss_latency_cycles_cxl;
+  roi_stats.misses_to_dram = sim_stats.misses_to_dram;
+  roi_stats.misses_to_cxl = sim_stats.misses_to_cxl;
+  roi_stats.mshr_merge_to_dram = sim_stats.mshr_merge_to_dram;
+  roi_stats.mshr_merge_to_cxl = sim_stats.mshr_merge_to_cxl;
 
   roi_stats.hits = sim_stats.hits;
   roi_stats.misses = sim_stats.misses;

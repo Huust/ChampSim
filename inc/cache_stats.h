@@ -25,6 +25,14 @@ struct cache_stats {
 
   long total_miss_latency_cycles{};
   uint64_t mshr_congestion_cycles = 0;  // Cycles when MSHR was full and requests were blocked
+
+  // CXL/DRAM split statistics (only meaningful when heatmap allocation is enabled)
+  long total_miss_latency_cycles_dram{};  // Latency for requests served by DRAM
+  long total_miss_latency_cycles_cxl{};   // Latency for requests served by CXL
+  uint64_t misses_to_dram = 0;            // Number of misses that went to DRAM
+  uint64_t misses_to_cxl = 0;             // Number of misses that went to CXL
+  uint64_t mshr_merge_to_dram = 0;        // Number of MSHR merges for DRAM requests
+  uint64_t mshr_merge_to_cxl = 0;         // Number of MSHR merges for CXL requests
 };
 
 cache_stats operator-(cache_stats lhs, cache_stats rhs);
