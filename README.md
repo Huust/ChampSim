@@ -12,8 +12,19 @@
 # 在pelle上运行
 - 步骤
     1. 编译所有二进制文件（包括 champsim_tiered_memory_skip）`./scripts/make_all_binaries.sh`
-    2. 运行标准配置（7 种配置）`python3 scripts/runall_pelle.py`，输出到: `/proj/.../results/`
-    3. 运行 skip 配置（4 种配置）`python3 scripts/run_skip.py`，输出到: `/proj/.../results_skip/`
+    2. 运行标准配置（6 种配置）`python3 scripts/runall_pelle.py`（会间接调用`run_pelle.sh`），输出到: `/proj/.../results/`
+        - dram-only
+        - interleaving
+        - access_r1_1
+        - access_r1_3
+        - criticality_r1_1
+        - criticality_r1_3
+    3. 运行 skip 配置（5 种配置）`python3 scripts/run_skip.py`，输出到: `/proj/.../results_skip/`
+        - interleaving_skip
+        - access_r1_1_skip
+        - access_r1_3_skip
+        - criticality_r1_1_skip
+        - criticality_r1_3_skip
 
 # 数据统计
 - 假设两份数据存储在code base目录的parent directory中，分别名为results和results_skip
@@ -24,3 +35,16 @@
 - plot.py详细绘制了每一个traces的IPC speedup，memory access breakdown，MPKI；这个脚本侧重于分析每一个trace的特征，适用于刚开始实现prototype时可视化每一个trace的output，确认我们的原型实现是否有问题
 - plot_by_suite.py则是：将属于同一个benchmark的每个trace做geomean，再把属于同一个suite的benchmarks归类到一张图中；适用于prototype已经正确实现后，做更加统一的可视化分析我们提出的idea是否work
 - skip_vs_no_skip.py：也是基于suite画图，只不过baseline从dram-only（上一个脚本）变为no_skip。
+- find_slowest_run.py：几乎不使用，用于找到最慢的一些traces
+
+# GAPBS
+- 这部分的脚本都存储在`scripts/gapbs/`中，包含四个脚本
+    - `collect_stats.py`
+        - 支持传入参数选择跳过哪些算法的结果（例如传入`--ignore pr pr_spmv`就跳过使用pr和pr_spmv的算法）
+        - 该脚本第一步会检查所有没有被忽略的算法的结果，如果有结果出错，就会报错
+    - 剩下三个脚本用于绘制每种运行结果的memory footprint，skip和no-skip的对比（以no-skip为baseline），所有配置的对比（以dram-only为baseline）
+- 使用方法：先运行collect_stats.py接着运行剩下三个脚本
+
+# 其它脚本
+- `trace_footprint.py`：得到一个trace的memory footprint。支持指定跳过多少指令以及检查多少指令，详见`--help`
+- ``

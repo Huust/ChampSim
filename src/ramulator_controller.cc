@@ -76,7 +76,7 @@ long RAMULATOR_CONTROLLER::operate()
     initiate_requests();
     ramulator_wrapper->tick();
     m_accumulator -= 1.0;
-    assert(m_accumulator < 1.0);  // m_ratio shoule be lower than 1
+    assert(m_accumulator < 1.0);  // m_ratio should be lower than 1
     progress++;
   }
 

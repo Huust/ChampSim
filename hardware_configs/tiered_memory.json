@@ -8,10 +8,10 @@
     "ooo_cpu": [
         {
             "frequency": 4000,
-            "ifetch_buffer_size":64,
-            "decode_buffer_size":32,
-            "dispatch_buffer_size":32,
-            "register_file_size":128,
+            "ifetch_buffer_size": 64,
+            "decode_buffer_size": 32,
+            "dispatch_buffer_size": 32,
+            "register_file_size": 192,
             "rob_size": 352,
             "lq_size": 128,
             "sq_size": 72,
@@ -45,7 +45,7 @@
         "rq_size": 64,
         "wq_size": 64,
         "pq_size": 32,
-        "mshr_size": 8,
+        "mshr_size": 16,
         "latency": 4,
         "max_tag_check": 2,
         "max_fill": 2,
@@ -60,8 +60,8 @@
         "ways": 12,
         "rq_size": 64,
         "wq_size": 64,
-        "pq_size": 8,
-        "mshr_size": 16,
+        "pq_size": 16,
+        "mshr_size": 48,
         "latency": 5,
         "max_tag_check": 2,
         "max_fill": 2,
@@ -72,12 +72,12 @@
     },
 
     "L2C": {
-        "sets": 1024,
+        "sets": 2048,
         "ways": 8,
-        "rq_size": 32,
-        "wq_size": 32,
-        "pq_size": 16,
-        "mshr_size": 32,
+        "rq_size": 64,
+        "wq_size": 64,
+        "pq_size": 32,
+        "mshr_size": 64,
         "latency": 10,
         "max_tag_check": 1,
         "max_fill": 1,
@@ -145,10 +145,10 @@
         "frequency": 4000,
         "sets": 2048,
         "ways": 16,
-        "rq_size": 32,
-        "wq_size": 32,
-        "pq_size": 32,
-        "mshr_size": 64,
+        "rq_size": 128,
+        "wq_size": 128,
+        "pq_size": 64,
+        "mshr_size": 128,
         "latency": 20,
         "max_tag_check": 1,
         "max_fill": 1,
@@ -166,8 +166,8 @@
         "wq_size": 64,
         "rq_size": 64,
         "pq_size": 64,
-        "upper_bw": 4,
-        "lower_bw": 4
+        "upper_bw": 64,
+        "lower_bw": 64
     },
 
     "cxl_memory": {
@@ -182,7 +182,7 @@
         "channel_width": 8,
         "lower_level": "CXL_DRAM",
         "dram": {
-            "use_ramulator": false,
+            "use_ramulator": true,
             "ramulator_config_path": "./ramulator/configs/DDR3-config.cfg",
             "stats_output_dir": "./results/ramulator/stats.cxl",
             "data_rate": 3200,
@@ -205,7 +205,7 @@
     },
 
     "physical_memory": {
-        "use_ramulator": false,
+        "use_ramulator": true,
         "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
         "stats_output_dir": "./results/ramulator/stats.dram",
         "data_rate": 4800,
@@ -228,7 +228,7 @@
 
     "virtual_memory": {
         "pte_page_size": 4096,
-        "num_levels": 5,
+        "num_levels": 4,
         "minor_fault_penalty": 0,
         "randomization": 1
     }

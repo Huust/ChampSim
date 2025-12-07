@@ -8,10 +8,10 @@
     "ooo_cpu": [
         {
             "frequency": 4000,
-            "ifetch_buffer_size":64,
-            "decode_buffer_size":32,
-            "dispatch_buffer_size":32,
-            "register_file_size":128,
+            "ifetch_buffer_size": 64,
+            "decode_buffer_size": 32,
+            "dispatch_buffer_size": 32,
+            "register_file_size": 192,
             "rob_size": 352,
             "lq_size": 128,
             "sq_size": 72,
@@ -28,7 +28,7 @@
             "dispatch_latency": 1,
             "schedule_latency": 0,
             "execute_latency": 0,
-            "branch_predictor": "bimodal",
+            "branch_predictor": "hashed_perceptron",
             "btb": "basic_btb"
         }
     ],
@@ -45,14 +45,14 @@
         "rq_size": 64,
         "wq_size": 64,
         "pq_size": 32,
-        "mshr_size": 8,
+        "mshr_size": 16,
         "latency": 4,
         "max_tag_check": 2,
         "max_fill": 2,
         "prefetch_as_load": false,
         "virtual_prefetch": true,
         "prefetch_activate": "LOAD,PREFETCH",
-        "prefetcher": "no"
+        "prefetcher": "next_line"
     },
 
     "L1D": {
@@ -60,31 +60,31 @@
         "ways": 12,
         "rq_size": 64,
         "wq_size": 64,
-        "pq_size": 8,
-        "mshr_size": 16,
-        "latency": 5,
+        "pq_size": 16,
+        "mshr_size": 48,
+        "latency": 4,
         "max_tag_check": 2,
         "max_fill": 2,
         "prefetch_as_load": false,
         "virtual_prefetch": false,
         "prefetch_activate": "LOAD,PREFETCH",
-        "prefetcher": "no"
+        "prefetcher": "next_line"
     },
 
     "L2C": {
-        "sets": 1024,
+        "sets": 2048,
         "ways": 8,
-        "rq_size": 32,
-        "wq_size": 32,
-        "pq_size": 16,
-        "mshr_size": 32,
+        "rq_size": 64,
+        "wq_size": 64,
+        "pq_size": 32,
+        "mshr_size": 64,
         "latency": 10,
         "max_tag_check": 1,
         "max_fill": 1,
         "prefetch_as_load": false,
         "virtual_prefetch": false,
         "prefetch_activate": "LOAD,PREFETCH",
-        "prefetcher": "no"
+        "prefetcher": "ip_stride"
     },
 
     "ITLB": {
@@ -143,31 +143,31 @@
 
     "LLC": {
         "frequency": 4000,
-        "sets": 2048,
+        "sets": 32768,
         "ways": 16,
-        "rq_size": 32,
-        "wq_size": 32,
-        "pq_size": 32,
-        "mshr_size": 64,
+        "rq_size": 128,
+        "wq_size": 128,
+        "pq_size": 64,
+        "mshr_size": 128,
         "latency": 20,
         "max_tag_check": 1,
         "max_fill": 1,
         "prefetch_as_load": false,
         "virtual_prefetch": false,
         "prefetch_activate": "LOAD,PREFETCH",
-        "prefetcher": "no",
-        "replacement": "lru"
+        "replacement": "lru",
+        "prefetcher": "no"
     },
 
     "shim_layer": {
         "frequency": 4000,
-        "cxl": 1,
+        "cxl": 0,
         "dram": 1,
         "wq_size": 64,
         "rq_size": 64,
         "pq_size": 64,
         "upper_bw": 4,
-        "lower_bw": 2
+        "lower_bw": 4
     },
 
     "cxl_memory": {
@@ -182,30 +182,30 @@
         "channel_width": 8,
         "lower_level": "CXL_DRAM",
         "dram": {
-          "use_ramulator": true,
-          "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
-          "stats_output_dir": "./results/ramulator/stats.cxl",
-			    "data_rate": 3200,
-          "channels": 1,
-          "ranks": 1,
-          "bankgroups": 8,
-          "banks": 4,
-          "bank_rows": 65536,
-          "bank_columns": 1024,
-          "channel_width": 8,
-          "wq_size": 64,
-          "rq_size": 64,
-          "tCAS":  24,
-          "tRCD": 24,
-          "tRP": 24,
-          "tRAS": 52,
-          "refresh_period": 32,
-          "refreshes_per_period": 8192
+            "use_ramulator": true,
+            "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
+            "stats_output_dir": "./results/ramulator/stats.cxl",
+            "data_rate": 3200,
+            "channels": 1,
+            "ranks": 1,
+            "bankgroups": 8,
+            "banks": 4,
+            "bank_rows": 65536,
+            "bank_columns": 1024,
+            "channel_width": 8,
+            "wq_size": 64,
+            "rq_size": 64,
+            "tCAS": 24,
+            "tRCD": 24,
+            "tRP": 24,
+            "tRAS": 52,
+            "refresh_period": 32,
+            "refreshes_per_period": 8192
         }
     },
 
     "physical_memory": {
-        "use_ramulator": true,
+        "use_ramulator": false,
         "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
         "stats_output_dir": "./results/ramulator/stats.dram",
         "data_rate": 3200,
@@ -218,7 +218,7 @@
         "channel_width": 8,
         "wq_size": 64,
         "rq_size": 64,
-        "tCAS":  24,
+        "tCAS": 24,
         "tRCD": 24,
         "tRP": 24,
         "tRAS": 52,
@@ -228,7 +228,7 @@
 
     "virtual_memory": {
         "pte_page_size": 4096,
-        "num_levels": 5,
+        "num_levels": 4,
         "minor_fault_penalty": 0,
         "randomization": 1
     }
