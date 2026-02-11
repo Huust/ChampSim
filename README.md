@@ -4,6 +4,7 @@
     - 使用dram_only是为了生成heatmap，使用tiered memory是为了使用heatmap；可以选择配置不同的hot和cold ratio（例子中采用1:1，默认配置是1:3）
         - --generate-heatmap加heatmap路径会将在dram_only模式下运行产生LLC miss的所有请求的access count和criticality count保存在heatmap
         - --use-heatmap会读取路径并按照ratio排序后分为冷热数据
+    - 如果是`./bin/champsim_tiered_memory --generate-interleaving` 就会运行interleaving并生成interleaving的结果。
     - -w和-i分别表示warmup和simulation的指令数
     - 最后是path/to/traces
     > 常见的错误可以是：
@@ -12,19 +13,20 @@
 # 在pelle上运行
 - 步骤
     1. 编译所有二进制文件（包括 champsim_tiered_memory_skip）`./scripts/make_all_binaries.sh`
-    2. 运行标准配置（6 种配置）`python3 scripts/runall_pelle.py`（会间接调用`run_pelle.sh`），输出到: `/proj/.../results/`
+    2. 运行标准配置（11 种配置）`python3 scripts/runall_pelle.py`（会间接调用`run_pelle.sh`），输出到: `/proj/.../results/`；脚本设计中包含依赖关系：pelle会先运行dram-only和interleaving，因为它们会生成剩下所有配置依赖的heatmap和interleaving数据
         - dram-only
         - interleaving
         - access_r1_1
         - access_r1_3
         - criticality_r1_1
         - criticality_r1_3
-    3. 运行 skip 配置（5 种配置）`python3 scripts/run_skip.py`，输出到: `/proj/.../results_skip/`
         - interleaving_skip
         - access_r1_1_skip
         - access_r1_3_skip
         - criticality_r1_1_skip
         - criticality_r1_3_skip
+    上述11种配置会运行所有237个traces
+    3. 如果你需要运行gapbs，则修改脚本中traces路径（champsim_traces -> gapbs_traces）以及修改输出路径为results_gapbs
 
 # 数据统计
 - 假设两份数据存储在code base目录的parent directory中，分别名为results和results_skip
@@ -47,4 +49,3 @@
 
 # 其它脚本
 - `trace_footprint.py`：得到一个trace的memory footprint。支持指定跳过多少指令以及检查多少指令，详见`--help`
-- ``

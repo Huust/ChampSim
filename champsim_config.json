@@ -182,7 +182,7 @@
         "channel_width": 8,
         "lower_level": "CXL_DRAM",
         "dram": {
-            "use_ramulator": true,
+            "use_ramulator": false,
             "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
             "stats_output_dir": "./results/ramulator/stats.cxl",
             "data_rate": 3200,
@@ -205,9 +205,10 @@
     },
 
     "physical_memory": {
-        "use_ramulator": false,
+        "use_ramulator": true,
         "ramulator_config_path": "./ramulator/configs/DDR4-config.cfg",
         "stats_output_dir": "./results/ramulator/stats.dram",
+        "frequency": 1200,
         "data_rate": 3200,
         "channels": 1,
         "ranks": 1,

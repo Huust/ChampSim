@@ -3,18 +3,44 @@
 #SBATCH --ntasks=1                    # Number of cores
 #SBATCH --time=24:00:00               # Time limit (hh:mm:ss)
 
+# ChampSim SLURM Execution Script
+#
+# This script handles 11 configurations with proper file organization:
+#   - Prerequisite configs: dram_only, interleaving (generate shared files)
+#   - Heatmap-based configs: access/criticality × ratio (1:1, 1:3) × skip/no-skip
+#   - Interleaving-based: interleaving_skip
+#
+# File organization:
+#   results/
+#   ├── heatmaps/
+#   │   └── <trace_name>.heatmap          # Shared by all heatmap configs
+#   ├── interleavings/
+#   │   └── <trace_name>.interleaving     # Used by interleaving_skip
+#   └── <config>/
+#       ├── stdout/
+#       │   └── <trace_name>.out
+#       └── stderr/
+#           └── <trace_name>.err
+#
+# Usage: run_pelle.sh <configuration> <results_dir> <full_trace_path>
+# This script isn't run individually
+
 # Check if we have the right number of arguments
 if [[ $# -ne 3 ]]; then
     echo "Incorrect # of arguments passed to this script! See below:"
     echo "Usage: $0 <configuration> <results_dir> <full_trace_path>"
     echo "Configurations:"
-    echo "  cxl_only                : CXL memory system"
-    echo "  dram_only               : Local DRAM memory system"
-    echo "  interleaving            : Tiered memory with interleaving allocation, ratio 1:1"
-    echo "  access_r1_1             : Access-count-based heatmap, ratio 1:1"
-    echo "  access_r1_3             : Access-count-based heatmap, ratio 1:3 (default)"
+    echo "  dram_only               : DRAM system + generate heatmap (prerequisite)"
+    echo "  interleaving            : Tiered interleaving + generate interleaving map (prerequisite)"
+    echo "  access_r1_1             : Access-based heatmap, ratio 1:1"
+    echo "  access_r1_3             : Access-based heatmap, ratio 1:3"
     echo "  criticality_r1_1        : Criticality-based heatmap, ratio 1:1"
-    echo "  criticality_r1_3        : Criticality-based heatmap, ratio 1:3 (default)"
+    echo "  criticality_r1_3        : Criticality-based heatmap, ratio 1:3"
+    echo "  access_r1_1_skip        : Access-based heatmap with skip, ratio 1:1"
+    echo "  access_r1_3_skip        : Access-based heatmap with skip, ratio 1:3"
+    echo "  criticality_r1_1_skip   : Criticality-based heatmap with skip, ratio 1:1"
+    echo "  criticality_r1_3_skip   : Criticality-based heatmap with skip, ratio 1:3"
+    echo "  interleaving_skip       : Interleaving allocation with skip"
     exit 1
 fi
 
@@ -34,90 +60,93 @@ CHAMPSIM_BASE="/proj/uart_chp_cxl_trans/songtao/ChampSim-dev"
 # Binary paths
 DRAM_BINARY="$CHAMPSIM_BASE/bin/champsim_dram_only"
 TIERED_BINARY="$CHAMPSIM_BASE/bin/champsim_tiered_memory"
+TIERED_SKIP_BINARY="$CHAMPSIM_BASE/bin/champsim_tiered_memory_skip"
 CXL_BINARY="$CHAMPSIM_BASE/bin/champsim_cxl_only"
 
-# Heatmap file path with trace name for identification
+# Heatmap and interleaving directories
 HEATMAP_DIR="$RESULTS_DIR/heatmaps"
-TRACE_NAME=$(basename "$FULL_TRACE_PATH" .xz)
+INTERLEAVING_DIR="$RESULTS_DIR/interleavings"
+
+# Extract trace name
+TRACE_NAME=$(basename "$FULL_TRACE_PATH" .xz | sed 's/\.champsimtrace$//')
+
+# Shared file paths (used by multiple configurations)
+HEATMAP_FILE="$HEATMAP_DIR/${TRACE_NAME}.heatmap"
+INTERLEAVING_FILE="$INTERLEAVING_DIR/${TRACE_NAME}.interleaving"
 
 # Configure based on the configuration argument
 case "$CONFIGURATION" in
-    "cxl_only")
-        CONFIG_TYPE="single"
-        COMMAND="$CXL_BINARY $ARGS $FULL_TRACE_PATH"
-        ;;
     "dram_only")
-        CONFIG_TYPE="single"
-        COMMAND="$DRAM_BINARY $ARGS $FULL_TRACE_PATH"
+        # Prerequisite: Generate heatmap for all heatmap-based configs
+        echo "=== Running DRAM-only + generating heatmap ==="
+        COMMAND="$DRAM_BINARY $ARGS --generate-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
         ;;
+
     "interleaving")
-        CONFIG_TYPE="single"
-        COMMAND="$TIERED_BINARY $ARGS $FULL_TRACE_PATH"
+        # Prerequisite: Generate interleaving map for interleaving_skip
+        echo "=== Running interleaving + generating interleaving map ==="
+        COMMAND="$TIERED_BINARY $ARGS --generate-interleaving $INTERLEAVING_FILE $FULL_TRACE_PATH"
         ;;
+
+    # Non-skip heatmap-based configurations
     "access_r1_1")
-        CONFIG_TYPE="heatmap"
-        HEATMAP_TYPE="access"
-        RATIO="1:1"
-        RATIO_STR="r1_1"
-        SORT_FLAG=""
+        echo "=== Running access-based (1:1) with heatmap ==="
+        COMMAND="$TIERED_BINARY $ARGS --use-heatmap $HEATMAP_FILE --ratio 1:1 $FULL_TRACE_PATH"
         ;;
+
     "access_r1_3")
-        CONFIG_TYPE="heatmap"
-        HEATMAP_TYPE="access"
-        RATIO="1:3"
-        RATIO_STR="r1_3"
-        SORT_FLAG=""
+        echo "=== Running access-based (1:3) with heatmap ==="
+        COMMAND="$TIERED_BINARY $ARGS --use-heatmap $HEATMAP_FILE --ratio 1:3 $FULL_TRACE_PATH"
         ;;
+
     "criticality_r1_1")
-        CONFIG_TYPE="heatmap"
-        HEATMAP_TYPE="criticality"
-        RATIO="1:1"
-        RATIO_STR="r1_1"
-        SORT_FLAG="--sort-by-criticality"
+        echo "=== Running criticality-based (1:1) with heatmap ==="
+        COMMAND="$TIERED_BINARY $ARGS --use-heatmap $HEATMAP_FILE --sort-by-criticality --ratio 1:1 $FULL_TRACE_PATH"
         ;;
+
     "criticality_r1_3")
-        CONFIG_TYPE="heatmap"
-        HEATMAP_TYPE="criticality"
-        RATIO="1:3"
-        RATIO_STR="r1_3"
-        SORT_FLAG="--sort-by-criticality"
+        echo "=== Running criticality-based (1:3) with heatmap ==="
+        COMMAND="$TIERED_BINARY $ARGS --use-heatmap $HEATMAP_FILE --sort-by-criticality --ratio 1:3 $FULL_TRACE_PATH"
         ;;
+
+    # Skip-translation heatmap-based configurations
+    "access_r1_1_skip")
+        echo "=== Running access-based (1:1) with heatmap + skip translation ==="
+        COMMAND="$TIERED_SKIP_BINARY $ARGS --use-heatmap $HEATMAP_FILE --ratio 1:1 $FULL_TRACE_PATH"
+        ;;
+
+    "access_r1_3_skip")
+        echo "=== Running access-based (1:3) with heatmap + skip translation ==="
+        COMMAND="$TIERED_SKIP_BINARY $ARGS --use-heatmap $HEATMAP_FILE --ratio 1:3 $FULL_TRACE_PATH"
+        ;;
+
+    "criticality_r1_1_skip")
+        echo "=== Running criticality-based (1:1) with heatmap + skip translation ==="
+        COMMAND="$TIERED_SKIP_BINARY $ARGS --use-heatmap $HEATMAP_FILE --sort-by-criticality --ratio 1:1 $FULL_TRACE_PATH"
+        ;;
+
+    "criticality_r1_3_skip")
+        echo "=== Running criticality-based (1:3) with heatmap + skip translation ==="
+        COMMAND="$TIERED_SKIP_BINARY $ARGS --use-heatmap $HEATMAP_FILE --sort-by-criticality --ratio 1:3 $FULL_TRACE_PATH"
+        ;;
+
+    # Interleaving-based skip configuration
+    "interleaving_skip")
+        echo "=== Running interleaving + skip translation ==="
+        COMMAND="$TIERED_SKIP_BINARY $ARGS --use-interleaving $INTERLEAVING_FILE $FULL_TRACE_PATH"
+        ;;
+
     *)
         echo "Invalid configuration: $CONFIGURATION"
-        echo "Valid configurations: cxl_only, dram_only, interleaving, access_r1_1, access_r1_3, criticality_r1_1, criticality_r1_3"
+        echo "Valid configurations:"
+        echo "  dram_only, interleaving,"
+        echo "  access_r1_1, access_r1_3, criticality_r1_1, criticality_r1_3,"
+        echo "  access_r1_1_skip, access_r1_3_skip, criticality_r1_1_skip, criticality_r1_3_skip,"
+        echo "  interleaving_skip"
         exit 1
         ;;
 esac
 
-# Execute based on configuration type
-if [ "$CONFIG_TYPE" = "heatmap" ]; then
-    # Two-phase execution for heatmap-based allocation
-    HEATMAP_FILE="$HEATMAP_DIR/${TRACE_NAME}_${HEATMAP_TYPE}_${RATIO_STR}"
-
-    # Clean old heatmap data
-    echo "=== Cleaning old heatmap data ==="
-    rm "$HEATMAP_FILE" 2>/dev/null
-    touch "$HEATMAP_FILE"
-
-    # Phase 1: Generate heatmap
-    echo "=== PHASE 1: Generating heatmap ==="
-    GENERATE_COMMAND="$DRAM_BINARY $ARGS --generate-heatmap $HEATMAP_FILE $FULL_TRACE_PATH"
-    echo "Executing: $GENERATE_COMMAND"
-    $GENERATE_COMMAND
-
-    if [ $? -ne 0 ]; then
-        echo "ERROR: Heatmap generation failed!"
-        exit 1
-    fi
-
-    # Phase 2: Use heatmap for simulation
-    echo "=== PHASE 2: Using heatmap for simulation ($HEATMAP_TYPE based, ratio $RATIO) ==="
-    COMMAND="$TIERED_BINARY $ARGS --use-heatmap $HEATMAP_FILE $SORT_FLAG --ratio $RATIO $FULL_TRACE_PATH"
-fi
-
-# Run the final command
+# Execute command
 echo "Executing: $COMMAND"
 $COMMAND 2>&1
-# There is no conflict between '2>&1' and f'--error={outputdir}/{conf_prefix}.err'
-# in runall_pelle.py because all .err file would only contain err info generated by
-# Slurm, and .out file would contain both stdout and stderr msg from running traces 

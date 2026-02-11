@@ -75,6 +75,52 @@ def extract_tlb_metrics(content):
     }
 
 
+def extract_llc_cxl_dram_stats(content):
+    """
+    Extract CXL/DRAM split statistics from LLC cache.
+    Pattern: cpu0->LLC DRAM: 123 misses, 45 MSHR merges, 78 actual requests sent
+    Pattern: cpu0->LLC CXL: 456 misses, 67 MSHR merges, 389 actual requests sent
+    Pattern: cpu0->LLC AVERAGE MISS LATENCY TO DRAM: 123.45 cycles
+    Pattern: cpu0->LLC AVERAGE MISS LATENCY TO CXL: 456.78 cycles
+    """
+    # Extract DRAM statistics
+    llc_dram_match = re.search(r'cpu0->LLC DRAM:\s*(\d+)\s*misses,\s*(\d+)\s*MSHR merges,\s*(\d+)\s*actual requests sent', content)
+    if llc_dram_match:
+        llc_dram_misses = int(llc_dram_match.group(1))
+        llc_dram_mshr_merges = int(llc_dram_match.group(2))
+        llc_dram_actual_requests = int(llc_dram_match.group(3))
+    else:
+        llc_dram_misses = llc_dram_mshr_merges = llc_dram_actual_requests = 0
+
+    # Extract CXL statistics
+    llc_cxl_match = re.search(r'cpu0->LLC CXL:\s*(\d+)\s*misses,\s*(\d+)\s*MSHR merges,\s*(\d+)\s*actual requests sent', content)
+    if llc_cxl_match:
+        llc_cxl_misses = int(llc_cxl_match.group(1))
+        llc_cxl_mshr_merges = int(llc_cxl_match.group(2))
+        llc_cxl_actual_requests = int(llc_cxl_match.group(3))
+    else:
+        llc_cxl_misses = llc_cxl_mshr_merges = llc_cxl_actual_requests = 0
+
+    # Extract average miss latency to DRAM
+    llc_dram_latency_match = re.search(r'cpu0->LLC AVERAGE MISS LATENCY TO DRAM:\s*([\d\.]+)\s*cycles', content)
+    llc_avg_miss_latency_dram = float(llc_dram_latency_match.group(1)) if llc_dram_latency_match else 0.0
+
+    # Extract average miss latency to CXL
+    llc_cxl_latency_match = re.search(r'cpu0->LLC AVERAGE MISS LATENCY TO CXL:\s*([\d\.]+)\s*cycles', content)
+    llc_avg_miss_latency_cxl = float(llc_cxl_latency_match.group(1)) if llc_cxl_latency_match else 0.0
+
+    return {
+        'llc_dram_misses': llc_dram_misses,
+        'llc_dram_mshr_merges': llc_dram_mshr_merges,
+        'llc_dram_actual_requests': llc_dram_actual_requests,
+        'llc_cxl_misses': llc_cxl_misses,
+        'llc_cxl_mshr_merges': llc_cxl_mshr_merges,
+        'llc_cxl_actual_requests': llc_cxl_actual_requests,
+        'llc_avg_miss_latency_dram': llc_avg_miss_latency_dram,
+        'llc_avg_miss_latency_cxl': llc_avg_miss_latency_cxl
+    }
+
+
 def parse_file_path(file_path, add_skip_suffix=False):
     """
     Extract config and benchmark from file path.
@@ -122,13 +168,17 @@ def read_stats(file_path, add_skip_suffix=False):
         llc_miss_latency = extract_llc_miss_latency(content)
         shim_requests = extract_shim_requests(content)
         tlb_metrics = extract_tlb_metrics(content)
+        llc_cxl_dram = extract_llc_cxl_dram_stats(content)
 
         return [config, benchmark, ipc, llc_miss_latency,
                 shim_requests['dram_reads'], shim_requests['cxl_reads'],
                 shim_requests['dram_writes'], shim_requests['cxl_writes'],
                 tlb_metrics['itlb_access'], tlb_metrics['itlb_miss'],
                 tlb_metrics['dtlb_access'], tlb_metrics['dtlb_miss'],
-                tlb_metrics['stlb_access'], tlb_metrics['stlb_miss'], tlb_metrics['stlb_avg_miss_latency']]
+                tlb_metrics['stlb_access'], tlb_metrics['stlb_miss'], tlb_metrics['stlb_avg_miss_latency'],
+                llc_cxl_dram['llc_dram_misses'], llc_cxl_dram['llc_dram_mshr_merges'], llc_cxl_dram['llc_dram_actual_requests'],
+                llc_cxl_dram['llc_cxl_misses'], llc_cxl_dram['llc_cxl_mshr_merges'], llc_cxl_dram['llc_cxl_actual_requests'],
+                llc_cxl_dram['llc_avg_miss_latency_dram'], llc_cxl_dram['llc_avg_miss_latency_cxl']]
 
     except Exception as e:
         print(f"Error parsing {file_path}: {e}")
@@ -203,7 +253,11 @@ def collect_stats(results_dirs, output_file, num_workers=8):
     print(f"Writing {len(all_stats)} results to {output_file}...")
     try:
         with open(output_file, 'w') as f:
-            f.write("config,trace,ipc,llc_miss_latency,dram_reads,cxl_reads,dram_writes,cxl_writes,itlb_access,itlb_miss,dtlb_access,dtlb_miss,stlb_access,stlb_miss,stlb_avg_miss_latency\n")
+            f.write("config,trace,ipc,llc_miss_latency,dram_reads,cxl_reads,dram_writes,cxl_writes,"
+                   "itlb_access,itlb_miss,dtlb_access,dtlb_miss,stlb_access,stlb_miss,stlb_avg_miss_latency,"
+                   "llc_dram_misses,llc_dram_mshr_merges,llc_dram_actual_requests,"
+                   "llc_cxl_misses,llc_cxl_mshr_merges,llc_cxl_actual_requests,"
+                   "llc_avg_miss_latency_dram,llc_avg_miss_latency_cxl\n")
             for stats in all_stats:
                 f.write(','.join(map(str, stats)) + '\n')
     except Exception as e:

@@ -1,5 +1,5 @@
 --std=c++17
--g3
+-g
 -O3
 -Wall
 -Wextra

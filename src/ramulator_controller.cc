@@ -68,17 +68,17 @@ long RAMULATOR_CONTROLLER::operate()
   long progress = 0;
 
   // Add the time slice for this operate() call
-  m_accumulator += m_ratio;
+  // m_accumulator += m_ratio;
 
   // Tick Ramulator for each full tCK that has accumulated
   // Here we assume that CPU frequency is higher than memory frequency (so m_ratio < 1)
-  if (m_accumulator >= 1.0) {
+  // if (m_accumulator >= 1.0) {
     initiate_requests();
     ramulator_wrapper->tick();
-    m_accumulator -= 1.0;
-    assert(m_accumulator < 1.0);  // m_ratio should be lower than 1
+    // m_accumulator -= 1.0;
+    // assert(m_accumulator < 1.0);  // m_ratio should be lower than 1
     progress++;
-  }
+  // }
 
   return progress;
 }
