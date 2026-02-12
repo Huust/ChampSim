@@ -77,14 +77,14 @@ void VirtualMemory::populate_pages()
   auto dram_size = std::accumulate(devices.begin(), devices.end(), champsim::data::bytes{0}, [](auto accumulator, auto& dev) {
     return accumulator + dev->size();
   });
-  assert(dram_size > 1_MiB);
+  assert(dram_size > 2_MiB);
 
   ppage_free_list.resize(devices.size());
 
   std::for_each(ppage_free_list.begin(), ppage_free_list.end(), [this, dev = devices.begin()](auto& list) mutable {
     assert((*dev)->size().count() != 0);
     if (dev == devices.begin())  // If this is the first memory device, spare 1 MB address space
-      list.resize((((*dev)->size() - 1_MiB) / PAGE_SIZE).count());
+      list.resize((((*dev)->size() - 2_MiB) / PAGE_SIZE).count());
     else
       list.resize(((*dev)->size() / PAGE_SIZE).count());
 
@@ -94,7 +94,7 @@ void VirtualMemory::populate_pages()
   });
 
   champsim::page_number base_address =
-      champsim::page_number{champsim::lowest_address_for_size(std::max<champsim::data::mebibytes>(champsim::data::bytes{PAGE_SIZE}, 1_MiB))};
+      champsim::page_number{champsim::lowest_address_for_size(std::max<champsim::data::mebibytes>(champsim::data::bytes{PAGE_SIZE}, 2_MiB))};
   auto initialize_free_list = [&base_address](auto& page) {
     page = base_address;
     base_address++;
