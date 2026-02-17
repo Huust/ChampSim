@@ -10,6 +10,7 @@
 void HeatMapTracker::enable_heatmap_generation() {
   heatmap_generation_enabled = true;
   page_heatmap.clear();
+  subpage_heatmap.clear();
   fmt::print("Heatmap generation enabled\n");
 }
 
@@ -29,6 +30,39 @@ void HeatMapTracker::track_page_access(champsim::page_number vpn) {
   std::get<2>(page_heatmap[vpn.to<uint64_t>()])++;
 }
 
+void HeatMapTracker::track_llc_miss_subpage(uint64_t vpn) {
+  std::get<0>(subpage_heatmap[vpn])++;
+}
+
+void HeatMapTracker::track_critical_miss_subpage(uint64_t vpn) {
+  std::get<1>(subpage_heatmap[vpn])++;
+}
+
+void HeatMapTracker::track_page_access_subpage(uint64_t vpn) {
+  std::get<2>(subpage_heatmap[vpn])++;
+}
+
+void HeatMapTracker::save_subpage_heatmap(const std::string& file_path) {
+  if (subpage_heatmap.empty()) {
+    fmt::print("No sub-page heatmap data to save (PAGE_SIZE <= 4KB)\n");
+    return;
+  }
+
+  std::ofstream file(file_path);
+  if (!file.is_open()) {
+    fmt::print("ERROR: Cannot open sub-page heatmap file for writing: {}\n", file_path);
+    exit(1);
+  }
+
+  for (const auto& entry : subpage_heatmap) {
+    file << std::hex << entry.first << ": " << std::dec
+         << std::get<0>(entry.second) << " "
+         << std::get<1>(entry.second) << " "
+         << std::get<2>(entry.second) << std::endl;
+  }
+  file.close();
+  fmt::print("Sub-page heatmap saved to: {} with {} sub-pages (4KB granularity)\n", file_path, subpage_heatmap.size());
+}
 
 void HeatMapTracker::save_heatmap(const std::string& file_path) {
   if (page_heatmap.empty()) {
@@ -188,19 +222,46 @@ namespace champsim {
 
     void track_llc_miss(champsim::address v_address) {
       global_heatmap_instance.track_llc_miss(champsim::page_number{v_address});
+      if (PAGE_SIZE > 4096) {
+        constexpr unsigned SUBPAGE_LOG2 = 12;
+        uint64_t subpage_vpn = v_address.to<uint64_t>() >> SUBPAGE_LOG2;
+        global_heatmap_instance.track_llc_miss_subpage(subpage_vpn);
+      }
     }
 
     void track_critical_miss(champsim::address v_address) {
       global_heatmap_instance.track_critical_miss(champsim::page_number{v_address});
+      if (PAGE_SIZE > 4096) {
+        constexpr unsigned SUBPAGE_LOG2 = 12;
+        uint64_t subpage_vpn = v_address.to<uint64_t>() >> SUBPAGE_LOG2;
+        global_heatmap_instance.track_critical_miss_subpage(subpage_vpn);
+      }
     }
 
     void track_page_access(champsim::address v_address) {
       global_heatmap_instance.track_page_access(champsim::page_number{v_address});
+      if (PAGE_SIZE > 4096) {
+        constexpr unsigned SUBPAGE_LOG2 = 12;
+        uint64_t subpage_vpn = v_address.to<uint64_t>() >> SUBPAGE_LOG2;
+        global_heatmap_instance.track_page_access_subpage(subpage_vpn);
+      }
     }
 
 
     void save(const std::string& file_path) {
       global_heatmap_instance.save_heatmap(file_path);
+
+      if (PAGE_SIZE > 4096) {
+        auto slash_pos = file_path.rfind('/');
+        auto dot_pos = file_path.rfind('.');
+        // Only treat dot as extension separator if it's in the filename (after last slash)
+        std::string subpage_path;
+        if (dot_pos != std::string::npos && (slash_pos == std::string::npos || dot_pos > slash_pos))
+          subpage_path = file_path.substr(0, dot_pos) + "_subpage" + file_path.substr(dot_pos);
+        else
+          subpage_path = file_path + "_subpage";
+        global_heatmap_instance.save_subpage_heatmap(subpage_path);
+      }
     }
 
     void load(const std::string& file_path) {
