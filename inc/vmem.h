@@ -76,7 +76,7 @@ private:
 
   void populate_pages();
   void shuffle_pages();
-  Device select_device(champsim::page_number vpn);
+  const Device select_device(champsim::page_number vpn);
 
 public:
   /**

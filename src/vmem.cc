@@ -118,7 +118,7 @@ std::size_t VirtualMemory::get_device_index(const Device& device) const
   return std::visit([](const auto& dev) { return dev.id; }, device);
 }
 
-Device VirtualMemory::select_device(champsim::page_number vpn) {
+const Device VirtualMemory::select_device(champsim::page_number vpn) {
   if (champsim::heatmap::is_hotness_allocation_enabled()) {
     assert(devices.size() == 2); // Should have 2 devices when using heatmap
 
@@ -234,7 +234,12 @@ std::pair<champsim::page_number, bool> VirtualMemory::va_to_pa_using_map(uint32_
 std::pair<champsim::address, champsim::chrono::clock::duration> VirtualMemory::get_pte_pa(uint32_t cpu_num, champsim::page_number vaddr, std::size_t level)
 {
   if (champsim::page_offset{next_pte_page} == champsim::page_offset{0}) {
-    Device selected_device = select_device(vaddr);
+    Device selected_device;
+    if (devices.size() == 2)
+      selected_device = Device{Dram{}};  
+    else
+      selected_device = active_device;
+
     active_pte_page = ppage_front(selected_device);
     ppage_pop(selected_device);
     
