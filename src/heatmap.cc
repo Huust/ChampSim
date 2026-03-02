@@ -170,20 +170,27 @@ void HeatMapTracker::allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t
   slow_vpns.clear();
 
   // Statistics for allocated pages
-  uint64_t fast_total_access = 0;
-  uint64_t slow_total_access = 0;
+  uint64_t fast_total_access = 0, slow_total_access = 0;
+  uint64_t fast_llc_miss = 0, slow_llc_miss = 0;
+  uint64_t fast_critical = 0, slow_critical = 0;
 
   // Allocate top VPNs to fast memory
   for (size_t i = 0; i < vpn_data.size(); ++i) {
     uint64_t vpn = vpn_data[i].first;
+    uint64_t llc_miss_count = std::get<0>(vpn_data[i].second);
+    uint64_t critical_count = std::get<1>(vpn_data[i].second);
     uint64_t total_access_count = std::get<2>(vpn_data[i].second);
 
     if (i < fast_vpns_count) {
       fast_vpns.insert(vpn);
       fast_total_access += total_access_count;
+      fast_llc_miss += llc_miss_count;
+      fast_critical += critical_count;
     } else {
       slow_vpns.insert(vpn);
       slow_total_access += total_access_count;
+      slow_llc_miss += llc_miss_count;
+      slow_critical += critical_count;
     }
   }
 
@@ -198,6 +205,10 @@ void HeatMapTracker::allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t
              fast_vpns.size(), slow_vpns.size(), ratio_first, ratio_second);
   fmt::print("Total access count: {} fast, {} slow (ratio {})\n",
              fast_total_access, slow_total_access, format_ratio(fast_total_access, slow_total_access));
+  fmt::print("LLC miss count: {} fast, {} slow (ratio {})\n",
+             fast_llc_miss, slow_llc_miss, format_ratio(fast_llc_miss, slow_llc_miss));
+  fmt::print("Criticality count: {} fast, {} slow (ratio {})\n",
+             fast_critical, slow_critical, format_ratio(fast_critical, slow_critical));
   if (sort_by_criticality) {
     fmt::print("Allocation based on CRITICALITY count\n");
   } else {

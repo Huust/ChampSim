@@ -63,7 +63,7 @@ VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::si
     fmt::print("[VMEM] WARNING: physical memory size is smaller than virtual memory size.\n"); // LCOV_EXCL_LINE
   }
   populate_pages();
-  shuffle_pages();
+  // shuffle_pages(); // We turn off randomization due to different page size granularity
 }
 
 VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::size_t page_table_levels, champsim::chrono::clock::duration minor_penalty,
@@ -160,6 +160,7 @@ void VirtualMemory::ppage_pop(const Device& dev)
   ppage_free_list[get_device_index(dev)].pop_front();
   if (available_ppages(dev) == 0) {
     fmt::print("[VMEM] WARNING: Out of physical memory, freeing ppages\n");
+    assert(available_ppages(dev) != 0);
     populate_pages();
     shuffle_pages();
   }
@@ -236,16 +237,16 @@ std::pair<champsim::address, champsim::chrono::clock::duration> VirtualMemory::g
   if (champsim::page_offset{next_pte_page} == champsim::page_offset{0}) {
     Device selected_device;
     if (devices.size() == 2)
-      selected_device = Device{Dram{}};  
+      selected_device = Device{Dram{}};
     else
       selected_device = active_device;
 
     active_pte_page = ppage_front(selected_device);
     ppage_pop(selected_device);
     
-    if (!std::holds_alternative<Single>(active_device)) {
-      active_device = std::holds_alternative<Dram>(active_device) ? Device{Cxl{}} : Device{Dram{}};
-    }
+    // if (!std::holds_alternative<Single>(active_device)) {
+    //   active_device = std::holds_alternative<Dram>(active_device) ? Device{Cxl{}} : Device{Dram{}};
+    // }
   }
 
   champsim::dynamic_extent pte_table_entry_extent{champsim::address::bits, shamt(level)};
