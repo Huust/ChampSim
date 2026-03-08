@@ -14,6 +14,9 @@
 #include "environment.h"
 #include "ooo_cpu.h"
 
+// Shim layer sits between LLC and memory controllers. LLC's max_tag_check=1
+// limits its output to ~1-2 requests/cycle, so even small values for queue
+// sizes and bandwidth here won't bottleneck. Current defaults (64) are safe.
 SHIM_LAYER::SHIM_LAYER(champsim::chrono::picoseconds clock_period, champsim::channel *ul, std::vector<channel_type*>&& ll,
                        std::size_t rq_size, std::size_t wq_size, std::size_t pq_size,
                        long int max_upper_bw, long int max_lower_bw,
@@ -121,8 +124,12 @@ long SHIM_LAYER::route() {
       if (success) {
         if (is_cxl_address) {
           stats_func_cxl();
+          if (!warmup && pkt.type == access_type::TRANSLATION)
+            sim_stats.cxl_requests_translation++;
         } else {
           stats_func_dram();
+          if (!warmup && pkt.type == access_type::TRANSLATION)
+            sim_stats.dram_requests_translation++;
         }
         it->reset();
         lower_bw.consume();

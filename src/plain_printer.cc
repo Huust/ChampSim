@@ -177,6 +177,7 @@ std::vector<std::string> champsim::plain_printer::format(SHIM_LAYER::stats_type 
   lines.push_back(fmt::format("  READ: {:10}", stats.dram_requests_read));
   lines.push_back(fmt::format("  WRITE: {:10}", stats.dram_requests_write));
   lines.push_back(fmt::format("  PREFETCH: {:10}", stats.dram_requests_prefetch));
+  lines.push_back(fmt::format("  TRANSLATION: {:10}", stats.dram_requests_translation));
   lines.push_back(fmt::format("  TOTAL: {:10}", stats.dram_requests_total));
 
   // CXL request statistics
@@ -184,6 +185,7 @@ std::vector<std::string> champsim::plain_printer::format(SHIM_LAYER::stats_type 
   lines.push_back(fmt::format("  READ: {:10}", stats.cxl_requests_read));
   lines.push_back(fmt::format("  WRITE: {:10}", stats.cxl_requests_write));
   lines.push_back(fmt::format("  PREFETCH: {:10}", stats.cxl_requests_prefetch));
+  lines.push_back(fmt::format("  TRANSLATION: {:10}", stats.cxl_requests_translation));
   lines.push_back(fmt::format("  TOTAL: {:10}", stats.cxl_requests_total));
 
   // Buffer congestion statistics

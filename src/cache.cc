@@ -529,12 +529,14 @@ long CACHE::operate()
     for (auto q : {std::ref(ul->WQ), std::ref(ul->RQ), std::ref(ul->PQ)}) {
 #ifdef ENABLE_SKIP_CXL_TRANSLATION
       auto is_L1_cache = NAME.size() >= 3 && (NAME.compare(NAME.size() - 3, 3, "L1D") == 0 || NAME.compare(NAME.size() - 3, 3, "L1I") == 0);
-      auto skip_translation_with_heatmap = champsim::heatmap::is_hotness_allocation_enabled() && is_L1_cache && g_vmem;
+      // auto skip_translation_with_heatmap = champsim::heatmap::is_hotness_allocation_enabled() && is_L1_cache && g_vmem;
+      auto skip_translation_with_heatmap = is_L1_cache && g_vmem;
       auto skip_translation_with_interleaving = is_L1_cache && g_vmem && g_vmem->use_allocation_map;
 
-      if (skip_translation_with_heatmap) {
+      if (skip_translation_with_heatmap && !warmup) {
         for (auto& q_entry : q.get()) {
-          if (!q_entry.is_translated && !champsim::heatmap::is_fast_memory(champsim::page_number{q_entry.v_address})) {
+          // if (!q_entry.is_translated && !champsim::heatmap::is_fast_memory(champsim::page_number{q_entry.v_address})) {
+          if (!q_entry.is_translated) {
             // If cxl memory, skip translation
             auto [ppage, penalty] = g_vmem->va_to_pa(q_entry.cpu, champsim::page_number{q_entry.v_address});
             q_entry.address = champsim::address{champsim::splice(ppage, champsim::page_offset{q_entry.v_address})};
@@ -542,9 +544,10 @@ long CACHE::operate()
           }
         }
       } else if (skip_translation_with_interleaving) {
+        assert(1==0);
         for (auto& q_entry : q.get()) {
           if (auto [ppage, is_cxl] = g_vmem->va_to_pa_using_map(q_entry.cpu, champsim::page_number{q_entry.v_address});
-              !q_entry.is_translated && is_cxl) {
+              !q_entry.is_translated) {
             q_entry.address = champsim::address{champsim::splice(ppage, champsim::page_offset{q_entry.v_address})};
             q_entry.is_translated = true;
           }

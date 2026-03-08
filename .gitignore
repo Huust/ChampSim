@@ -42,3 +42,9 @@ plots_final/
 results/
 
 Miniconda3-latest-Linux-x86_64.sh
+
+CLAUDE.md
+AGENTS.md
+champsim_config.json
+hardware_configs/*.json
+scripts/

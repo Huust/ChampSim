@@ -50,14 +50,42 @@ public:
         int channel_id = stoi(configs["gem5_channel_id"], NULL, 0);
         DRAM<T>* channel = new DRAM<T>(spec, T::Level::Channel);
         channel->id = channel_id;
-        channel->regStats("", stat_ctx);
-        ctrls.push_back(new Controller<T>(configs, channel));
+        // DRAM hierarchy stats (active_cycles, busy_cycles, etc.) are not useful
+        // for research; pass nullptr so they go to the unused global list.
+        channel->regStats("", nullptr);
+        {
+            // Controller stats (row_hits, row_misses, read_latency, etc.) are
+            // registered into the global list by default. Capture the position
+            // before construction, then move only the new entries into stat_ctx.
+            size_t ctrl_start = get_all_stats().size();
+            ctrls.push_back(new Controller<T>(configs, channel));
+            if (stat_ctx) {
+                auto& global = get_all_stats();
+                for (size_t i = ctrl_start; i < global.size(); ++i)
+                    stat_ctx->get_all_stats().push_back(global[i]);
+                global.erase(global.begin() + ctrl_start, global.end());
+            }
+        }
 #else
         for (int c = 0; c < channels; c++){
             DRAM<T>* channel = new DRAM<T>(spec, T::Level::Channel);
             channel->id = c;
-            channel->regStats("", stat_ctx);
-            ctrls.push_back(new Controller<T>(configs, channel));
+            // DRAM hierarchy stats (active_cycles, busy_cycles, etc.) are not useful
+            // for research; pass nullptr so they go to the unused global list.
+            channel->regStats("", nullptr);
+            {
+                // Controller stats (row_hits, row_misses, read_latency, etc.) are
+                // registered into the global list by default. Capture the position
+                // before construction, then move only the new entries into stat_ctx.
+                size_t ctrl_start = get_all_stats().size();
+                ctrls.push_back(new Controller<T>(configs, channel));
+                if (stat_ctx) {
+                    auto& global = get_all_stats();
+                    for (size_t i = ctrl_start; i < global.size(); ++i)
+                        stat_ctx->get_all_stats().push_back(global[i]);
+                    global.erase(global.begin() + ctrl_start, global.end());
+                }
+            }
         }
 #endif
         return new Memory<T>(configs, ctrls);
