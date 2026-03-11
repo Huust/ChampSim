@@ -3,6 +3,7 @@
 
 #include <cstddef> // for size_t
 #include <cstdint> // for uint64_t, uint32_t, uint8_t
+#include <optional>
 #include <string>
 #include "address.h"
 #include "champsim.h"
@@ -16,6 +17,7 @@ class HeatMapTracker {
   std::unordered_map<uint64_t, std::tuple<uint64_t, uint64_t, uint64_t>> subpage_heatmap; // 4KB sub-page VPN -> (llc_miss_count, critical_count, total_access_count)
   std::unordered_set<uint64_t> fast_vpns; // VPNs allocated to fast memory
   std::unordered_set<uint64_t> slow_vpns; // VPNs allocated to slow memory
+  std::optional<size_t> loaded_capacity;  // DRAM budget from heatmap header (#capacity: N)
 
 public:
   void enable_heatmap_generation();

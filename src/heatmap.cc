@@ -95,11 +95,21 @@ void HeatMapTracker::load_heatmap(const std::string& file_path) {
   }
 
   page_heatmap.clear();
+  loaded_capacity.reset();
   std::string line;
 
   while (std::getline(file, line)) {
-    if (line.empty() || line[0] == '#')
+    if (line.empty())
       continue;
+    if (line[0] == '#') {
+      // Parse optional capacity header: "#capacity: N"
+      const std::string prefix = "#capacity: ";
+      if (line.size() > prefix.size() && line.substr(0, prefix.size()) == prefix) {
+        loaded_capacity = std::stoull(line.substr(prefix.size()));
+        fmt::print("Heatmap capacity override: {} pages\n", loaded_capacity.value());
+      }
+      continue;
+    }
 
     std::istringstream iss(line);
     std::string vpn_str;
@@ -164,7 +174,14 @@ void HeatMapTracker::allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t
 
   // Calculate allocation sizes
   size_t total_vpns = vpn_data.size();
-  size_t fast_vpns_count = (total_vpns * ratio_first) / (ratio_first + ratio_second);
+  size_t fast_vpns_count;
+  if (loaded_capacity.has_value()) {
+    // Use capacity embedded in heatmap header (derived from 2MB DRAM budget).
+    // Clamp to total available pages so we never ask for more than we have.
+    fast_vpns_count = std::min(loaded_capacity.value(), total_vpns);
+  } else {
+    fast_vpns_count = (total_vpns * ratio_first) / (ratio_first + ratio_second);
+  }
 
   fast_vpns.clear();
   slow_vpns.clear();
