@@ -42,6 +42,7 @@ CACHE::CACHE(CACHE&& other)
     : operable(other),
 
       upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)), lower_translate(std::move(other.lower_translate)),
+      lower_translate_2m(std::move(other.lower_translate_2m)),
 
       cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE),
       HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG),
@@ -65,6 +66,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->upper_levels = std::move(other.upper_levels);
   this->lower_level = std::move(other.lower_level);
   this->lower_translate = std::move(other.lower_translate);
+  this->lower_translate_2m = std::move(other.lower_translate_2m);
 
   this->cpu = other.cpu;
   this->NAME = std::move(other.NAME);
@@ -100,12 +102,13 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
 
 CACHE::tag_lookup_type::tag_lookup_type(const request_type& req, bool local_pref, bool skip)
     : address(req.address), v_address(req.v_address), data(req.data), ip(req.ip), instr_id(req.instr_id), pf_metadata(req.pf_metadata), cpu(req.cpu),
-      type(req.type), prefetch_from_this(local_pref), skip_fill(skip), is_translated(req.is_translated), instr_depend_on_me(req.instr_depend_on_me)
+      type(req.type), prefetch_from_this(local_pref), skip_fill(skip), is_translated(req.is_translated), page_size(req.page_size),
+      instr_depend_on_me(req.instr_depend_on_me)
 {
 }
 
 CACHE::mshr_type::mshr_type(const tag_lookup_type& req, champsim::chrono::clock::time_point _time_enqueued)
-    : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), cpu(req.cpu), type(req.type),
+    : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), page_size(req.page_size), cpu(req.cpu), type(req.type),
       prefetch_from_this(req.prefetch_from_this), time_enqueued(_time_enqueued), instr_depend_on_me(req.instr_depend_on_me), to_return(req.to_return)
 {
   // Set is_cxl_memory flag based on heatmap (if hotness allocation is enabled)
@@ -160,6 +163,7 @@ auto CACHE::fill_block(mshr_type mshr, uint32_t metadata) -> BLOCK
   to_fill.v_address = mshr.v_address;
   to_fill.data = mshr.data_promise->data;
   to_fill.pf_metadata = metadata;
+  to_fill.page_size = mshr.page_size;
 
   return to_fill;
 }
@@ -492,6 +496,11 @@ long CACHE::operate()
     progress += std::distance(std::cbegin(lower_translate->returned), std::cend(lower_translate->returned));
     lower_translate->returned.clear();
   }
+  if (lower_translate_2m != nullptr) {
+    std::for_each(std::cbegin(lower_translate_2m->returned), std::cend(lower_translate_2m->returned), [this](const auto& pkt) { this->finish_translation(pkt); });
+    progress += std::distance(std::cbegin(lower_translate_2m->returned), std::cend(lower_translate_2m->returned));
+    lower_translate_2m->returned.clear();
+  }
 
   // Perform fills
   champsim::bandwidth fill_bw{MAX_FILL};
@@ -537,9 +546,18 @@ long CACHE::operate()
         for (auto& q_entry : q.get()) {
           // if (!q_entry.is_translated && !champsim::heatmap::is_fast_memory(champsim::page_number{q_entry.v_address})) {
           if (!q_entry.is_translated) {
-            // If cxl memory, skip translation
-            auto [ppage, penalty] = g_vmem->va_to_pa(q_entry.cpu, champsim::page_number{q_entry.v_address});
-            q_entry.address = champsim::address{champsim::splice(ppage, champsim::page_offset{q_entry.v_address})};
+            // Determine page size and use appropriate translation
+            auto ps = g_vmem->get_page_size(champsim::page_number{q_entry.v_address});
+            q_entry.page_size = static_cast<uint8_t>(ps);
+            if (ps == PageSize::PAGE_2M) {
+              auto [ppage, penalty] = g_vmem->va_to_pa_2m(q_entry.cpu, champsim::page_number{q_entry.v_address});
+              champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+              champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+              q_entry.address = champsim::address{champsim::splice(champsim::address_slice{pn_2m, champsim::address{ppage}}, champsim::address_slice{off_2m, q_entry.v_address})};
+            } else {
+              auto [ppage, penalty] = g_vmem->va_to_pa(q_entry.cpu, champsim::page_number{q_entry.v_address});
+              q_entry.address = champsim::address{champsim::splice(ppage, champsim::page_offset{q_entry.v_address})};
+            }
             q_entry.is_translated = true;
           }
         }
@@ -717,17 +735,32 @@ void CACHE::finish_packet(const response_type& packet)
 
 void CACHE::finish_translation(const response_type& packet)
 {
-  auto matches_vpage = [page_num = champsim::page_number{packet.v_address}](const auto& entry) {
-    return (champsim::page_number{entry.v_address} == page_num) && !entry.is_translated;
+  auto pkt_page_size = packet.page_size;
+  auto matches_vpage = [page_num = champsim::page_number{packet.v_address}, pkt_page_size](const auto& entry) {
+    if (entry.is_translated)
+      return false;
+    if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_2M)) {
+      // For 2MB responses, match on 2MB-aligned VPN (mask lower 9 bits of 4KB VPN)
+      constexpr uint64_t mask_2m = ~uint64_t{(1ULL << 9) - 1};
+      return (champsim::page_number{entry.v_address}.to<uint64_t>() & mask_2m) == (page_num.to<uint64_t>() & mask_2m);
+    }
+    return champsim::page_number{entry.v_address} == page_num;
   };
-  auto mark_translated = [p_page = champsim::page_number{packet.data}, this](auto& entry) {
+  auto mark_translated = [p_page = champsim::page_number{packet.data}, pkt_page_size, this](auto& entry) {
     [[maybe_unused]] auto old_address = entry.address;
-    entry.address = champsim::address{champsim::splice(p_page, champsim::page_offset{entry.v_address})}; // translated address
-    entry.is_translated = true;                                                                          // This entry is now translated
+    if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_2M)) {
+      // For 2MB pages, splice with 21-bit offset
+      champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+      champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+      entry.address = champsim::address{champsim::splice(champsim::address_slice{pn_2m, champsim::address{p_page}}, champsim::address_slice{off_2m, entry.v_address})};
+    } else {
+      entry.address = champsim::address{champsim::splice(p_page, champsim::page_offset{entry.v_address})}; // translated address
+    }
+    entry.is_translated = true;
 
     if constexpr (champsim::debug_print) {
-      fmt::print("[{}_TRANSLATE] finish_translation old: {} paddr: {} vaddr: {} type: {} cycle: {}\n", this->NAME, old_address, entry.address, entry.v_address,
-                 access_type_names.at(champsim::to_underlying(entry.type)), this->current_time.time_since_epoch() / this->clock_period);
+      fmt::print("[{}_TRANSLATE] finish_translation old: {} paddr: {} vaddr: {} type: {} page_size: {} cycle: {}\n", this->NAME, old_address, entry.address, entry.v_address,
+                 access_type_names.at(champsim::to_underlying(entry.type)), pkt_page_size, this->current_time.time_since_epoch() / this->clock_period);
     }
   };
 
@@ -747,6 +780,12 @@ void CACHE::finish_translation(const response_type& packet)
 void CACHE::issue_translation(tag_lookup_type& q_entry) const
 {
   if (!q_entry.translate_issued && !q_entry.is_translated) {
+    // Determine page size for this request if pmap is available
+    if (g_vmem && q_entry.page_size == 0) {
+      auto ps = g_vmem->get_page_size(champsim::page_number{q_entry.v_address});
+      q_entry.page_size = static_cast<uint8_t>(ps);
+    }
+
     request_type fwd_pkt;
     fwd_pkt.asid[0] = q_entry.asid[0];
     fwd_pkt.asid[1] = q_entry.asid[1];
@@ -761,12 +800,19 @@ void CACHE::issue_translation(tag_lookup_type& q_entry) const
 
     fwd_pkt.instr_depend_on_me = q_entry.instr_depend_on_me;
     fwd_pkt.is_translated = true;
+    fwd_pkt.page_size = q_entry.page_size;
 
-    q_entry.translate_issued = lower_translate->add_rq(fwd_pkt);
+    // Route to 2MB TLB if page is 2MB and the 2MB TLB chain exists
+    champsim::channel* target_tlb = lower_translate;
+    if (q_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M) && lower_translate_2m != nullptr) {
+      target_tlb = lower_translate_2m;
+    }
+
+    q_entry.translate_issued = target_tlb->add_rq(fwd_pkt);
     if constexpr (champsim::debug_print) {
       if (q_entry.translate_issued) {
-        fmt::print("[TRANSLATE] do_issue_translation instr_id: {} paddr: {} vaddr: {} type: {}\n", q_entry.instr_id, q_entry.address, q_entry.v_address,
-                   access_type_names.at(champsim::to_underlying(q_entry.type)));
+        fmt::print("[TRANSLATE] do_issue_translation instr_id: {} paddr: {} vaddr: {} type: {} page_size: {}\n", q_entry.instr_id, q_entry.address, q_entry.v_address,
+                   access_type_names.at(champsim::to_underlying(q_entry.type)), q_entry.page_size);
       }
     }
   }

@@ -67,6 +67,8 @@ class channel
     uint64_t instr_id = 0;
     champsim::address ip{};
 
+    uint8_t page_size = 0; // 0=4K, 1=2M (matches PageSize enum)
+
     std::vector<uint64_t> instr_depend_on_me{};
   };
 
@@ -80,12 +82,17 @@ class channel
                               // this flag is only set when returning responses from shim layer to upper level LLC
     bool is_cxl_memory = false; // the request was served by CXL memory (vs DRAM)
                                 // this flag is only set when returning responses from shim layer to upper level LLC
+    uint8_t page_size = 0; // 0=4K, 1=2M (matches PageSize enum)
 
     response(champsim::address addr, champsim::address v_addr, champsim::address data_, uint32_t pf_meta, std::vector<uint64_t> deps)
         : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), instr_depend_on_me(deps)
     {
     }
-    explicit response(request req) : response(req.address, req.v_address, req.data, req.pf_metadata, req.instr_depend_on_me) {}
+    response(champsim::address addr, champsim::address v_addr, champsim::address data_, uint32_t pf_meta, std::vector<uint64_t> deps, uint8_t ps)
+        : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), instr_depend_on_me(deps), page_size(ps)
+    {
+    }
+    explicit response(request req) : response(req.address, req.v_address, req.data, req.pf_metadata, req.instr_depend_on_me, req.page_size) {}
   };
 
   template <typename R>

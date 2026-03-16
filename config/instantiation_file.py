@@ -90,6 +90,7 @@ cache_builder_parts = {
     '_replacement_data': '.replacement<{^replacement_string}>()',
     '_prefetcher_data': '.prefetcher<{^prefetcher_string}>()',
     'lower_translate': '.lower_translate(&{^lower_translate_queues})',
+    'lower_translate_2m': '.lower_translate_2m(&{^lower_translate_2m_queues})',
     'lower_level': '.lower_level(&{^lower_level_queues})',
     'frequency': '.clock_period(champsim::chrono::picoseconds{{{^clock_period}}})'
 }
@@ -172,6 +173,10 @@ def get_cache_builder(elem, ul_pairs):
     if 'lower_translate' in elem:
         local_params.update({
             '^lower_translate_queues': f'channels.at({ul_pairs.index((elem.get("lower_translate"), elem.get("name")))})'
+        })
+    if 'lower_translate_2m' in elem:
+        local_params.update({
+            '^lower_translate_2m_queues': f'channels.at({ul_pairs.index((elem.get("lower_translate_2m"), elem.get("name")))})'
         })
 
     builder_parts = itertools.chain(util.multiline(itertools.chain(
@@ -294,6 +299,7 @@ def get_upper_levels(cores, caches, ptws, router, pmem, cxl):
     connections.extend(map(functools.partial(named_selector, key='lower_level'), ptws))
     connections.extend(map(functools.partial(named_selector, key='lower_level'), caches))
     connections.extend(map(functools.partial(named_selector, key='lower_translate'), caches))
+    connections.extend(map(functools.partial(named_selector, key='lower_translate_2m'), caches))
     connections.extend(map(functools.partial(named_selector, key='L1I'), cores))
     connections.extend(map(functools.partial(named_selector, key='L1D'), cores))
 

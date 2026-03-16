@@ -31,6 +31,7 @@ struct cache_block {
   champsim::address data{};
 
   uint32_t pf_metadata = 0;
+  uint8_t page_size = 0; // 0=4K, 1=2M (matches PageSize enum)
 };
 } // namespace champsim
 

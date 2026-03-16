@@ -122,7 +122,7 @@ def int_or_prefixed_size(val):
 
 def core_default_names(cpu):
     """ Apply defaults to a cpu with the given index """
-    default_element_names = {n: f'{cpu["name"]}_{n}' for n in ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB', 'PTW')}
+    default_element_names = {n: f'{cpu["name"]}_{n}' for n in ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB', 'PTW', 'ITLB_2M', 'DTLB_2M', 'STLB_2M')}
     default_core = {
         'frequency' : 4000,
         'DIB': {},
@@ -153,7 +153,7 @@ def default_frequencies(cores, caches):
         return (util.subdict(element, ('name', 'frequency')) for element in path)
 
     # Create a list of paths from the cores
-    paths = itertools.starmap(make_path, itertools.product(cores, ('L1I', 'L1D', 'ITLB', 'DTLB')))
+    paths = itertools.starmap(make_path, itertools.product(cores, ('L1I', 'L1D', 'ITLB', 'DTLB', 'ITLB_2M', 'DTLB_2M')))
 
     # Propogate the frequencies down the path
     paths = itertools.chain.from_iterable(util.propogate_down(p, 'frequency') for p in paths)
@@ -381,7 +381,7 @@ class NormalizedConfiguration:
         # Give cores numeric indices and default cache names
         cores = [{'_index': i, **core_default_names(cpu)} for i,cpu in enumerate(self.cores)]
 
-        path_root_names = tuple(tuple(cpu[name] for cpu in cores) for name in ('L1I', 'L1D', 'ITLB', 'DTLB'))
+        path_root_names = tuple(tuple(cpu[name] for cpu in cores) for name in ('L1I', 'L1D', 'ITLB', 'DTLB', 'ITLB_2M', 'DTLB_2M'))
 
         # Instantiate any missing default caches
         caches = util.combine_named(self.caches.values(), ({ 'name': 'LLC' },), *map(defaults.cache_core_defaults, cores))
@@ -402,7 +402,10 @@ class NormalizedConfiguration:
                 **module_parse(mod_name, prefetcher_context)
             }
 
-        tlb_path = itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[2:])))
+        # 4KB TLB paths: indices 2,3 (ITLB, DTLB)
+        tlb_4k_path = itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[2:4])))
+        # 2MB TLB paths: indices 4,5 (ITLB_2M, DTLB_2M)
+        tlb_2m_path = itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[4:])))
         data_path = itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[:2])))
         caches = util.combine_named(
             # Set prefetcher_activate
@@ -411,7 +414,8 @@ class NormalizedConfiguration:
             } for k,cache in caches.items() if 'prefetch_activate' in cache),
 
             # TLBs use page offsets, Caches use block offsets
-            ({'name': c['name'], '_offset_bits': f'champsim::lg2({root_config["page_size"]})'} for c in tlb_path),
+            ({'name': c['name'], '_offset_bits': f'champsim::lg2({root_config["page_size"]})'} for c in tlb_4k_path),
+            ({'name': c['name'], '_offset_bits': '21'} for c in tlb_2m_path),  # 2MB TLBs use 21-bit offset
             ({'name': c['name'], '_offset_bits': f'champsim::lg2({root_config["block_size"]})'} for c in data_path),
 
             # Unfold suffixed strings
@@ -433,7 +437,9 @@ class NormalizedConfiguration:
                 path_end_in(util.iter_system(caches, cpu['L1I']), 'ROUTER'),
                 path_end_in(util.iter_system(caches, cpu['L1D']), 'ROUTER'),
                 path_end_in(util.iter_system(caches, cpu['ITLB']), cpu['PTW']),
-                path_end_in(util.iter_system(caches, cpu['DTLB']), cpu['PTW'])
+                path_end_in(util.iter_system(caches, cpu['DTLB']), cpu['PTW']),
+                path_end_in(util.iter_system(caches, cpu['ITLB_2M']), cpu['PTW']),
+                path_end_in(util.iter_system(caches, cpu['DTLB_2M']), cpu['PTW'])
              ) for cpu in cores),
 
             ({ 'name': k,

@@ -22,11 +22,16 @@
 #include <map>
 #include <optional>
 #include <random>
+#include <unordered_map>
 #include <variant>
 
 #include "address.h"
 #include "champsim.h"
 #include "chrono.h"
+
+enum class PageSize : uint8_t { PAGE_4K = 0, PAGE_2M = 1 };
+constexpr unsigned LOG2_PAGE_SIZE_4K = 12;
+constexpr unsigned LOG2_PAGE_SIZE_2M = 21;
 
 class MEMORY_CONTROLLER;
 class VirtualMemory;  // Forward declaration
@@ -55,6 +60,9 @@ private:
   std::map<champsim::page_number, bool> allocation_map;
   std::string allocation_file;
 
+  // Multi-page-size support: pmap (4KB-VPN -> PageSize)
+  std::unordered_map<uint64_t, PageSize> pmap; // key is 4KB-granularity VPN
+
 private:
   // Helper function to get device index for array access
   [[nodiscard]] std::size_t get_device_index(const Device& device) const;
@@ -68,11 +76,14 @@ public:
 
 private:
   std::vector<std::deque<champsim::page_number>> ppage_free_list;
+  std::vector<std::deque<champsim::page_number>> ppage_free_list_2m; // 2MB page pool
   champsim::page_number active_pte_page{};
   champsim::address_slice<champsim::dynamic_extent> next_pte_page;
 
   [[nodiscard]] champsim::page_number ppage_front(const Device&) const;
   void ppage_pop(const Device&);
+  [[nodiscard]] champsim::page_number ppage_front_2m(const Device&) const;
+  void ppage_pop_2m(const Device&);
 
   void populate_pages();
   void shuffle_pages();
@@ -134,6 +145,24 @@ public:
    * File format: CSV with "vpage,device" where device is 0 (DRAM) or 1 (CXL).
    */
   void load_allocation_mapping(const std::string& input_file);
+
+  /**
+   * Load a pmap file specifying which virtual pages use 4KB vs 2MB pages.
+   * File format: CSV with "vpn_hex,page_size" where page_size is 0 (4K) or 1 (2M).
+   * For 2MB pages, use the base 4KB-VPN (2MB-aligned, lower 9 bits of VPN = 0).
+   */
+  void load_pmap(const std::string& path);
+
+  /**
+   * Get the page size for the given virtual page number (4KB granularity).
+   * If a pmap is loaded, looks up the VPN. Default is PAGE_4K.
+   */
+  [[nodiscard]] PageSize get_page_size(champsim::page_number vpn_4k) const;
+
+  /**
+   * Translate the given address for a 2MB page.
+   */
+  std::pair<champsim::page_number, champsim::chrono::clock::duration> va_to_pa_2m(uint32_t cpu_num, champsim::page_number vaddr);
 
   /**
    * Translate the given address from the virtual space to the physical space.

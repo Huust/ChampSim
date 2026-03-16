@@ -24,6 +24,10 @@ def cache_core_defaults(cpu):
     yield { 'name': cpu.get('DTLB'), 'lower_level': cpu.get('STLB') }
     yield { 'name': cpu.get('L2C'), 'lower_level': 'LLC' }
     yield { 'name': cpu.get('STLB'), 'lower_level': cpu.get('PTW') }
+    # 2MB TLB chain
+    yield { 'name': cpu.get('ITLB_2M'), 'lower_level': cpu.get('STLB_2M') }
+    yield { 'name': cpu.get('DTLB_2M'), 'lower_level': cpu.get('STLB_2M') }
+    yield { 'name': cpu.get('STLB_2M'), 'lower_level': cpu.get('PTW') }
 
 def ptw_core_defaults(cpu):
     ''' Generate the lower levels that a default core would expect for each of its PTWs '''
@@ -31,10 +35,12 @@ def ptw_core_defaults(cpu):
 
 def list_defaults_for_core(cpu, caches):
     ''' Generate the down-path defaults that a default core would expect '''
-    icache_path = itertools.tee(util.iter_system(caches, cpu.get('L1I')), 2)
-    dcache_path = itertools.tee(util.iter_system(caches, cpu.get('L1D')), 2)
+    icache_path = itertools.tee(util.iter_system(caches, cpu.get('L1I')), 3)
+    dcache_path = itertools.tee(util.iter_system(caches, cpu.get('L1D')), 3)
     itlb_path = itertools.tee(util.iter_system(caches, cpu.get('ITLB')), 2)
     dtlb_path = itertools.tee(util.iter_system(caches, cpu.get('DTLB')), 2)
+    itlb_2m_path = itertools.tee(util.iter_system(caches, cpu.get('ITLB_2M')), 2)
+    dtlb_2m_path = itertools.tee(util.iter_system(caches, cpu.get('DTLB_2M')), 2)
 
     l1i_members = (
         { '_first_level': True, '_is_instruction_cache': True,
@@ -59,16 +65,33 @@ def list_defaults_for_core(cpu, caches):
         { '_defaults': 'champsim::defaults::default_stlb', '_queue_factor': 16 }
     )
 
+    itlb_2m_members = (
+        { '_first_level': True, '_defaults': 'champsim::defaults::default_itlb_2m', '_queue_factor': 16 },
+        { '_defaults': 'champsim::defaults::default_stlb_2m', '_queue_factor': 16 }
+    )
+
+    dtlb_2m_members = (
+        { '_first_level': True, '_defaults': 'champsim::defaults::default_dtlb_2m', '_queue_factor': 16 },
+        { '_defaults': 'champsim::defaults::default_stlb_2m', '_queue_factor': 16 }
+    )
+
     def connect_translator(cache, tlb):
         return {'name': cache['name'], 'lower_translate': tlb['name']}
+
+    def connect_translator_2m(cache, tlb):
+        return {'name': cache['name'], 'lower_translate_2m': tlb['name']}
 
     return (
         map(util.chain, icache_path[0], l1i_members), #L1I path
         map(util.chain, dcache_path[0], l1d_members), #L1D path
         map(util.chain, itlb_path[0], itlb_members), #ITLB path
         map(util.chain, dtlb_path[0], dtlb_members), #DTLB path
+        map(util.chain, itlb_2m_path[0], itlb_2m_members), #ITLB_2M path
+        map(util.chain, dtlb_2m_path[0], dtlb_2m_members), #DTLB_2M path
         map(connect_translator, icache_path[1], itlb_path[1]), #L1I translation path
-        map(connect_translator, dcache_path[1], dtlb_path[1]) #L1D translation path
+        map(connect_translator, dcache_path[1], dtlb_path[1]), #L1D translation path
+        map(connect_translator_2m, icache_path[2], itlb_2m_path[1]), #L1I 2M translation path
+        map(connect_translator_2m, dcache_path[2], dtlb_2m_path[1]) #L1D 2M translation path
     )
 
 # Round-Robin recipe from itertools

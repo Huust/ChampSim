@@ -62,6 +62,7 @@ struct cache_builder_base {
   std::vector<champsim::channel*> m_uls{};
   champsim::channel* m_ll{};
   champsim::channel* m_lt{nullptr};
+  champsim::channel* m_lt_2m{nullptr};
 };
 } // namespace detail
 
@@ -232,6 +233,11 @@ public:
    * Specify the translator (TLB) for this cache.
    */
   self_type& lower_translate(champsim::channel* lt_);
+
+  /**
+   * Specify the 2MB page translator (TLB) for this cache.
+   */
+  self_type& lower_translate_2m(champsim::channel* lt_);
 
   /**
    * Specify the cache prefetcher.
@@ -511,6 +517,13 @@ template <typename P, typename R>
 auto champsim::cache_builder<P, R>::lower_translate(champsim::channel* lt_) -> self_type&
 {
   m_lt = lt_;
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::lower_translate_2m(champsim::channel* lt_) -> self_type&
+{
+  m_lt_2m = lt_;
   return *this;
 }
 

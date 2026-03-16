@@ -74,6 +74,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   std::string save_bandwidth_path;
   std::string track_interleaving_path;
   std::string use_allocation_path;
+  std::string pmap_path;
 
   auto set_heartbeat_callback = [&](auto) {
     for (O3_CPU& cpu : gen_environment.cpu_view()) {
@@ -101,6 +102,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   app.add_option("--save-bandwidth", save_bandwidth_path, "Save bandwidth statistics to specified file path");
   app.add_option("--generate-interleaving", track_interleaving_path, "Track page allocations in interleaving mode and save to specified file");
   app.add_option("--use-interleaving", use_allocation_path, "Use precomputed allocation mapping (CSV format: vpage,device)");
+  app.add_option("--pmap", pmap_path, "Page map file (CSV: vpn_hex,page_size 0=4K 1=2M)");
 
   app.add_option("traces", trace_names, "The paths to the traces")->required()->expected(NUM_CPUS)->check(CLI::ExistingFile);
 
@@ -196,6 +198,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // Load precomputed allocation mapping if requested
   if (!use_allocation_path.empty()) {
     g_vmem->load_allocation_mapping(use_allocation_path);
+  }
+
+  // Load pmap file for multi-page-size support
+  if (!pmap_path.empty()) {
+    g_vmem->load_pmap(pmap_path);
   }
 
   // Enable interleaving allocation tracking if requested

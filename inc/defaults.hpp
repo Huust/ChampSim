@@ -119,6 +119,38 @@ const auto default_stlb = champsim::cache_builder<champsim::cache_builder_module
                               .reset_wq_checks_full_addr()
                               .prefetch_activate(access_type::LOAD, access_type::PREFETCH);
 
+// 2MB page TLB defaults
+const auto default_itlb_2m = champsim::cache_builder<champsim::cache_builder_module_type_holder<no>, champsim::cache_builder_module_type_holder<lru>>{}
+                                 .sets_factor(4)
+                                 .ways(4)
+                                 .pq_size(0)
+                                 .offset_bits(champsim::data::bits{21})
+                                 .reset_prefetch_as_load()
+                                 .set_virtual_prefetch()
+                                 .set_wq_checks_full_addr()
+                                 .prefetch_activate(access_type::LOAD, access_type::PREFETCH);
+
+const auto default_dtlb_2m = champsim::cache_builder<champsim::cache_builder_module_type_holder<no>, champsim::cache_builder_module_type_holder<lru>>{}
+                                 .sets_factor(4)
+                                 .ways(4)
+                                 .pq_size(0)
+                                 .mshr_size(8)
+                                 .offset_bits(champsim::data::bits{21})
+                                 .reset_prefetch_as_load()
+                                 .reset_virtual_prefetch()
+                                 .set_wq_checks_full_addr()
+                                 .prefetch_activate(access_type::LOAD, access_type::PREFETCH);
+
+const auto default_stlb_2m = champsim::cache_builder<champsim::cache_builder_module_type_holder<no>, champsim::cache_builder_module_type_holder<lru>>{}
+                                 .sets_factor(16)
+                                 .ways(12)
+                                 .pq_size(0)
+                                 .offset_bits(champsim::data::bits{21})
+                                 .reset_prefetch_as_load()
+                                 .reset_virtual_prefetch()
+                                 .reset_wq_checks_full_addr()
+                                 .prefetch_activate(access_type::LOAD, access_type::PREFETCH);
+
 const auto default_llc = champsim::cache_builder<champsim::cache_builder_module_type_holder<no>, champsim::cache_builder_module_type_holder<lru>>{}
                              .name("LLC")
                              .sets_factor(2048)

@@ -99,10 +99,41 @@ void VirtualMemory::populate_pages()
     page = base_address;
     base_address++;
   };
-  
+
   std::for_each(ppage_free_list.begin(), ppage_free_list.end(), [initialize_free_list](auto& list){
     std::for_each(list.begin(), list.end(), initialize_free_list);
   });
+
+  // Build 2MB free lists by carving out 2MB-aligned groups of 512 contiguous 4KB pages
+  // Only carve out up to half of each device's pages (by count of 2MB groups), keeping
+  // enough 4KB pages for page tables and small allocations.
+  ppage_free_list_2m.resize(devices.size());
+  for (std::size_t dev_idx = 0; dev_idx < ppage_free_list.size(); ++dev_idx) {
+    auto& list_4k = ppage_free_list[dev_idx];
+    auto& list_2m = ppage_free_list_2m[dev_idx];
+    // Limit: at most half of total pages go to 2MB pool
+    std::size_t max_2m_pages = list_4k.size() / (512 * 2);
+    std::size_t i = 0;
+    while (i + 512 <= list_4k.size() && list_2m.size() < max_2m_pages) {
+      auto base_ppn = list_4k[i].to<uint64_t>();
+      if ((base_ppn & 0x1FF) == 0) {
+        bool contiguous = true;
+        for (std::size_t j = 1; j < 512; ++j) {
+          if (list_4k[i + j].to<uint64_t>() != base_ppn + j) {
+            contiguous = false;
+            break;
+          }
+        }
+        if (contiguous) {
+          list_2m.push_back(list_4k[i]);
+          list_4k.erase(list_4k.begin() + static_cast<std::ptrdiff_t>(i),
+                        list_4k.begin() + static_cast<std::ptrdiff_t>(i + 512));
+          continue;
+        }
+      }
+      ++i;
+    }
+  }
 }
 
 void VirtualMemory::shuffle_pages()
@@ -167,6 +198,112 @@ void VirtualMemory::ppage_pop(const Device& dev)
 }
 
 std::size_t VirtualMemory::available_ppages(const Device& dev) const { return (ppage_free_list[get_device_index(dev)].size()); }
+
+champsim::page_number VirtualMemory::ppage_front_2m(const Device& dev) const
+{
+  auto idx = get_device_index(dev);
+  assert(idx < ppage_free_list_2m.size());
+  assert(!ppage_free_list_2m[idx].empty());
+  return ppage_free_list_2m[idx].front();
+}
+
+void VirtualMemory::ppage_pop_2m(const Device& dev)
+{
+  auto idx = get_device_index(dev);
+  ppage_free_list_2m[idx].pop_front();
+  if (ppage_free_list_2m[idx].empty()) {
+    fmt::print("[VMEM] WARNING: Out of 2MB physical pages for device {}\n", idx);
+  }
+}
+
+void VirtualMemory::load_pmap(const std::string& path)
+{
+  std::ifstream infile(path);
+  if (!infile.is_open()) {
+    fmt::print("[VMEM] ERROR: Failed to open pmap file: {}\n", path);
+    return;
+  }
+
+  pmap.clear();
+  std::string line;
+  uint64_t count_4k = 0, count_2m = 0;
+
+  while (std::getline(infile, line)) {
+    // Skip comments and empty lines
+    if (line.empty() || line[0] == '#')
+      continue;
+
+    auto comma_pos = line.find(',');
+    if (comma_pos == std::string::npos)
+      continue;
+
+    try {
+      uint64_t vpn = std::stoull(line.substr(0, comma_pos), nullptr, 16);
+      int ps = std::stoi(line.substr(comma_pos + 1));
+      PageSize page_size = (ps == 1) ? PageSize::PAGE_2M : PageSize::PAGE_4K;
+      pmap[vpn] = page_size;
+
+      if (page_size == PageSize::PAGE_2M)
+        ++count_2m;
+      else
+        ++count_4k;
+    } catch (const std::exception& e) {
+      fmt::print("[VMEM] WARNING: Failed to parse pmap line: {}\n", line);
+      continue;
+    }
+  }
+
+  infile.close();
+  fmt::print("[VMEM] Loaded pmap from {}: {} entries (4K: {}, 2M: {})\n", path, pmap.size(), count_4k, count_2m);
+}
+
+PageSize VirtualMemory::get_page_size(champsim::page_number vpn_4k) const
+{
+  if (pmap.empty())
+    return PageSize::PAGE_4K;
+
+  uint64_t vpn = vpn_4k.to<uint64_t>();
+
+  // Check exact match first (4KB entry)
+  auto it = pmap.find(vpn);
+  if (it != pmap.end())
+    return it->second;
+
+  // Check if this VPN falls within a 2MB page (look up the 2MB-aligned base VPN)
+  uint64_t base_2m = (vpn >> 9) << 9;
+  it = pmap.find(base_2m);
+  if (it != pmap.end() && it->second == PageSize::PAGE_2M)
+    return PageSize::PAGE_2M;
+
+  return PageSize::PAGE_4K;
+}
+
+std::pair<champsim::page_number, champsim::chrono::clock::duration> VirtualMemory::va_to_pa_2m(uint32_t cpu_num, champsim::page_number vaddr)
+{
+  // For 2MB pages, align the VPN to 2MB boundary (mask off lower 9 bits of 4KB VPN)
+  uint64_t vpn = vaddr.to<uint64_t>();
+  uint64_t aligned_vpn = (vpn >> 9) << 9;
+  champsim::page_number aligned_vaddr{aligned_vpn};
+
+  Device selected_device = select_device(vaddr);
+  auto [ppage, fault] = vpage_to_ppage_map.try_emplace({cpu_num, aligned_vaddr}, ppage_front_2m(selected_device));
+
+  if (fault) {
+    ppage_pop_2m(selected_device);
+
+    if (!std::holds_alternative<Single>(active_device)) {
+      active_device = std::holds_alternative<Dram>(active_device) ? Device{Cxl{}} : Device{Dram{}};
+    }
+  }
+
+  auto penalty = fault ? minor_fault_penalty : champsim::chrono::clock::duration::zero();
+
+  if constexpr (champsim::debug_print) {
+    fmt::print("[VMEM] {} paddr: {} vpage: {} (2MB aligned: {}) fault: {}\n", __func__, ppage->second, vaddr, aligned_vaddr, fault);
+  }
+
+  return std::pair{ppage->second, penalty};
+}
 
 std::pair<champsim::page_number, champsim::chrono::clock::duration> VirtualMemory::va_to_pa(uint32_t cpu_num, champsim::page_number vaddr)
 {
