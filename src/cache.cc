@@ -264,7 +264,7 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   }
   sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
 
-  response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me};
+  response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me, fill_mshr.page_size};
   response.is_llc_miss = fill_mshr.is_llc_miss;
   response.is_cxl_memory = fill_mshr.is_cxl_memory;
   for (auto* ret : fill_mshr.to_return) {
@@ -308,7 +308,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
-    response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me};
+    response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me, handle_pkt.page_size};
     for (auto* ret : handle_pkt.to_return) {
       ret->push_back(response);
     }
@@ -788,6 +788,7 @@ void CACHE::finish_translation(const response_type& packet)
         } else {
           // SLOW PATH: hole → re-route to 4KB TLB chain
           entry.page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
+          entry.page_size_determined = true; // prevent pmap re-query from overriding back to PERF
           entry.translate_issued = false;
           entry.event_cycle += (VirtualMemory::PERF_BITMAP_LATENCY_CYCLES + VirtualMemory::PERF_HOLE_LATENCY_CYCLES) * this->clock_period;
           // entry.is_translated stays false → re-enters translation pipeline as 4KB
@@ -836,10 +837,11 @@ void CACHE::finish_translation(const response_type& packet)
 void CACHE::issue_translation(tag_lookup_type& q_entry) const
 {
   if (!q_entry.translate_issued && !q_entry.is_translated) {
-    // Determine page size for this request if pmap is available
-    if (g_vmem && q_entry.page_size == 0) {
+    // Determine page size for this request if pmap is available and not already resolved
+    if (g_vmem && !q_entry.page_size_determined) {
       auto ps = g_vmem->get_page_size(champsim::page_number{q_entry.v_address});
       q_entry.page_size = static_cast<uint8_t>(ps);
+      q_entry.page_size_determined = true;
     }
 
     request_type fwd_pkt;
@@ -1072,6 +1074,12 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.pf_useful = sim_stats.pf_useful;
   roi_stats.pf_useless = sim_stats.pf_useless;
   roi_stats.pf_fill = sim_stats.pf_fill;
+
+  // Perforated page statistics
+  roi_stats.perf_total = sim_stats.perf_total;
+  roi_stats.perf_coarse_filtered = sim_stats.perf_coarse_filtered;
+  roi_stats.perf_non_hole = sim_stats.perf_non_hole;
+  roi_stats.perf_hole = sim_stats.perf_hole;
 
   for (auto* ul : upper_levels) {
     ul->roi_stats.RQ_ACCESS = ul->sim_stats.RQ_ACCESS;

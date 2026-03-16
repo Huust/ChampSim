@@ -75,7 +75,8 @@ private:
     bool is_translated;
     bool translate_issued = false;
 
-    uint8_t page_size = 0; // 0=4K, 1=2M (matches PageSize enum)
+    uint8_t page_size = 0; // 0=4K, 1=2M, 2=PERF (matches PageSize enum)
+    bool page_size_determined = false; // true once pmap has been consulted or page_size explicitly set
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
 
     champsim::chrono::clock::time_point event_cycle = champsim::chrono::clock::time_point::max();
