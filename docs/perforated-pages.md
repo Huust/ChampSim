@@ -137,8 +137,21 @@ cpu0->cpu0_L1D PERFORATED PAGE TRANSLATIONS: 1234
 
 ## Verification Checklist
 
-1. **No pmap**: identical behavior to before (regression safe)
-2. **All 2MB pmap**: no perforated stats, same as before
-3. **Mixed pmap** (4KB + 2MB + PERF): correct routing, stats show all three paths
-4. **Auto-perforation sweep**: `--perf-frag-ratio` 0.0 → 1.0 shows gradual IPC degradation
+1. **No pmap**: identical behavior to before (regression safe) — verified
+2. **All 2MB pmap**: no perforated stats, same as before — verified (IPC=1.022)
+3. **Mixed pmap** (4KB + 2MB + PERF): correct routing, stats show all three paths — verified (coarse filter 67%, bitmap 33%, hole 0.0%)
+4. **Auto-perforation sweep**: `--perf-frag-ratio` 0.0 → 1.0 shows gradual IPC degradation — verified (1.022 → 0.523 → 0.498 → 0.439)
 5. **Skip-translation**: build with `SKIP_TRANSLATION=1`, perforated holes get 4KB physical addresses
+
+## Bugs Fixed (commit 42839a6)
+
+Three bugs were discovered and fixed during verification:
+
+1. **page_size not propagated in CACHE response** (`handle_fill()` and `try_hit()`):
+   Responses used the 5-argument constructor leaving `page_size=0`, causing `finish_translation()` to use 4KB matching instead of 2MB. When multiple requests to different 4KB sub-pages within a 2MB page were merged in TLB MSHRs, only the first matched — the rest hung forever (deadlock).
+
+2. **Perforated hole re-route infinite loop** (interaction between `finish_translation()` and `issue_translation()`):
+   After detecting a hole and setting `page_size=PAGE_4K`, `issue_translation()` re-queried the pmap (since `PAGE_4K==0` matched the "unset" check), getting `PAGE_PERF` again — infinite re-routing loop. Fixed by adding `page_size_determined` flag to `tag_lookup_type`.
+
+3. **Perforated stats not copied in `end_phase()`**:
+   `perf_total`, `perf_coarse_filtered`, `perf_non_hole`, `perf_hole` were never copied from `sim_stats` to `roi_stats`, so stats always printed as 0.
