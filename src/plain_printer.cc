@@ -142,6 +142,17 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
                       ::print_ratio(stats.total_miss_latency_cycles_cxl, stats.misses_to_cxl)));
     }
 
+    // Perforated page statistics
+    if (stats.perf_total > 0) {
+      lines.push_back(fmt::format("cpu{}->{} PERFORATED PAGE TRANSLATIONS: {}", cpu, stats.name, stats.perf_total));
+      lines.push_back(fmt::format("  Coarse filter fast-path: {} ({:.1f}%)", stats.perf_coarse_filtered,
+                                  100.0 * stats.perf_coarse_filtered / stats.perf_total));
+      lines.push_back(fmt::format("  Bitmap non-hole: {} ({:.1f}%)", stats.perf_non_hole,
+                                  100.0 * stats.perf_non_hole / stats.perf_total));
+      lines.push_back(fmt::format("  Hole (re-routed to 4KB): {} ({:.1f}%)", stats.perf_hole,
+                                  100.0 * stats.perf_hole / stats.perf_total));
+    }
+
     lines.push_back(
         fmt::format("cpu{}->{} MSHR CONGESTION CYCLES: {:10} ({}% of total cycles)", cpu, stats.name, stats.mshr_congestion_cycles,
                     stats.mshr_congestion_cycles * 100.0 / std::max(uint64_t{1}, stats.mshr_congestion_cycles + total_hits + total_misses)));

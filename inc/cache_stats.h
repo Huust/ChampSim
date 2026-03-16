@@ -26,6 +26,12 @@ struct cache_stats {
   long total_miss_latency_cycles{};
   uint64_t mshr_congestion_cycles = 0;  // Cycles when MSHR was full and requests were blocked
 
+  // Perforated page statistics
+  uint64_t perf_total = 0;
+  uint64_t perf_non_hole = 0;
+  uint64_t perf_hole = 0;
+  uint64_t perf_coarse_filtered = 0;
+
   // CXL/DRAM split statistics (only meaningful when heatmap allocation is enabled)
   long total_miss_latency_cycles_dram{};  // Latency for requests served by DRAM
   long total_miss_latency_cycles_cxl{};   // Latency for requests served by CXL

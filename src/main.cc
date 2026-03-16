@@ -75,6 +75,8 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   std::string track_interleaving_path;
   std::string use_allocation_path;
   std::string pmap_path;
+  double perf_frag_ratio = 0.0;
+  std::string perf_frag_dist = "clustered";
 
   auto set_heartbeat_callback = [&](auto) {
     for (O3_CPU& cpu : gen_environment.cpu_view()) {
@@ -102,7 +104,9 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   app.add_option("--save-bandwidth", save_bandwidth_path, "Save bandwidth statistics to specified file path");
   app.add_option("--generate-interleaving", track_interleaving_path, "Track page allocations in interleaving mode and save to specified file");
   app.add_option("--use-interleaving", use_allocation_path, "Use precomputed allocation mapping (CSV format: vpage,device)");
-  app.add_option("--pmap", pmap_path, "Page map file (CSV: vpn_hex,page_size 0=4K 1=2M)");
+  app.add_option("--pmap", pmap_path, "Page map file (CSV: vpn_hex,page_size 0=4K 1=2M 2=PERF)");
+  app.add_option("--perf-frag-ratio", perf_frag_ratio, "Fraction of holes in perforated pages (0.0-1.0)");
+  app.add_option("--perf-frag-dist", perf_frag_dist, "Hole distribution: clustered, dispersed, random")->default_val("clustered");
 
   app.add_option("traces", trace_names, "The paths to the traces")->required()->expected(NUM_CPUS)->check(CLI::ExistingFile);
 
@@ -203,6 +207,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // Load pmap file for multi-page-size support
   if (!pmap_path.empty()) {
     g_vmem->load_pmap(pmap_path);
+
+    // Auto-perforate: convert 2MB pages to perforated pages with synthetic holes
+    if (perf_frag_ratio > 0.0) {
+      g_vmem->generate_perforated_pages(perf_frag_ratio, perf_frag_dist);
+    }
   }
 
   // Enable interleaving allocation tracking if requested

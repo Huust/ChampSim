@@ -17,6 +17,12 @@ cache_stats operator-(cache_stats lhs, cache_stats rhs)
   result.total_miss_latency_cycles = lhs.total_miss_latency_cycles - rhs.total_miss_latency_cycles;
   result.mshr_congestion_cycles = lhs.mshr_congestion_cycles - rhs.mshr_congestion_cycles;
 
+  // Perforated page statistics
+  result.perf_total = lhs.perf_total - rhs.perf_total;
+  result.perf_non_hole = lhs.perf_non_hole - rhs.perf_non_hole;
+  result.perf_hole = lhs.perf_hole - rhs.perf_hole;
+  result.perf_coarse_filtered = lhs.perf_coarse_filtered - rhs.perf_coarse_filtered;
+
   // CXL/DRAM split statistics
   result.total_miss_latency_cycles_dram = lhs.total_miss_latency_cycles_dram - rhs.total_miss_latency_cycles_dram;
   result.total_miss_latency_cycles_cxl = lhs.total_miss_latency_cycles_cxl - rhs.total_miss_latency_cycles_cxl;

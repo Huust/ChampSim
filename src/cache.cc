@@ -549,7 +549,21 @@ long CACHE::operate()
             // Determine page size and use appropriate translation
             auto ps = g_vmem->get_page_size(champsim::page_number{q_entry.v_address});
             q_entry.page_size = static_cast<uint8_t>(ps);
-            if (ps == PageSize::PAGE_2M) {
+            if (ps == PageSize::PAGE_PERF) {
+              // Perforated page: check if hole
+              uint64_t vpn_4k = champsim::page_number{q_entry.v_address}.to<uint64_t>();
+              if (!g_vmem->is_hole(vpn_4k)) {
+                // Non-hole: use 2MB base PPN + 21-bit splice
+                auto [ppage, penalty] = g_vmem->va_to_pa_2m(q_entry.cpu, champsim::page_number{q_entry.v_address});
+                champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+                champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+                q_entry.address = champsim::address{champsim::splice(champsim::address_slice{pn_2m, champsim::address{ppage}}, champsim::address_slice{off_2m, q_entry.v_address})};
+              } else {
+                // Hole: use 4KB allocation + 12-bit splice
+                auto [ppage, penalty] = g_vmem->va_to_pa(q_entry.cpu, champsim::page_number{q_entry.v_address});
+                q_entry.address = champsim::address{champsim::splice(ppage, champsim::page_offset{q_entry.v_address})};
+              }
+            } else if (ps == PageSize::PAGE_2M) {
               auto [ppage, penalty] = g_vmem->va_to_pa_2m(q_entry.cpu, champsim::page_number{q_entry.v_address});
               champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
               champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
@@ -739,8 +753,9 @@ void CACHE::finish_translation(const response_type& packet)
   auto matches_vpage = [page_num = champsim::page_number{packet.v_address}, pkt_page_size](const auto& entry) {
     if (entry.is_translated)
       return false;
-    if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_2M)) {
-      // For 2MB responses, match on 2MB-aligned VPN (mask lower 9 bits of 4KB VPN)
+    if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
+        || pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) {
+      // For 2MB/perforated responses, match on 2MB-aligned VPN (mask lower 9 bits of 4KB VPN)
       constexpr uint64_t mask_2m = ~uint64_t{(1ULL << 9) - 1};
       return (champsim::page_number{entry.v_address}.to<uint64_t>() & mask_2m) == (page_num.to<uint64_t>() & mask_2m);
     }
@@ -748,6 +763,47 @@ void CACHE::finish_translation(const response_type& packet)
   };
   auto mark_translated = [p_page = champsim::page_number{packet.data}, pkt_page_size, this](auto& entry) {
     [[maybe_unused]] auto old_address = entry.address;
+    if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) {
+      // Perforated page: 3-path resolution
+      uint64_t vpn_4k = champsim::page_number{entry.v_address}.to<uint64_t>();
+
+      if (!g_vmem->coarse_filter_pass(vpn_4k)) {
+        // FAST PATH: coarse filter rejects → not a hole, translate with 2MB PPN
+        champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+        champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+        entry.address = champsim::address{champsim::splice(champsim::address_slice{pn_2m, champsim::address{p_page}}, champsim::address_slice{off_2m, entry.v_address})};
+        entry.event_cycle += VirtualMemory::PERF_COARSE_FILTER_CYCLES * this->clock_period;
+        entry.is_translated = true;
+        if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_coarse_filtered++; }
+      } else {
+        bool hole = g_vmem->is_hole(vpn_4k);
+        if (!hole) {
+          // MEDIUM PATH: bitmap checked, not a hole
+          champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+          champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+          entry.address = champsim::address{champsim::splice(champsim::address_slice{pn_2m, champsim::address{p_page}}, champsim::address_slice{off_2m, entry.v_address})};
+          entry.event_cycle += (VirtualMemory::PERF_COARSE_FILTER_CYCLES + VirtualMemory::PERF_BITMAP_LATENCY_CYCLES) * this->clock_period;
+          entry.is_translated = true;
+          if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_non_hole++; }
+        } else {
+          // SLOW PATH: hole → re-route to 4KB TLB chain
+          entry.page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
+          entry.translate_issued = false;
+          entry.event_cycle += (VirtualMemory::PERF_BITMAP_LATENCY_CYCLES + VirtualMemory::PERF_HOLE_LATENCY_CYCLES) * this->clock_period;
+          // entry.is_translated stays false → re-enters translation pipeline as 4KB
+          if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_hole++; }
+        }
+      }
+
+      if constexpr (champsim::debug_print) {
+        fmt::print("[{}_TRANSLATE] finish_translation PERF old: {} paddr: {} vaddr: {} type: {} translated: {} cycle: {}\n",
+                   this->NAME, old_address, entry.address, entry.v_address,
+                   access_type_names.at(champsim::to_underlying(entry.type)), entry.is_translated,
+                   this->current_time.time_since_epoch() / this->clock_period);
+      }
+      return;
+    }
+
     if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_2M)) {
       // For 2MB pages, splice with 21-bit offset
       champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
@@ -802,9 +858,11 @@ void CACHE::issue_translation(tag_lookup_type& q_entry) const
     fwd_pkt.is_translated = true;
     fwd_pkt.page_size = q_entry.page_size;
 
-    // Route to 2MB TLB if page is 2MB and the 2MB TLB chain exists
+    // Route to 2MB TLB if page is 2MB or perforated, and the 2MB TLB chain exists
     champsim::channel* target_tlb = lower_translate;
-    if (q_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M) && lower_translate_2m != nullptr) {
+    if ((q_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M) ||
+         q_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) &&
+        lower_translate_2m != nullptr) {
       target_tlb = lower_translate_2m;
     }
 

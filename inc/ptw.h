@@ -61,7 +61,10 @@ class PageTableWalker : public champsim::operable
     uint32_t pf_metadata = 0;
     uint32_t cpu = std::numeric_limits<uint32_t>::max();
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
-    uint8_t page_size = 0; // 0=4K, 1=2M (matches PageSize enum)
+    uint8_t page_size = 0; // 0=4K, 1=2M, 2=PERF (matches PageSize enum)
+
+    enum class PerfState : uint8_t { NORMAL = 0, BITMAP_PENDING = 1 };
+    PerfState perf_state = PerfState::NORMAL;
 
     std::size_t translation_level = 0;
 

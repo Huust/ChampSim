@@ -17,6 +17,7 @@
 #ifndef VMEM_H
 #define VMEM_H
 
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -29,7 +30,7 @@
 #include "champsim.h"
 #include "chrono.h"
 
-enum class PageSize : uint8_t { PAGE_4K = 0, PAGE_2M = 1 };
+enum class PageSize : uint8_t { PAGE_4K = 0, PAGE_2M = 1, PAGE_PERF = 2 };
 constexpr unsigned LOG2_PAGE_SIZE_4K = 12;
 constexpr unsigned LOG2_PAGE_SIZE_2M = 21;
 
@@ -62,6 +63,10 @@ private:
 
   // Multi-page-size support: pmap (4KB-VPN -> PageSize)
   std::unordered_map<uint64_t, PageSize> pmap; // key is 4KB-granularity VPN
+
+  // Perforated page support: hole bitmaps and coarse filters
+  std::unordered_map<uint64_t, std::array<uint64_t, 8>> hole_bitmaps; // 2MB-base VPN → 512-bit bitmap
+  std::unordered_map<uint64_t, uint8_t> coarse_filters;               // 2MB-base VPN → 8-bit filter
 
 private:
   // Helper function to get device index for array access
@@ -152,6 +157,15 @@ public:
    * For 2MB pages, use the base 4KB-VPN (2MB-aligned, lower 9 bits of VPN = 0).
    */
   void load_pmap(const std::string& path);
+
+  // Perforated page support
+  static constexpr unsigned PERF_COARSE_FILTER_CYCLES = 1;
+  static constexpr unsigned PERF_BITMAP_LATENCY_CYCLES = 10;
+  static constexpr unsigned PERF_HOLE_LATENCY_CYCLES = 10;
+
+  [[nodiscard]] bool is_hole(uint64_t vpn_4k) const;
+  [[nodiscard]] bool coarse_filter_pass(uint64_t vpn_4k) const;
+  void generate_perforated_pages(double frag_ratio, const std::string& distribution);
 
   /**
    * Get the page size for the given virtual page number (4KB granularity).

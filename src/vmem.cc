@@ -216,6 +216,29 @@ void VirtualMemory::ppage_pop_2m(const Device& dev)
   }
 }
 
+bool VirtualMemory::coarse_filter_pass(uint64_t vpn_4k) const
+{
+  uint64_t base_2m = (vpn_4k >> 9) << 9;
+  auto it = coarse_filters.find(base_2m);
+  if (it == coarse_filters.end())
+    return false;
+  uint64_t sub_idx = vpn_4k & 0x1FF;
+  unsigned region = sub_idx / 64;
+  return (it->second >> region) & 1;
+}
+
+bool VirtualMemory::is_hole(uint64_t vpn_4k) const
+{
+  uint64_t base_2m = (vpn_4k >> 9) << 9;
+  auto it = hole_bitmaps.find(base_2m);
+  if (it == hole_bitmaps.end())
+    return false;
+  uint64_t sub_idx = vpn_4k & 0x1FF;
+  unsigned word = sub_idx / 64;
+  unsigned bit = sub_idx % 64;
+  return (it->second[word] >> bit) & 1;
+}
+
 void VirtualMemory::load_pmap(const std::string& path)
 {
   std::ifstream infile(path);
@@ -225,8 +248,10 @@ void VirtualMemory::load_pmap(const std::string& path)
   }
 
   pmap.clear();
+  hole_bitmaps.clear();
+  coarse_filters.clear();
   std::string line;
-  uint64_t count_4k = 0, count_2m = 0;
+  uint64_t count_4k = 0, count_2m = 0, count_perf = 0;
 
   while (std::getline(infile, line)) {
     // Skip comments and empty lines
@@ -239,14 +264,47 @@ void VirtualMemory::load_pmap(const std::string& path)
 
     try {
       uint64_t vpn = std::stoull(line.substr(0, comma_pos), nullptr, 16);
-      int ps = std::stoi(line.substr(comma_pos + 1));
-      PageSize page_size = (ps == 1) ? PageSize::PAGE_2M : PageSize::PAGE_4K;
-      pmap[vpn] = page_size;
+      auto rest = line.substr(comma_pos + 1);
 
-      if (page_size == PageSize::PAGE_2M)
-        ++count_2m;
-      else
-        ++count_4k;
+      // Check for second comma (bitmap field)
+      auto comma2 = rest.find(',');
+      int ps = std::stoi(rest.substr(0, comma2));
+
+      if (ps == 2 && comma2 != std::string::npos) {
+        // Perforated page with bitmap: vpn,2,bitmap_hex (128 hex chars = 512 bits)
+        auto bitmap_hex = rest.substr(comma2 + 1);
+        pmap[vpn] = PageSize::PAGE_PERF;
+
+        // Parse 128-char hex string into 8 uint64_t words
+        std::array<uint64_t, 8> bitmap{};
+        for (int w = 0; w < 8 && w * 16 < static_cast<int>(bitmap_hex.size()); ++w) {
+          auto chunk = bitmap_hex.substr(w * 16, 16);
+          bitmap[w] = std::stoull(chunk, nullptr, 16);
+        }
+        hole_bitmaps[vpn] = bitmap;
+
+        // Compute coarse filter: 1 bit per 64-sub-page region
+        uint8_t cf = 0;
+        for (int r = 0; r < 8; ++r) {
+          if (bitmap[r] != 0)
+            cf |= (1u << r);
+        }
+        coarse_filters[vpn] = cf;
+        ++count_perf;
+      } else if (ps == 2) {
+        // page_size=2 without bitmap → treat as perforated with no holes (same as 2MB)
+        pmap[vpn] = PageSize::PAGE_PERF;
+        hole_bitmaps[vpn] = {};
+        coarse_filters[vpn] = 0;
+        ++count_perf;
+      } else {
+        PageSize page_size = (ps == 1) ? PageSize::PAGE_2M : PageSize::PAGE_4K;
+        pmap[vpn] = page_size;
+        if (page_size == PageSize::PAGE_2M)
+          ++count_2m;
+        else
+          ++count_4k;
+      }
     } catch (const std::exception& e) {
       fmt::print("[VMEM] WARNING: Failed to parse pmap line: {}\n", line);
       continue;
@@ -254,7 +312,7 @@ void VirtualMemory::load_pmap(const std::string& path)
   }
 
   infile.close();
-  fmt::print("[VMEM] Loaded pmap from {}: {} entries (4K: {}, 2M: {})\n", path, pmap.size(), count_4k, count_2m);
+  fmt::print("[VMEM] Loaded pmap from {}: {} entries (4K: {}, 2M: {}, PERF: {})\n", path, pmap.size(), count_4k, count_2m, count_perf);
 }
 
 PageSize VirtualMemory::get_page_size(champsim::page_number vpn_4k) const
@@ -269,11 +327,11 @@ PageSize VirtualMemory::get_page_size(champsim::page_number vpn_4k) const
   if (it != pmap.end())
     return it->second;
 
-  // Check if this VPN falls within a 2MB page (look up the 2MB-aligned base VPN)
+  // Check if this VPN falls within a 2MB or perforated page
   uint64_t base_2m = (vpn >> 9) << 9;
   it = pmap.find(base_2m);
-  if (it != pmap.end() && it->second == PageSize::PAGE_2M)
-    return PageSize::PAGE_2M;
+  if (it != pmap.end() && (it->second == PageSize::PAGE_2M || it->second == PageSize::PAGE_PERF))
+    return it->second;
 
   return PageSize::PAGE_4K;
 }
@@ -457,6 +515,75 @@ void VirtualMemory::save_allocation_tracking()
   fmt::print("  CXL allocations:  {} ({:.2f}%)\n", cxl_count,
              100.0 * cxl_count / allocation_map.size());
   fmt::print("  Saved to: {}\n", allocation_file);
+}
+
+void VirtualMemory::generate_perforated_pages(double frag_ratio, const std::string& distribution)
+{
+  if (pmap.empty()) {
+    fmt::print("[VMEM] WARNING: No pmap loaded, cannot generate perforated pages\n");
+    return;
+  }
+
+  uint64_t converted = 0;
+  std::mt19937_64 rng(42); // deterministic seed
+  std::uniform_real_distribution<double> dist(0.0, 1.0);
+
+  // Collect all 2MB entries to convert
+  std::vector<uint64_t> pages_2m;
+  for (auto& [vpn, ps] : pmap) {
+    if (ps == PageSize::PAGE_2M)
+      pages_2m.push_back(vpn);
+  }
+
+  for (auto vpn : pages_2m) {
+    pmap[vpn] = PageSize::PAGE_PERF;
+    std::array<uint64_t, 8> bitmap{};
+    int num_holes = static_cast<int>(512 * frag_ratio);
+
+    if (distribution == "random") {
+      for (int s = 0; s < 512; ++s) {
+        if (dist(rng) < frag_ratio) {
+          unsigned w = s / 64;
+          unsigned b = s % 64;
+          bitmap[w] |= (1ULL << b);
+        }
+      }
+    } else if (distribution == "dispersed") {
+      if (num_holes > 0) {
+        int stride = 512 / num_holes;
+        if (stride < 1) stride = 1;
+        for (int s = 0, count = 0; s < 512 && count < num_holes; s += stride, ++count) {
+          unsigned w = s / 64;
+          unsigned b = s % 64;
+          bitmap[w] |= (1ULL << b);
+        }
+      }
+    } else { // clustered (default)
+      // Place holes in contiguous runs within each 64-sub-page region
+      int holes_per_region = num_holes / 8;
+      int extra = num_holes % 8;
+      for (int r = 0; r < 8; ++r) {
+        int region_holes = holes_per_region + (r < extra ? 1 : 0);
+        for (int b = 0; b < region_holes && b < 64; ++b) {
+          bitmap[r] |= (1ULL << b);
+        }
+      }
+    }
+
+    hole_bitmaps[vpn] = bitmap;
+
+    // Compute coarse filter
+    uint8_t cf = 0;
+    for (int r = 0; r < 8; ++r) {
+      if (bitmap[r] != 0)
+        cf |= (1u << r);
+    }
+    coarse_filters[vpn] = cf;
+    ++converted;
+  }
+
+  fmt::print("[VMEM] Generated perforated pages: {} pages converted, frag_ratio: {}, distribution: {}\n",
+             converted, frag_ratio, distribution);
 }
 
 void VirtualMemory::load_allocation_mapping(const std::string& input_file)

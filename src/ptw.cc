@@ -90,12 +90,18 @@ auto PageTableWalker::handle_fill(const mshr_type& fill_mshr) -> std::optional<m
                current_time.time_since_epoch() / clock_period);
   }
 
-  const auto pscl_idx = std::size(pscl) - fill_mshr.translation_level;
-  pscl.at(pscl_idx).fill({fill_mshr.v_address, *fill_mshr.data, fill_mshr.translation_level - 1});
-
   mshr_type fwd_mshr = fill_mshr;
   fwd_mshr.address = *fill_mshr.data;
-  fwd_mshr.translation_level = fill_mshr.translation_level - 1;
+
+  if (fill_mshr.perf_state == mshr_type::PerfState::BITMAP_PENDING) {
+    // Bitmap step response — skip PSCL update, keep translation_level
+    fwd_mshr.translation_level = fill_mshr.translation_level;
+    fwd_mshr.perf_state = fill_mshr.perf_state;
+  } else {
+    const auto pscl_idx = std::size(pscl) - fill_mshr.translation_level;
+    pscl.at(pscl_idx).fill({fill_mshr.v_address, *fill_mshr.data, fill_mshr.translation_level - 1});
+    fwd_mshr.translation_level = fill_mshr.translation_level - 1;
+  }
 
   return step_translation(fwd_mshr);
 }
@@ -184,6 +190,24 @@ long PageTableWalker::operate()
 void PageTableWalker::finish_packet(const response_type& packet)
 {
   auto finish_step = [this](auto mshr_entry) {
+    // For perforated pages at level 1 (normal state), issue bitmap read instead of next PTE level
+    if (mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
+        && mshr_entry.perf_state == mshr_type::PerfState::NORMAL
+        && mshr_entry.translation_level <= 1) {
+      mshr_entry.perf_state = mshr_type::PerfState::BITMAP_PENDING;
+      // Issue memory read for bitmap (model as access adjacent to PDE)
+      auto [bitmap_addr, penalty] = this->vmem->get_pte_pa(
+          mshr_entry.cpu, champsim::page_number{mshr_entry.v_address}, 0);
+
+      if constexpr (champsim::debug_print) {
+        fmt::print("[{}] finish_packet PERF bitmap_read address: {} v_address: {} bitmap_addr: {} translation_level: {} cycle: {}\n",
+                   NAME, mshr_entry.address, mshr_entry.v_address, bitmap_addr, mshr_entry.translation_level,
+                   this->current_time.time_since_epoch() / this->clock_period);
+      }
+
+      return champsim::waitable{bitmap_addr, this->current_time + penalty + (this->warmup ? champsim::chrono::clock::duration{} : HIT_LATENCY)};
+    }
+
     auto [ppage, penalty] = this->vmem->get_pte_pa(mshr_entry.cpu, champsim::page_number{mshr_entry.v_address}, mshr_entry.translation_level);
 
     if constexpr (champsim::debug_print) {
@@ -196,10 +220,11 @@ void PageTableWalker::finish_packet(const response_type& packet)
   };
 
   auto finish_last_step = [this](auto mshr_entry) {
-    // For 2MB pages, use va_to_pa_2m; for 4KB pages, use va_to_pa
     champsim::page_number ppage;
     champsim::chrono::clock::duration penalty;
-    if (mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)) {
+    if (mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
+        || mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) {
+      // Both 2MB and perforated pages use va_to_pa_2m (return 2MB base PPN)
       std::tie(ppage, penalty) = this->vmem->va_to_pa_2m(mshr_entry.cpu, champsim::page_number{mshr_entry.v_address});
     } else {
       std::tie(ppage, penalty) = this->vmem->va_to_pa(mshr_entry.cpu, champsim::page_number{mshr_entry.v_address});
@@ -218,9 +243,15 @@ void PageTableWalker::finish_packet(const response_type& packet)
     return champsim::block_number{x.address} == block;
   };
   // For 2MB pages, stop one level earlier (skip level 1 PTE walk)
+  // For perforated pages, only done after bitmap step completes
   auto is_last_step = [](auto x) {
     if (x.page_size == static_cast<uint8_t>(PageSize::PAGE_2M))
       return x.translation_level <= 1; // 2MB: stop after level 2
+    if (x.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) {
+      if (x.perf_state == mshr_type::PerfState::NORMAL)
+        return false; // level 1 reached but NOT done — need bitmap step
+      return true;    // BITMAP_PENDING → bitmap response arrived → done
+    }
     return x.translation_level <= 0;   // 4KB: stop after level 1
   };
   auto last_finished = std::partition(std::begin(MSHR), std::end(MSHR), matches_addr);
