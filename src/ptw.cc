@@ -101,6 +101,15 @@ auto PageTableWalker::handle_fill(const mshr_type& fill_mshr) -> std::optional<m
     const auto pscl_idx = std::size(pscl) - fill_mshr.translation_level;
     pscl.at(pscl_idx).fill({fill_mshr.v_address, *fill_mshr.data, fill_mshr.translation_level - 1});
     fwd_mshr.translation_level = fill_mshr.translation_level - 1;
+
+    // Perforated pages: transition to BITMAP_PENDING when level 1 walk completes.
+    // finish_step() in finish_packet() modifies perf_state on a copy, so we must
+    // set it here on the actual fwd_mshr that gets re-inserted into MSHR.
+    if (fill_mshr.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
+        && fill_mshr.perf_state == mshr_type::PerfState::NORMAL
+        && fwd_mshr.translation_level <= 0) {
+      fwd_mshr.perf_state = mshr_type::PerfState::BITMAP_PENDING;
+    }
   }
 
   return step_translation(fwd_mshr);

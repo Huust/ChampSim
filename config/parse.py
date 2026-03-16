@@ -122,7 +122,7 @@ def int_or_prefixed_size(val):
 
 def core_default_names(cpu):
     """ Apply defaults to a cpu with the given index """
-    default_element_names = {n: f'{cpu["name"]}_{n}' for n in ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB', 'PTW', 'ITLB_2M', 'DTLB_2M', 'STLB_2M')}
+    default_element_names = {n: f'{cpu["name"]}_{n}' for n in ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB', 'PTW', 'ITLB_2M', 'DTLB_2M')}
     default_core = {
         'frequency' : 4000,
         'DIB': {},
@@ -414,8 +414,9 @@ class NormalizedConfiguration:
             } for k,cache in caches.items() if 'prefetch_activate' in cache),
 
             # TLBs use page offsets, Caches use block offsets
+            # 4KB path first: unified STLB keeps offset=12 (earlier has priority in combine_named)
             ({'name': c['name'], '_offset_bits': f'champsim::lg2({root_config["page_size"]})'} for c in tlb_4k_path),
-            ({'name': c['name'], '_offset_bits': '21'} for c in tlb_2m_path),  # 2MB TLBs use 21-bit offset
+            ({'name': c['name'], '_offset_bits': '21'} for c in tlb_2m_path),
             ({'name': c['name'], '_offset_bits': f'champsim::lg2({root_config["block_size"]})'} for c in data_path),
 
             # Unfold suffixed strings

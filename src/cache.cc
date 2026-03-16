@@ -345,6 +345,7 @@ auto CACHE::mshr_and_forward_packet(const tag_lookup_type& handle_pkt) -> std::p
 
   fwd_pkt.instr_depend_on_me = handle_pkt.instr_depend_on_me;
   fwd_pkt.response_requested = (!handle_pkt.prefetch_from_this || !handle_pkt.skip_fill);
+  fwd_pkt.page_size = handle_pkt.page_size;
 
   return std::pair{std::move(to_allocate), std::move(fwd_pkt)};
 }
