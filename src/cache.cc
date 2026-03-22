@@ -103,12 +103,12 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
 CACHE::tag_lookup_type::tag_lookup_type(const request_type& req, bool local_pref, bool skip)
     : address(req.address), v_address(req.v_address), data(req.data), ip(req.ip), instr_id(req.instr_id), pf_metadata(req.pf_metadata), cpu(req.cpu),
       type(req.type), prefetch_from_this(local_pref), skip_fill(skip), is_translated(req.is_translated), page_size(req.page_size),
-      instr_depend_on_me(req.instr_depend_on_me)
+      entry_type(req.entry_type), instr_depend_on_me(req.instr_depend_on_me)
 {
 }
 
 CACHE::mshr_type::mshr_type(const tag_lookup_type& req, champsim::chrono::clock::time_point _time_enqueued)
-    : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), page_size(req.page_size), cpu(req.cpu), type(req.type),
+    : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), page_size(req.page_size), entry_type(req.entry_type), cpu(req.cpu), type(req.type),
       prefetch_from_this(req.prefetch_from_this), time_enqueued(_time_enqueued), instr_depend_on_me(req.instr_depend_on_me), to_return(req.to_return)
 {
   // Set is_cxl_memory flag based on heatmap (if hotness allocation is enabled)
@@ -164,14 +164,15 @@ auto CACHE::fill_block(mshr_type mshr, uint32_t metadata) -> BLOCK
   to_fill.data = mshr.data_promise->data;
   to_fill.pf_metadata = metadata;
   to_fill.page_size = mshr.page_size;
+  to_fill.entry_type = mshr.entry_type;
 
   return to_fill;
 }
 
-auto CACHE::matches_address(champsim::address addr) const
+auto CACHE::matches_address(champsim::address addr, uint8_t etype) const
 {
-  return [match = addr.slice_upper(OFFSET_BITS), shamt = OFFSET_BITS](const auto& entry) {
-    return entry.address.slice_upper(shamt) == match;
+  return [match = addr.slice_upper(OFFSET_BITS), shamt = OFFSET_BITS, etype](const auto& entry) {
+    return entry.address.slice_upper(shamt) == match && entry.entry_type == etype;
   };
 }
 
@@ -264,7 +265,7 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   }
   sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
 
-  response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me, fill_mshr.page_size};
+  response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me, fill_mshr.page_size, fill_mshr.entry_type};
   response.is_llc_miss = fill_mshr.is_llc_miss;
   response.is_cxl_memory = fill_mshr.is_cxl_memory;
   for (auto* ret : fill_mshr.to_return) {
@@ -280,7 +281,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   // access cache
   auto [set_begin, set_end] = get_set_span(handle_pkt.address);
-  auto way = std::find_if(set_begin, set_end, [matcher = matches_address(handle_pkt.address)](const auto& x) { return x.valid && matcher(x); });
+  auto way = std::find_if(set_begin, set_end, [matcher = matches_address(handle_pkt.address, handle_pkt.entry_type)](const auto& x) { return x.valid && matcher(x); });
   const auto hit = (way != set_end);
   const auto useful_prefetch = (hit && way->prefetch && !handle_pkt.prefetch_from_this);
 
@@ -308,7 +309,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
-    response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me, handle_pkt.page_size};
+    response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me, handle_pkt.page_size, handle_pkt.entry_type};
     for (auto* ret : handle_pkt.to_return) {
       ret->push_back(response);
     }
@@ -346,6 +347,7 @@ auto CACHE::mshr_and_forward_packet(const tag_lookup_type& handle_pkt) -> std::p
   fwd_pkt.instr_depend_on_me = handle_pkt.instr_depend_on_me;
   fwd_pkt.response_requested = (!handle_pkt.prefetch_from_this || !handle_pkt.skip_fill);
   fwd_pkt.page_size = handle_pkt.page_size;
+  fwd_pkt.entry_type = handle_pkt.entry_type;
 
   return std::pair{std::move(to_allocate), std::move(fwd_pkt)};
 }
@@ -365,7 +367,7 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
   auto mshr_pkt = mshr_and_forward_packet(handle_pkt);
 
   // check mshr
-  auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(handle_pkt.address));
+  auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(handle_pkt.address, handle_pkt.entry_type));
   bool mshr_full = (MSHR.size() == MSHR_SIZE);
 
   if (mshr_entry != MSHR.end()) // miss already inflight
@@ -723,12 +725,12 @@ bool CACHE::prefetch_line(uint64_t /*deprecated*/, uint64_t /*deprecated*/, uint
 void CACHE::finish_packet(const response_type& packet)
 {
   // check MSHR information
-  auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(packet.address));
+  auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(packet.address, packet.entry_type));
   auto first_unreturned = std::find_if(MSHR.begin(), MSHR.end(), [](auto x) { return x.data_promise.has_unknown_readiness(); });
 
   // sanity check
   if (mshr_entry == MSHR.end()) {
-    fmt::print(stderr, "[{}_MSHR] {} cannot find a matching entry! address: {} v_address: {}\n", NAME, __func__, packet.address, packet.v_address);
+    fmt::print(stderr, "[{}_MSHR] {} cannot find a matching entry! address: {} v_address: {} entry_type: {}\n", NAME, __func__, packet.address, packet.v_address, packet.entry_type);
     assert(0);
   }
 
@@ -751,12 +753,65 @@ void CACHE::finish_packet(const response_type& packet)
 void CACHE::finish_translation(const response_type& packet)
 {
   auto pkt_page_size = packet.page_size;
+  auto pkt_entry_type = packet.entry_type;
+
+  // ── Handle bitmap response (step 2 of perforated page two-step translation) ──
+  if (pkt_entry_type == 1) {
+    // Bitmap STLB response: resolve entries that have bitmap_check_pending
+    constexpr uint64_t mask_2m = ~uint64_t{(1ULL << 9) - 1};
+    uint64_t pkt_2m_base = champsim::page_number{packet.v_address}.to<uint64_t>() & mask_2m;
+
+    auto resolve_bitmap = [pkt_2m_base, this](auto& entry) {
+      if (!entry.bitmap_check_pending || entry.is_translated)
+        return;
+      uint64_t entry_2m_base = champsim::page_number{entry.v_address}.to<uint64_t>() & mask_2m;
+      if (entry_2m_base != pkt_2m_base)
+        return;
+
+      uint64_t vpn_4k = champsim::page_number{entry.v_address}.to<uint64_t>();
+      bool hole = g_vmem->is_hole(vpn_4k);
+
+      if (!hole) {
+        // Non-hole: translate with saved 2MB PPN
+        champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+        champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+        entry.address = champsim::address{champsim::splice(
+            champsim::address_slice{pn_2m, champsim::address{entry.saved_2m_ppage}},
+            champsim::address_slice{off_2m, entry.v_address})};
+        entry.is_translated = true;
+        entry.bitmap_check_pending = false;
+        if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_non_hole++; }
+      } else {
+        // Hole → trigger real 4KB PTW walk (not direct va_to_pa)
+        // Change page_size to 4KB and re-enter translation pipeline via DTLB (4KB chain)
+        entry.page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
+        entry.page_size_determined = true; // prevent re-query of pmap
+        entry.entry_type = 0; // back to normal TLB request
+        entry.translate_issued = false;
+        entry.bitmap_check_pending = false;
+        if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_hole++; }
+      }
+
+      if constexpr (champsim::debug_print) {
+        fmt::print("[{}_TRANSLATE] finish_translation BITMAP vpn={:#x} hole={} translated={} cycle: {}\n",
+                   this->NAME, vpn_4k, hole, entry.is_translated,
+                   this->current_time.time_since_epoch() / this->clock_period);
+      }
+    };
+
+    for (auto& entry : inflight_tag_check)
+      resolve_bitmap(entry);
+    for (auto& entry : translation_stash)
+      resolve_bitmap(entry);
+    return;
+  }
+
+  // ── Normal translation response (4KB, 2MB, or first step of PERF) ──
   auto matches_vpage = [page_num = champsim::page_number{packet.v_address}, pkt_page_size](const auto& entry) {
-    if (entry.is_translated)
+    if (entry.is_translated || entry.bitmap_check_pending)
       return false;
     if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
         || pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) {
-      // For 2MB/perforated responses, match on 2MB-aligned VPN (mask lower 9 bits of 4KB VPN)
       constexpr uint64_t mask_2m = ~uint64_t{(1ULL << 9) - 1};
       return (champsim::page_number{entry.v_address}.to<uint64_t>() & mask_2m) == (page_num.to<uint64_t>() & mask_2m);
     }
@@ -764,61 +819,53 @@ void CACHE::finish_translation(const response_type& packet)
   };
   auto mark_translated = [p_page = champsim::page_number{packet.data}, pkt_page_size, this](auto& entry) {
     [[maybe_unused]] auto old_address = entry.address;
+
     if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) {
-      // Perforated page: 3-path resolution
+      // Perforated page: oracle routing already sent holes to 4KB chain,
+      // so entries reaching here are non-holes. Use 2MB PPN directly.
       uint64_t vpn_4k = champsim::page_number{entry.v_address}.to<uint64_t>();
 
       if (!g_vmem->coarse_filter_pass(vpn_4k)) {
         // FAST PATH: coarse filter rejects → not a hole, translate with 2MB PPN
-        champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
-        champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
-        entry.address = champsim::address{champsim::splice(champsim::address_slice{pn_2m, champsim::address{p_page}}, champsim::address_slice{off_2m, entry.v_address})};
         entry.event_cycle += VirtualMemory::PERF_COARSE_FILTER_CYCLES * this->clock_period;
-        entry.is_translated = true;
-        if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_coarse_filtered++; }
       } else {
-        bool hole = g_vmem->is_hole(vpn_4k);
-        if (!hole) {
-          // MEDIUM PATH: bitmap checked, not a hole
-          champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
-          champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
-          entry.address = champsim::address{champsim::splice(champsim::address_slice{pn_2m, champsim::address{p_page}}, champsim::address_slice{off_2m, entry.v_address})};
-          entry.event_cycle += (VirtualMemory::PERF_COARSE_FILTER_CYCLES + VirtualMemory::PERF_BITMAP_LATENCY_CYCLES) * this->clock_period;
-          entry.is_translated = true;
-          if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_non_hole++; }
-        } else {
-          // SLOW PATH: hole → re-route to 4KB TLB chain
-          entry.page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
-          entry.page_size_determined = true; // prevent pmap re-query from overriding back to PERF
-          entry.translate_issued = false;
-          entry.event_cycle += (VirtualMemory::PERF_BITMAP_LATENCY_CYCLES + VirtualMemory::PERF_HOLE_LATENCY_CYCLES) * this->clock_period;
-          // entry.is_translated stays false → re-enters translation pipeline as 4KB
-          if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_hole++; }
-        }
+        // Coarse filter passes but oracle didn't route as hole → bitmap confirms non-hole
+        // Apply bitmap check latency (models STLB bitmap access)
+        entry.event_cycle += (VirtualMemory::PERF_COARSE_FILTER_CYCLES + VirtualMemory::PERF_BITMAP_LATENCY_CYCLES) * this->clock_period;
+        if (!this->warmup) { this->sim_stats.perf_non_hole++; }
       }
 
+      champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+      champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+      entry.address = champsim::address{champsim::splice(
+          champsim::address_slice{pn_2m, champsim::address{p_page}},
+          champsim::address_slice{off_2m, entry.v_address})};
+      entry.is_translated = true;
+      if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_coarse_filtered++; }
+
       if constexpr (champsim::debug_print) {
-        fmt::print("[{}_TRANSLATE] finish_translation PERF old: {} paddr: {} vaddr: {} type: {} translated: {} cycle: {}\n",
-                   this->NAME, old_address, entry.address, entry.v_address,
-                   access_type_names.at(champsim::to_underlying(entry.type)), entry.is_translated,
-                   this->current_time.time_since_epoch() / this->clock_period);
+        fmt::print("[{}_TRANSLATE] finish_translation PERF vpn={:#x} cycle: {}\n",
+                   this->NAME, vpn_4k, this->current_time.time_since_epoch() / this->clock_period);
       }
       return;
     }
 
     if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_2M)) {
-      // For 2MB pages, splice with 21-bit offset
       champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
       champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
-      entry.address = champsim::address{champsim::splice(champsim::address_slice{pn_2m, champsim::address{p_page}}, champsim::address_slice{off_2m, entry.v_address})};
+      entry.address = champsim::address{champsim::splice(
+          champsim::address_slice{pn_2m, champsim::address{p_page}},
+          champsim::address_slice{off_2m, entry.v_address})};
     } else {
-      entry.address = champsim::address{champsim::splice(p_page, champsim::page_offset{entry.v_address})}; // translated address
+      entry.address = champsim::address{champsim::splice(p_page, champsim::page_offset{entry.v_address})};
     }
     entry.is_translated = true;
 
     if constexpr (champsim::debug_print) {
-      fmt::print("[{}_TRANSLATE] finish_translation old: {} paddr: {} vaddr: {} type: {} page_size: {} cycle: {}\n", this->NAME, old_address, entry.address, entry.v_address,
-                 access_type_names.at(champsim::to_underlying(entry.type)), pkt_page_size, this->current_time.time_since_epoch() / this->clock_period);
+      fmt::print("[{}_TRANSLATE] finish_translation old: {} paddr: {} vaddr: {} type: {} page_size: {} cycle: {}\n",
+                 this->NAME, old_address, entry.address, entry.v_address,
+                 access_type_names.at(champsim::to_underlying(entry.type)), pkt_page_size,
+                 this->current_time.time_since_epoch() / this->clock_period);
     }
   };
 
@@ -841,7 +888,16 @@ void CACHE::issue_translation(tag_lookup_type& q_entry) const
     // Determine page size for this request if pmap is available and not already resolved
     if (g_vmem && !q_entry.page_size_determined) {
       auto ps = g_vmem->get_page_size(champsim::page_number{q_entry.v_address});
-      q_entry.page_size = static_cast<uint8_t>(ps);
+      if (ps == PageSize::PAGE_PERF) {
+        // Oracle hole check: hole sub-pages route to 4KB TLB directly
+        uint64_t vpn = champsim::page_number{q_entry.v_address}.to<uint64_t>();
+        bool hole = g_vmem->is_hole(vpn);
+        q_entry.page_size = hole
+            ? static_cast<uint8_t>(PageSize::PAGE_4K)
+            : static_cast<uint8_t>(PageSize::PAGE_PERF);
+      } else {
+        q_entry.page_size = static_cast<uint8_t>(ps);
+      }
       q_entry.page_size_determined = true;
     }
 
@@ -851,7 +907,6 @@ void CACHE::issue_translation(tag_lookup_type& q_entry) const
     fwd_pkt.type = access_type::LOAD;
     fwd_pkt.cpu = q_entry.cpu;
 
-    fwd_pkt.address = q_entry.address;
     fwd_pkt.v_address = q_entry.v_address;
     fwd_pkt.data = q_entry.data;
     fwd_pkt.instr_id = q_entry.instr_id;
@@ -860,20 +915,40 @@ void CACHE::issue_translation(tag_lookup_type& q_entry) const
     fwd_pkt.instr_depend_on_me = q_entry.instr_depend_on_me;
     fwd_pkt.is_translated = true;
     fwd_pkt.page_size = q_entry.page_size;
+    fwd_pkt.entry_type = q_entry.entry_type;
 
-    // Route to 2MB TLB if page is 2MB or perforated, and the 2MB TLB chain exists
-    champsim::channel* target_tlb = lower_translate;
-    if ((q_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M) ||
-         q_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) &&
-        lower_translate_2m != nullptr) {
-      target_tlb = lower_translate_2m;
+    if (q_entry.bitmap_check_pending) {
+      // Bitmap lookup: use 2MB-base VPN as address, entry_type=1
+      // This goes through DTLB_2M → STLB. STLB stores bitmap entries with entry_type=1.
+      uint64_t vpn_4k = champsim::page_number{q_entry.v_address}.to<uint64_t>();
+      uint64_t base_2m = (vpn_4k >> 9) << 9;
+      fwd_pkt.address = champsim::address{champsim::page_number{base_2m}};
+      fwd_pkt.entry_type = 1;
+      fwd_pkt.page_size = static_cast<uint8_t>(PageSize::PAGE_PERF);
+
+      // Route bitmap requests through 2MB TLB chain
+      champsim::channel* target_tlb = (lower_translate_2m != nullptr) ? lower_translate_2m : lower_translate;
+      q_entry.translate_issued = target_tlb->add_rq(fwd_pkt);
+    } else {
+      fwd_pkt.address = q_entry.address;
+
+      // Route to 2MB TLB if page is 2MB or perforated, and the 2MB TLB chain exists
+      champsim::channel* target_tlb = lower_translate;
+      if ((q_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M) ||
+           q_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) &&
+          lower_translate_2m != nullptr) {
+        target_tlb = lower_translate_2m;
+      }
+
+      q_entry.translate_issued = target_tlb->add_rq(fwd_pkt);
     }
 
-    q_entry.translate_issued = target_tlb->add_rq(fwd_pkt);
     if constexpr (champsim::debug_print) {
       if (q_entry.translate_issued) {
-        fmt::print("[TRANSLATE] do_issue_translation instr_id: {} paddr: {} vaddr: {} type: {} page_size: {}\n", q_entry.instr_id, q_entry.address, q_entry.v_address,
-                   access_type_names.at(champsim::to_underlying(q_entry.type)), q_entry.page_size);
+        fmt::print("[TRANSLATE] do_issue_translation instr_id: {} paddr: {} vaddr: {} type: {} page_size: {} entry_type: {} bitmap_pending: {}\n",
+                   q_entry.instr_id, q_entry.address, q_entry.v_address,
+                   access_type_names.at(champsim::to_underlying(q_entry.type)),
+                   q_entry.page_size, q_entry.entry_type, q_entry.bitmap_check_pending);
       }
     }
   }
@@ -1081,6 +1156,8 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.perf_coarse_filtered = sim_stats.perf_coarse_filtered;
   roi_stats.perf_non_hole = sim_stats.perf_non_hole;
   roi_stats.perf_hole = sim_stats.perf_hole;
+  roi_stats.perf_bitmap_stlb_hit = sim_stats.perf_bitmap_stlb_hit;
+  roi_stats.perf_bitmap_stlb_miss = sim_stats.perf_bitmap_stlb_miss;
 
   for (auto* ul : upper_levels) {
     ul->roi_stats.RQ_ACCESS = ul->sim_stats.RQ_ACCESS;

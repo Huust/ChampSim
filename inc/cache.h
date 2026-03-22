@@ -77,6 +77,9 @@ private:
 
     uint8_t page_size = 0; // 0=4K, 1=2M, 2=PERF (matches PageSize enum)
     bool page_size_determined = false; // true once pmap has been consulted or page_size explicitly set
+    uint8_t entry_type = 0; // 0=TLB translation, 1=bitmap entry
+    bool bitmap_check_pending = false; // waiting for bitmap STLB access (perforated page two-step)
+    champsim::page_number saved_2m_ppage{}; // saved 2MB PPN from first PERF translation step
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
 
     champsim::chrono::clock::time_point event_cycle = champsim::chrono::clock::time_point::max();
@@ -99,6 +102,7 @@ public:
     bool is_cxl_memory = false; // if this mshr entry was served by CXL memory (vs DRAM)
                                 // this flag can only be set when a response is returned
     uint8_t page_size = 0; // 0=4K, 1=2M (matches PageSize enum)
+    uint8_t entry_type = 0; // 0=TLB translation, 1=bitmap entry
 
     struct returned_value {
       champsim::address data;
@@ -151,7 +155,7 @@ private:
   template <typename T>
   champsim::address module_address(const T& element) const;
 
-  auto matches_address(champsim::address address) const;
+  auto matches_address(champsim::address address, uint8_t entry_type = 0) const;
   std::pair<mshr_type, request_type> mshr_and_forward_packet(const tag_lookup_type& handle_pkt);
 
   std::deque<tag_lookup_type> internal_PQ{};

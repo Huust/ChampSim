@@ -31,6 +31,8 @@ struct cache_stats {
   uint64_t perf_non_hole = 0;
   uint64_t perf_hole = 0;
   uint64_t perf_coarse_filtered = 0;
+  uint64_t perf_bitmap_stlb_hit = 0;
+  uint64_t perf_bitmap_stlb_miss = 0;
 
   // CXL/DRAM split statistics (only meaningful when heatmap allocation is enabled)
   long total_miss_latency_cycles_dram{};  // Latency for requests served by DRAM

@@ -55,6 +55,32 @@ PageTableWalker::mshr_type::mshr_type(const request_type& req, std::size_t level
 
 auto PageTableWalker::handle_read(const request_type& handle_pkt, channel_type* ul) -> std::optional<mshr_type>
 {
+  // Bitmap-only request: skip PSCL, issue single memory access for bitmap data
+  if (handle_pkt.entry_type == 1) {
+    mshr_type bm_mshr{handle_pkt, 0};
+    bm_mshr.v_address = handle_pkt.address;
+    bm_mshr.page_size = handle_pkt.page_size;
+    bm_mshr.entry_type = 1;
+    bm_mshr.perf_state = mshr_type::PerfState::BITMAP_PENDING;
+    bm_mshr.translation_level = 0;
+
+    // Use get_pte_pa(level=0) to model the bitmap memory location
+    auto [bitmap_addr, penalty] = vmem->get_pte_pa(handle_pkt.cpu, champsim::page_number{handle_pkt.v_address}, 0);
+    bm_mshr.address = bitmap_addr;
+
+    if (handle_pkt.response_requested) {
+      bm_mshr.to_return = {&ul->returned};
+    }
+
+    if constexpr (champsim::debug_print) {
+      fmt::print("[{}] {} BITMAP_REQUEST v_address: {} bitmap_addr: {} cycle: {}\n",
+                 NAME, __func__, handle_pkt.v_address, bitmap_addr, current_time.time_since_epoch() / clock_period);
+    }
+
+    return step_translation(bm_mshr);
+  }
+
+  // Normal page table walk
   pscl_entry walk_init = {handle_pkt.v_address, CR3_addr, std::size(pscl)};
   std::vector<std::optional<pscl_entry>> pscl_hits;
   std::transform(std::begin(pscl), std::end(pscl), std::back_inserter(pscl_hits), [walk_init](auto& x) { return x.check_hit(walk_init); });
@@ -68,7 +94,8 @@ auto PageTableWalker::handle_read(const request_type& handle_pkt, channel_type* 
   mshr_type fwd_mshr{handle_pkt, walk_init.level};
   fwd_mshr.address = champsim::address{champsim::splice(champsim::page_number{walk_init.ptw_addr}, champsim::page_offset{walk_offset})};
   fwd_mshr.v_address = handle_pkt.address;
-  fwd_mshr.page_size = handle_pkt.page_size; // propagate page size from request
+  fwd_mshr.page_size = handle_pkt.page_size;
+  fwd_mshr.entry_type = handle_pkt.entry_type;
   if (handle_pkt.response_requested) {
     fwd_mshr.to_return = {&ul->returned};
   }
@@ -93,23 +120,30 @@ auto PageTableWalker::handle_fill(const mshr_type& fill_mshr) -> std::optional<m
   mshr_type fwd_mshr = fill_mshr;
   fwd_mshr.address = *fill_mshr.data;
 
-  if (fill_mshr.perf_state == mshr_type::PerfState::BITMAP_PENDING) {
-    // Bitmap step response — skip PSCL update, keep translation_level
+  if (fill_mshr.entry_type == 1) {
+    // Bitmap-only request response — skip PSCL update, keep state
     fwd_mshr.translation_level = fill_mshr.translation_level;
     fwd_mshr.perf_state = fill_mshr.perf_state;
+    fwd_mshr.entry_type = fill_mshr.entry_type;
+  } else if (fill_mshr.perf_state == mshr_type::PerfState::BITMAP_PENDING) {
+    // Bitmap step response (during initial PERF walk) — skip PSCL update
+    fwd_mshr.translation_level = fill_mshr.translation_level;
+    fwd_mshr.perf_state = fill_mshr.perf_state;
+  } else if (fill_mshr.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
+             && fill_mshr.perf_state == mshr_type::PerfState::NORMAL
+             && fill_mshr.translation_level <= 1) {
+    // Perforated page: at or past level 1 → transition to bitmap step.
+    // Must check BEFORE pscl.at() to avoid out-of-range when PSCL skips to level 0.
+    if (fill_mshr.translation_level == 1) {
+      const auto pscl_idx = std::size(pscl) - fill_mshr.translation_level;
+      pscl.at(pscl_idx).fill({fill_mshr.v_address, *fill_mshr.data, fill_mshr.translation_level - 1});
+    }
+    fwd_mshr.translation_level = 0;
+    fwd_mshr.perf_state = mshr_type::PerfState::BITMAP_PENDING;
   } else {
     const auto pscl_idx = std::size(pscl) - fill_mshr.translation_level;
     pscl.at(pscl_idx).fill({fill_mshr.v_address, *fill_mshr.data, fill_mshr.translation_level - 1});
     fwd_mshr.translation_level = fill_mshr.translation_level - 1;
-
-    // Perforated pages: transition to BITMAP_PENDING when level 1 walk completes.
-    // finish_step() in finish_packet() modifies perf_state on a copy, so we must
-    // set it here on the actual fwd_mshr that gets re-inserted into MSHR.
-    if (fill_mshr.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
-        && fill_mshr.perf_state == mshr_type::PerfState::NORMAL
-        && fwd_mshr.translation_level <= 0) {
-      fwd_mshr.perf_state = mshr_type::PerfState::BITMAP_PENDING;
-    }
   }
 
   return step_translation(fwd_mshr);
@@ -152,7 +186,7 @@ long PageTableWalker::operate()
   auto [complete_begin, complete_end] = champsim::get_span_p(std::cbegin(completed), std::cend(completed), fill_bw, is_ready);
   std::for_each(complete_begin, complete_end, [](auto& mshr_entry) {
     for (auto ret : mshr_entry.to_return) {
-      ret->emplace_back(mshr_entry.v_address, mshr_entry.v_address, *mshr_entry.data, mshr_entry.pf_metadata, mshr_entry.instr_depend_on_me, mshr_entry.page_size);
+      ret->emplace_back(mshr_entry.v_address, mshr_entry.v_address, *mshr_entry.data, mshr_entry.pf_metadata, mshr_entry.instr_depend_on_me, mshr_entry.page_size, mshr_entry.entry_type);
     }
   });
   fill_bw.consume(std::distance(complete_begin, complete_end));
@@ -231,7 +265,13 @@ void PageTableWalker::finish_packet(const response_type& packet)
   auto finish_last_step = [this](auto mshr_entry) {
     champsim::page_number ppage;
     champsim::chrono::clock::duration penalty;
-    if (mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
+
+    if (mshr_entry.entry_type == 1) {
+      // Bitmap-only request: no translation needed, just return a dummy address
+      // The bitmap data is read from vmem at L1 level; this just models the memory access cost
+      penalty = champsim::chrono::clock::duration::zero();
+      ppage = champsim::page_number{mshr_entry.v_address};
+    } else if (mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
         || mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) {
       // Both 2MB and perforated pages use va_to_pa_2m (return 2MB base PPN)
       std::tie(ppage, penalty) = this->vmem->va_to_pa_2m(mshr_entry.cpu, champsim::page_number{mshr_entry.v_address});
@@ -254,6 +294,9 @@ void PageTableWalker::finish_packet(const response_type& packet)
   // For 2MB pages, stop one level earlier (skip level 1 PTE walk)
   // For perforated pages, only done after bitmap step completes
   auto is_last_step = [](auto x) {
+    // Bitmap-only requests are done after single memory access
+    if (x.entry_type == 1)
+      return true;
     if (x.page_size == static_cast<uint8_t>(PageSize::PAGE_2M))
       return x.translation_level <= 1; // 2MB: stop after level 2
     if (x.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) {

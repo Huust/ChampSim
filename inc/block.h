@@ -32,6 +32,7 @@ struct cache_block {
 
   uint32_t pf_metadata = 0;
   uint8_t page_size = 0; // 0=4K, 1=2M (matches PageSize enum)
+  uint8_t entry_type = 0; // 0=TLB translation, 1=bitmap entry (for STLB perforated page support)
 };
 } // namespace champsim
 

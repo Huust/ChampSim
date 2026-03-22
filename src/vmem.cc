@@ -150,21 +150,39 @@ std::size_t VirtualMemory::get_device_index(const Device& device) const
 }
 
 const Device VirtualMemory::select_device(champsim::page_number vpn) {
-  if (champsim::heatmap::is_hotness_allocation_enabled()) {
-    assert(devices.size() == 2); // Should have 2 devices when using heatmap
+  // Pmap-based tier selection: entries in pmap → DRAM, absent → CXL.
+  // For perforated pages, non-hole sub-pages are in pmap (DRAM),
+  // hole sub-pages are NOT in pmap entries and go to CXL via va_to_pa().
+  if (!pmap.empty() && devices.size() == 2) {
+    uint64_t vpn_val = vpn.to<uint64_t>();
 
-    // Use heatmap-based allocation
-    return champsim::heatmap::is_fast_memory(vpn) ? Device{Dram{}} : Device{Cxl{}};
-  } else {
-    // Update: flip is deprecated, we use it outside of this function
-    //
-    // Use traditional interleaving allocation
-    // Flip the device, if we do have 2 devices
-    // if (!std::holds_alternative<Single>(active_device)) {
-    //   active_device = std::holds_alternative<Dram>(active_device) ? Device{Cxl{}} : Device{Dram{}};
-    // }
-    return active_device;
+    // Check exact 4KB VPN match
+    auto it = pmap.find(vpn_val);
+    if (it != pmap.end())
+      return Device{Dram{}}; // explicitly in pmap → fast tier
+
+    // Check if within a 2MB or perforated region
+    uint64_t base_2m = (vpn_val >> 9) << 9;
+    it = pmap.find(base_2m);
+    if (it != pmap.end()) {
+      if (it->second == PageSize::PAGE_2M)
+        return Device{Dram{}}; // entire 2MB region in DRAM
+      if (it->second == PageSize::PAGE_PERF) {
+        // Perforated: non-hole → DRAM, hole → CXL
+        return is_hole(vpn_val) ? Device{Cxl{}} : Device{Dram{}};
+      }
+    }
+
+    // Not in pmap → slow tier
+    return Device{Cxl{}};
   }
+
+  if (champsim::heatmap::is_hotness_allocation_enabled()) {
+    assert(devices.size() == 2);
+    return champsim::heatmap::is_fast_memory(vpn) ? Device{Dram{}} : Device{Cxl{}};
+  }
+
+  return active_device;
 }
 
 champsim::dynamic_extent VirtualMemory::extent(std::size_t level) const
