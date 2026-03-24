@@ -6,6 +6,7 @@
 #include <vector>
 #include <fmt/core.h>
 #include "champsim.h"
+#include "vmem.h"
 
 void HeatMapTracker::enable_heatmap_generation() {
   heatmap_generation_enabled = true;
@@ -137,7 +138,12 @@ bool HeatMapTracker::is_hotness_allocation_enabled() {
 }
 
 bool HeatMapTracker::is_fast_memory(champsim::page_number vpn) const {
-  return (fast_vpns.find(vpn.to<uint64_t>()) != fast_vpns.end());
+  uint64_t v = vpn.to<uint64_t>();
+  // Check exact 4KB VPN match
+  if (fast_vpns.count(v))
+    return true;
+  // Check 2MB parent: 2MB heatmap stores vaddr>>21 = (4KB VPN)>>9
+  return fast_vpns.count(v >> 9);
 }
 
 void HeatMapTracker::allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t ratio_first, uint32_t ratio_second) {
@@ -249,29 +255,36 @@ namespace champsim {
     }
 
     void track_llc_miss(champsim::address v_address) {
-      global_heatmap_instance.track_llc_miss(champsim::page_number{v_address});
-      if (PAGE_SIZE > 4096) {
-        constexpr unsigned SUBPAGE_LOG2 = 12;
-        uint64_t subpage_vpn = v_address.to<uint64_t>() >> SUBPAGE_LOG2;
-        global_heatmap_instance.track_llc_miss_subpage(subpage_vpn);
+      champsim::page_number vpn{v_address}; // 4KB VPN (vaddr >> 12)
+      auto ps = g_vmem->get_page_size(vpn);
+      if (ps == PageSize::PAGE_2M || ps == PageSize::PAGE_PERF) {
+        // Store true 2MB VPN: vaddr >> 21 = (4KB VPN) >> 9
+        uint64_t vpn_2m = vpn.to<uint64_t>() >> 9;
+        global_heatmap_instance.track_llc_miss(champsim::page_number{vpn_2m});
+      } else {
+        global_heatmap_instance.track_llc_miss(vpn);
       }
     }
 
     void track_critical_miss(champsim::address v_address) {
-      global_heatmap_instance.track_critical_miss(champsim::page_number{v_address});
-      if (PAGE_SIZE > 4096) {
-        constexpr unsigned SUBPAGE_LOG2 = 12;
-        uint64_t subpage_vpn = v_address.to<uint64_t>() >> SUBPAGE_LOG2;
-        global_heatmap_instance.track_critical_miss_subpage(subpage_vpn);
+      champsim::page_number vpn{v_address};
+      auto ps = g_vmem->get_page_size(vpn);
+      if (ps == PageSize::PAGE_2M || ps == PageSize::PAGE_PERF) {
+        uint64_t vpn_2m = vpn.to<uint64_t>() >> 9;
+        global_heatmap_instance.track_critical_miss(champsim::page_number{vpn_2m});
+      } else {
+        global_heatmap_instance.track_critical_miss(vpn);
       }
     }
 
     void track_page_access(champsim::address v_address) {
-      global_heatmap_instance.track_page_access(champsim::page_number{v_address});
-      if (PAGE_SIZE > 4096) {
-        constexpr unsigned SUBPAGE_LOG2 = 12;
-        uint64_t subpage_vpn = v_address.to<uint64_t>() >> SUBPAGE_LOG2;
-        global_heatmap_instance.track_page_access_subpage(subpage_vpn);
+      champsim::page_number vpn{v_address};
+      auto ps = g_vmem->get_page_size(vpn);
+      if (ps == PageSize::PAGE_2M || ps == PageSize::PAGE_PERF) {
+        uint64_t vpn_2m = vpn.to<uint64_t>() >> 9;
+        global_heatmap_instance.track_page_access(champsim::page_number{vpn_2m});
+      } else {
+        global_heatmap_instance.track_page_access(vpn);
       }
     }
 

@@ -176,7 +176,7 @@
         "rq_size": 1024,
         "wq_size": 1024,
         "respq_size": 1024,
-        "tCXL" : 200,
+        "tCXL" : 140,
         "RD_BW" : 25.7,
         "WR_BW" : 25.7,
         "channel_width": 8,

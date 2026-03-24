@@ -74,9 +74,12 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   std::string save_bandwidth_path;
   std::string track_interleaving_path;
   std::string use_allocation_path;
-  std::string pmap_path;
   double perf_frag_ratio = 0.0;
   std::string perf_frag_dist = "clustered";
+  std::string generate_pmap_path;
+  std::string use_pmap_path;
+  std::string use_policy_path;
+  std::string page_mode_str;
 
   auto set_heartbeat_callback = [&](auto) {
     for (O3_CPU& cpu : gen_environment.cpu_view()) {
@@ -104,9 +107,13 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   app.add_option("--save-bandwidth", save_bandwidth_path, "Save bandwidth statistics to specified file path");
   app.add_option("--generate-interleaving", track_interleaving_path, "Track page allocations in interleaving mode and save to specified file");
   app.add_option("--use-interleaving", use_allocation_path, "Use precomputed allocation mapping (CSV format: vpage,device)");
-  app.add_option("--pmap", pmap_path, "Page map file (CSV: vpn_hex,page_size 0=4K 1=2M 2=PERF)");
   app.add_option("--perf-frag-ratio", perf_frag_ratio, "Fraction of holes in perforated pages (0.0-1.0)");
   app.add_option("--perf-frag-dist", perf_frag_dist, "Hole distribution: clustered, dispersed, random")->default_val("clustered");
+  app.add_option("--generate-pmap", generate_pmap_path, "Save VPN→PPN physical mapping at end of simulation");
+  app.add_option("--use-pmap", use_pmap_path, "Load physical mapping for address replay");
+  app.add_option("--use-policy", use_policy_path, "Load policy file (page types + per-subpage tier decisions)");
+  app.add_option("--page-mode", page_mode_str, "Page size mode: 4kb, 2mb, or mixed (required)")->required()
+    ->check(CLI::IsMember({"4kb", "2mb", "mixed"}));
 
   app.add_option("traces", trace_names, "The paths to the traces")->required()->expected(NUM_CPUS)->check(CLI::ExistingFile);
 
@@ -204,14 +211,40 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     g_vmem->load_allocation_mapping(use_allocation_path);
   }
 
-  // Load pmap file for multi-page-size support
-  if (!pmap_path.empty()) {
-    g_vmem->load_pmap(pmap_path);
-
-    // Auto-perforate: convert 2MB pages to perforated pages with synthetic holes
-    if (perf_frag_ratio > 0.0) {
-      g_vmem->generate_perforated_pages(perf_frag_ratio, perf_frag_dist);
+  // Set page mode
+  if (page_mode_str == "2mb") {
+    g_vmem->set_default_page_size(PageSize::PAGE_2M);
+    fmt::print("Page mode: 2mb (all pages use 2MB mapping)\n");
+  } else if (page_mode_str == "mixed") {
+    if (use_policy_path.empty()) {
+      fmt::print("ERROR: --page-mode mixed requires --use-policy\n");
+      return 1;
     }
+    fmt::print("Page mode: mixed (page types from policy file)\n");
+  } else {
+    fmt::print("Page mode: 4kb (all pages use 4KB mapping)\n");
+  }
+
+  // Phase 1: force all allocations to DRAM when generating pmap
+  if (!generate_pmap_path.empty()) {
+    g_vmem->generating_physical_mapping = true;
+    fmt::print("Physical mapping generation mode: all pages allocated to DRAM\n");
+  }
+
+  // Load physical mapping for address replay
+  if (!use_pmap_path.empty()) {
+    g_vmem->load_physical_mapping(use_pmap_path);
+  }
+
+  // Load policy file (page types + per-subpage tier decisions)
+  if (!use_policy_path.empty()) {
+    g_vmem->load_policy(use_policy_path);
+  }
+
+  // Warn if page-mode doesn't match binary's DTLB config
+  // (mixed binary has smaller individual DTLBs; pure binary wastes entries in mixed mode)
+  if (page_mode_str == "mixed") {
+    fmt::print("NOTE: Ensure this binary was built with mixed DTLB config (e.g., 64+32)\n");
   }
 
   // Enable interleaving allocation tracking if requested
@@ -259,6 +292,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // Save interleaving allocation tracking if requested
   if (!track_interleaving_path.empty()) {
     g_vmem->save_allocation_tracking();
+  }
+
+  // Save physical page mapping if requested (Phase 1 golden run)
+  if (!generate_pmap_path.empty()) {
+    g_vmem->save_physical_mapping(generate_pmap_path);
   }
 
   // Print Ramulator statistics after ChampSim statistics

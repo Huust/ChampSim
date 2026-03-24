@@ -32,6 +32,11 @@
 
 using namespace champsim::data::data_literals;
 
+namespace {
+constexpr uint64_t HUGE_PAGE_SIZE_BYTES = 2ULL * 1024ULL * 1024ULL;
+uint64_t hugepage_span_in_pages() { return HUGE_PAGE_SIZE_BYTES / PAGE_SIZE; }
+}
+
 // Global pointer to virtual memory for easy access
 VirtualMemory* g_vmem = nullptr;
 
@@ -150,9 +155,31 @@ std::size_t VirtualMemory::get_device_index(const Device& device) const
 }
 
 const Device VirtualMemory::select_device(champsim::page_number vpn) {
-  // Pmap-based tier selection: entries in pmap → DRAM, absent → CXL.
-  // For perforated pages, non-hole sub-pages are in pmap (DRAM),
-  // hole sub-pages are NOT in pmap entries and go to CXL via va_to_pa().
+  // Phase 1 golden run: force all allocations to DRAM
+  if (generating_physical_mapping)
+    return (devices.size() == 1) ? Device{Single{}} : Device{Dram{}};
+
+  // Physical mapping replay without policy/heatmap → dram-only replay (Phase 2)
+  if (use_physical_mapping && !use_policy && !champsim::heatmap::is_hotness_allocation_enabled())
+    return (devices.size() == 1) ? Device{Single{}} : Device{Dram{}};
+
+  // Policy-based tier selection: tier_bitmaps provide per-subpage DRAM/CXL decision
+  if (use_policy && devices.size() == 2) {
+    uint64_t vpn_val = vpn.to<uint64_t>();
+    uint64_t base_2m = (vpn_val >> 9) << 9;
+    auto it = tier_bitmaps.find(base_2m);
+    if (it != tier_bitmaps.end()) {
+      uint64_t sub_idx = vpn_val & 0x1FF;
+      unsigned word = sub_idx / 64;
+      unsigned bit = sub_idx % 64;
+      bool is_slow = (it->second[word] >> bit) & 1;
+      return is_slow ? Device{Cxl{}} : Device{Dram{}};
+    }
+    // Region not in policy → default CXL
+    return Device{Cxl{}};
+  }
+
+  // Pmap-based tier selection (legacy): entries in pmap → DRAM, absent → CXL.
   if (!pmap.empty() && devices.size() == 2) {
     uint64_t vpn_val = vpn.to<uint64_t>();
 
@@ -198,24 +225,33 @@ uint64_t VirtualMemory::get_offset(champsim::address vaddr, std::size_t level) c
 
 uint64_t VirtualMemory::get_offset(champsim::page_number vaddr, std::size_t level) const { return get_offset(champsim::address{vaddr}, level); }
 
-champsim::page_number VirtualMemory::ppage_front(const Device& dev) const
-{
-  assert(available_ppages(dev) > 0);
-  return ppage_free_list[get_device_index(dev)].front();
-}
+std::size_t VirtualMemory::available_ppages(const Device& dev) const { return (ppage_free_list[get_device_index(dev)].size()); }
 
-void VirtualMemory::ppage_pop(const Device& dev)
+champsim::page_number VirtualMemory::allocate_ppage(const Device& dev)
 {
-  ppage_free_list[get_device_index(dev)].pop_front();
-  if (available_ppages(dev) == 0) {
-    fmt::print("[VMEM] WARNING: Out of physical memory, freeing ppages\n");
-    assert(available_ppages(dev) != 0);
+  auto& free_list = ppage_free_list[get_device_index(dev)];
+
+  while (true) {
+    while (!free_list.empty()) {
+      auto candidate = free_list.front();
+      free_list.pop_front();
+      // Skip pages reserved for physical mapping replay
+      if (protected_ppages.find(candidate.to<uint64_t>()) == protected_ppages.end())
+        return candidate;
+    }
+    fmt::print("[VMEM] WARNING: Out of physical memory for device {}, repopulating\n", get_device_index(dev));
     populate_pages();
     shuffle_pages();
   }
 }
 
-std::size_t VirtualMemory::available_ppages(const Device& dev) const { return (ppage_free_list[get_device_index(dev)].size()); }
+void VirtualMemory::reserve_replayed_region(uint64_t hugepage_ppn)
+{
+  const uint64_t pages_per_hugepage = hugepage_span_in_pages();
+  const uint64_t first_small_ppn = hugepage_ppn * pages_per_hugepage;
+  for (uint64_t i = 0; i < pages_per_hugepage; ++i)
+    protected_ppages.insert(first_small_ppn + i);
+}
 
 champsim::page_number VirtualMemory::ppage_front_2m(const Device& dev) const
 {
@@ -336,7 +372,7 @@ void VirtualMemory::load_pmap(const std::string& path)
 PageSize VirtualMemory::get_page_size(champsim::page_number vpn_4k) const
 {
   if (pmap.empty())
-    return PageSize::PAGE_4K;
+    return default_page_size;
 
   uint64_t vpn = vpn_4k.to<uint64_t>();
 
@@ -361,8 +397,43 @@ std::pair<champsim::page_number, champsim::chrono::clock::duration> VirtualMemor
   uint64_t aligned_vpn = (vpn >> 9) << 9;
   champsim::page_number aligned_vaddr{aligned_vpn};
 
+  const auto key = std::pair{cpu_num, aligned_vaddr};
+
+  // Check existing mapping
+  auto existing = vpage_to_ppage_map.find(key);
+  if (existing != vpage_to_ppage_map.end()) {
+    return {existing->second, champsim::chrono::clock::duration::zero()};
+  }
+
+  // Physical mapping replay: use recorded PPN with cross-device mirror
+  if (use_physical_mapping) {
+    const uint64_t hugepage_vpn = aligned_vpn / hugepage_span_in_pages();
+    auto pm_it = physical_page_map.find(hugepage_vpn);
+    if (pm_it != physical_page_map.end()) {
+      const auto [parent_ppn, parent_is_dram] = pm_it->second;
+      uint64_t ppn = parent_ppn * hugepage_span_in_pages(); // base 4KB PPN
+
+      if (devices.size() > 1) {
+        const Device target = select_device(vaddr);
+        const bool target_is_dram = std::holds_alternative<Dram>(target);
+        if (target_is_dram != parent_is_dram) {
+          const uint64_t dram_cap_pages = devices[0]->size().count() / PAGE_SIZE;
+          ppn = parent_is_dram ? ppn + dram_cap_pages : ppn - dram_cap_pages;
+        }
+      }
+
+      auto [ppage, inserted] = vpage_to_ppage_map.emplace(key, champsim::page_number{ppn});
+
+      if constexpr (champsim::debug_print) {
+        fmt::print("[VMEM] {} (replay) paddr: {} vpage: {}\n", __func__, ppage->second, aligned_vaddr);
+      }
+      return {ppage->second, inserted ? minor_fault_penalty : champsim::chrono::clock::duration::zero()};
+    }
+  }
+
+  // Normal allocation from 2MB free list
   Device selected_device = select_device(vaddr);
-  auto [ppage, fault] = vpage_to_ppage_map.try_emplace({cpu_num, aligned_vaddr}, ppage_front_2m(selected_device));
+  auto [ppage, fault] = vpage_to_ppage_map.try_emplace(key, ppage_front_2m(selected_device));
 
   if (fault) {
     ppage_pop_2m(selected_device);
@@ -383,35 +454,69 @@ std::pair<champsim::page_number, champsim::chrono::clock::duration> VirtualMemor
 
 std::pair<champsim::page_number, champsim::chrono::clock::duration> VirtualMemory::va_to_pa(uint32_t cpu_num, champsim::page_number vaddr)
 {
-  Device selected_device = select_device(vaddr);
-  auto [ppage, fault] = vpage_to_ppage_map.try_emplace({cpu_num, champsim::page_number{vaddr}}, ppage_front(selected_device));
+  const auto key = std::pair{cpu_num, champsim::page_number{vaddr}};
+  auto existing = vpage_to_ppage_map.find(key);
+  if (existing != vpage_to_ppage_map.end()) {
+    return {existing->second, champsim::chrono::clock::duration::zero()};
+  }
 
-  // this vpage doesn't yet have a ppage mapping
-  if (fault) {
-    ppage_pop(selected_device);
+  champsim::page_number new_ppage{};
+  bool replayed = false;
 
-    // Track allocation in interleaving mode
+  // Physical mapping replay: compute PPN from 2MB parent + offset + cross-device mirror
+  if (use_physical_mapping) {
+    const uint64_t pages_per_hugepage = hugepage_span_in_pages();
+    const uint64_t vpn = vaddr.to<uint64_t>();
+    const uint64_t hugepage_vpn = vpn / pages_per_hugepage;
+    const uint64_t offset = vpn % pages_per_hugepage;
+
+    auto it = physical_page_map.find(hugepage_vpn);
+    if (it != physical_page_map.end()) {
+      const auto [parent_ppn, parent_is_dram] = it->second;
+      const uint64_t same_device_ppn = parent_ppn * pages_per_hugepage + offset;
+
+      if (devices.size() == 1) {
+        new_ppage = champsim::page_number{same_device_ppn};
+      } else {
+        const Device target = select_device(vaddr);
+        const bool target_is_dram = std::holds_alternative<Dram>(target);
+        if (target_is_dram == parent_is_dram) {
+          new_ppage = champsim::page_number{same_device_ppn};
+        } else {
+          // Cross-device mirror at the same physical offset
+          const uint64_t dram_cap_pages = devices[0]->size().count() / PAGE_SIZE;
+          const uint64_t cross_ppn = parent_is_dram
+              ? same_device_ppn + dram_cap_pages
+              : same_device_ppn - dram_cap_pages;
+          new_ppage = champsim::page_number{cross_ppn};
+        }
+      }
+      replayed = true;
+    }
+  }
+
+  if (!replayed) {
+    Device selected_device = select_device(vaddr);
+    new_ppage = allocate_ppage(selected_device);
+
     if (track_allocations) {
-      assert(devices.size() == 2); // Should have 2 devices when tracking
-      assert(!champsim::heatmap::is_heatmap_generation_enabled()); // Should not be in generate-heatmap mode
-      assert(!champsim::heatmap::is_hotness_allocation_enabled()); // Should not be in use-heatmap mode
-      bool is_cxl_device = std::holds_alternative<Cxl>(selected_device);
-      allocation_map[champsim::page_number{vaddr}] = is_cxl_device;
+      assert(devices.size() == 2);
+      allocation_map[champsim::page_number{vaddr}] = std::holds_alternative<Cxl>(selected_device);
     }
 
-    // If the ppage has existed, you don't need to flip the device for next time allocation
     if (!std::holds_alternative<Single>(active_device)) {
       active_device = std::holds_alternative<Dram>(active_device) ? Device{Cxl{}} : Device{Dram{}};
     }
   }
 
-  auto penalty = fault ? minor_fault_penalty : champsim::chrono::clock::duration::zero();
+  auto [ppage, inserted] = vpage_to_ppage_map.emplace(key, new_ppage);
+  assert(inserted);
 
   if constexpr (champsim::debug_print) {
-    fmt::print("[VMEM] {} paddr: {} vpage: {} fault: {}\n", __func__, ppage->second, champsim::page_number{vaddr}, fault);
+    fmt::print("[VMEM] {} paddr: {} vpage: {} replayed: {}\n", __func__, ppage->second, champsim::page_number{vaddr}, replayed);
   }
 
-  return std::pair{ppage->second, penalty};
+  return {ppage->second, minor_fault_penalty};
 }
 
 std::pair<champsim::page_number, bool> VirtualMemory::va_to_pa_using_map(uint32_t cpu_num, champsim::page_number vaddr)
@@ -425,24 +530,23 @@ std::pair<champsim::page_number, bool> VirtualMemory::va_to_pa_using_map(uint32_
   auto it = allocation_map.find(champsim::page_number{vaddr});
   assert(it != allocation_map.end());
 
-  // Determine device based on allocation_map
   bool is_cxl = it->second;
   Device selected_device = is_cxl ? Device{Cxl{}} : Device{Dram{}};
 
-  // Try to allocate physical page
-  auto [ppage, fault] = vpage_to_ppage_map.try_emplace({cpu_num, champsim::page_number{vaddr}}, ppage_front(selected_device));
-
-  // this vpage doesn't yet have a ppage mapping
-  if (fault) {
-    ppage_pop(selected_device);
-    // Note: No device flipping in this mode, allocation is deterministic based on map
+  const auto key = std::pair{cpu_num, champsim::page_number{vaddr}};
+  auto existing = vpage_to_ppage_map.find(key);
+  if (existing != vpage_to_ppage_map.end()) {
+    return {existing->second, is_cxl};
   }
+
+  auto [ppage, inserted] = vpage_to_ppage_map.emplace(key, allocate_ppage(selected_device));
+  assert(inserted);
 
   if constexpr (champsim::debug_print) {
-    fmt::print("[VMEM] {} vpage: {} ppage: {} fault: {} device: {}\n", __func__, champsim::page_number{vaddr}, ppage->second, fault, is_cxl ? "CXL" : "DRAM");
+    fmt::print("[VMEM] {} vpage: {} ppage: {} device: {}\n", __func__, champsim::page_number{vaddr}, ppage->second, is_cxl ? "CXL" : "DRAM");
   }
 
-  return std::pair{ppage->second, is_cxl};
+  return {ppage->second, is_cxl};
 }
 
 std::pair<champsim::address, champsim::chrono::clock::duration> VirtualMemory::get_pte_pa(uint32_t cpu_num, champsim::page_number vaddr, std::size_t level)
@@ -454,8 +558,7 @@ std::pair<champsim::address, champsim::chrono::clock::duration> VirtualMemory::g
     else
       selected_device = active_device;
 
-    active_pte_page = ppage_front(selected_device);
-    ppage_pop(selected_device);
+    active_pte_page = allocate_ppage(selected_device);
     
     // if (!std::holds_alternative<Single>(active_device)) {
     //   active_device = std::holds_alternative<Dram>(active_device) ? Device{Cxl{}} : Device{Dram{}};
@@ -602,6 +705,175 @@ void VirtualMemory::generate_perforated_pages(double frag_ratio, const std::stri
 
   fmt::print("[VMEM] Generated perforated pages: {} pages converted, frag_ratio: {}, distribution: {}\n",
              converted, frag_ratio, distribution);
+}
+
+void VirtualMemory::save_physical_mapping(const std::string& path)
+{
+  // Collect unique VPN→PPN mappings in hugepage units (VPN/512, PPN/512).
+  // vpage_to_ppage_map stores 4KB-granularity values; convert to hugepage units
+  // so the file format matches latency-parity conventions and the replay code.
+  const uint64_t pages_per_hugepage = hugepage_span_in_pages();
+  std::map<uint64_t, uint64_t> unique_mappings; // hugepage VPN → hugepage PPN
+  for (const auto& [key, ppage] : vpage_to_ppage_map) {
+    const auto& [cpu_num, vpage] = key;
+    (void)cpu_num;
+    uint64_t hp_vpn = vpage.to<uint64_t>() / pages_per_hugepage;
+    uint64_t hp_ppn = ppage.to<uint64_t>() / pages_per_hugepage;
+    auto [it, inserted] = unique_mappings.emplace(hp_vpn, hp_ppn);
+    if (!inserted && it->second != hp_ppn) {
+      fmt::print("[VMEM] ERROR: Conflicting physical mapping for hugepage vpage={:x}\n", hp_vpn);
+      std::abort();
+    }
+  }
+
+  std::ofstream outfile(path);
+  if (!outfile.is_open()) {
+    fmt::print("[VMEM] ERROR: Failed to open physical mapping file for writing: {}\n", path);
+    return;
+  }
+
+  const uint64_t dram_cap_hugepages = devices[0]->size().count() / HUGE_PAGE_SIZE_BYTES;
+  outfile << "vpage,ppage,device\n";
+  for (const auto& [vpage, ppage] : unique_mappings) {
+    int device = (ppage < dram_cap_hugepages) ? 0 : 1;
+    outfile << std::hex << vpage << "," << ppage << "," << std::dec << device << "\n";
+  }
+  outfile.close();
+
+  fmt::print("[VMEM] Saved physical mapping: {} hugepage entries to {}\n", unique_mappings.size(), path);
+}
+
+void VirtualMemory::load_physical_mapping(const std::string& path)
+{
+  std::ifstream infile(path);
+  if (!infile.is_open()) {
+    fmt::print("[VMEM] ERROR: Failed to open physical mapping file: {}\n", path);
+    std::abort();
+  }
+
+  physical_page_map.clear();
+  protected_ppages.clear();
+
+  std::string line;
+  std::getline(infile, line); // skip header
+
+  const uint64_t dram_cap_hugepages = devices.size() >= 2
+      ? devices[0]->size().count() / HUGE_PAGE_SIZE_BYTES : 0;
+
+  std::size_t loaded = 0;
+  while (std::getline(infile, line)) {
+    if (line.empty())
+      continue;
+
+    // Parse "vpage,ppage,device" (3 columns)
+    auto c1 = line.find(',');
+    auto c2 = (c1 != std::string::npos) ? line.find(',', c1 + 1) : std::string::npos;
+    if (c2 == std::string::npos)
+      continue;
+
+    try {
+      uint64_t vpage = std::stoull(line.substr(0, c1), nullptr, 16);
+      uint64_t ppage = std::stoull(line.substr(c1 + 1, c2 - c1 - 1), nullptr, 16);
+      bool is_dram = (std::stoi(line.substr(c2 + 1)) == 0);
+
+      auto [it, inserted] = physical_page_map.emplace(vpage, std::pair{ppage, is_dram});
+      if (!inserted) {
+        if (it->second.first != ppage) {
+          fmt::print("[VMEM] ERROR: Conflicting physical mapping for vpage={:x}\n", vpage);
+          std::abort();
+        }
+        continue;
+      }
+
+      // Reserve the replayed region so allocate_ppage skips it
+      reserve_replayed_region(ppage);
+      // For tiered memory, also reserve the mirror region in the other device
+      if (devices.size() == 2) {
+        const uint64_t mirror_ppn = is_dram ? (ppage + dram_cap_hugepages) : (ppage - dram_cap_hugepages);
+        reserve_replayed_region(mirror_ppn);
+      }
+      loaded++;
+    } catch (const std::exception&) {
+      fmt::print("[VMEM] WARNING: Failed to parse physical mapping line: {}\n", line);
+    }
+  }
+  infile.close();
+
+  use_physical_mapping = true;
+  fmt::print("[VMEM] Loaded {} physical mappings, {} protected pages from {}\n",
+             loaded, protected_ppages.size(), path);
+}
+
+void VirtualMemory::load_policy(const std::string& path)
+{
+  std::ifstream infile(path);
+  if (!infile.is_open()) {
+    fmt::print("[VMEM] ERROR: Failed to open policy file: {}\n", path);
+    return;
+  }
+
+  pmap.clear();
+  hole_bitmaps.clear();
+  coarse_filters.clear();
+  tier_bitmaps.clear();
+
+  std::string line;
+  uint64_t count_4k = 0, count_2m = 0, count_perf = 0;
+
+  while (std::getline(infile, line)) {
+    if (line.empty() || line[0] == '#')
+      continue;
+
+    // Format: base_2mb_vpn_hex, page_type, tier_bitmap_hex
+    auto comma1 = line.find(',');
+    if (comma1 == std::string::npos)
+      continue;
+    auto comma2 = line.find(',', comma1 + 1);
+    if (comma2 == std::string::npos)
+      continue;
+
+    try {
+      uint64_t base_vpn = std::stoull(line.substr(0, comma1), nullptr, 16);
+      int page_type = std::stoi(line.substr(comma1 + 1, comma2 - comma1 - 1));
+      auto bitmap_hex = line.substr(comma2 + 1);
+
+      // Parse 128-char hex string into 8 uint64_t words
+      std::array<uint64_t, 8> bitmap{};
+      for (int w = 0; w < 8 && w * 16 < static_cast<int>(bitmap_hex.size()); ++w) {
+        auto chunk = bitmap_hex.substr(w * 16, 16);
+        bitmap[w] = std::stoull(chunk, nullptr, 16);
+      }
+      tier_bitmaps[base_vpn] = bitmap;
+
+      PageSize ps;
+      if (page_type == 2) {
+        ps = PageSize::PAGE_PERF;
+        // For PERF pages, tier_bitmap == hole_bitmap
+        hole_bitmaps[base_vpn] = bitmap;
+        uint8_t cf = 0;
+        for (int r = 0; r < 8; ++r) {
+          if (bitmap[r] != 0)
+            cf |= (1u << r);
+        }
+        coarse_filters[base_vpn] = cf;
+        ++count_perf;
+      } else if (page_type == 1) {
+        ps = PageSize::PAGE_2M;
+        ++count_2m;
+      } else {
+        ps = PageSize::PAGE_4K;
+        ++count_4k;
+      }
+      pmap[base_vpn] = ps;
+    } catch (const std::exception& e) {
+      fmt::print("[VMEM] WARNING: Failed to parse policy line: {}\n", line);
+    }
+  }
+  infile.close();
+
+  use_policy = true;
+  fmt::print("[VMEM] Loaded policy: {} regions (4K: {}, 2M: {}, PERF: {}) from {}\n",
+             pmap.size(), count_4k, count_2m, count_perf, path);
 }
 
 void VirtualMemory::load_allocation_mapping(const std::string& input_file)

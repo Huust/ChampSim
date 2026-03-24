@@ -204,27 +204,15 @@ long SHIM_LAYER::populate_requests() {
     }
     
     *rq_it = ul->RQ.front();
-    // Track four cases of access type
+    // Track LLC misses for heatmap (LOAD and RFO only, exclude TRANSLATION)
     if (!warmup && champsim::heatmap::is_heatmap_generation_enabled() &&
-        ((*rq_it)->type == access_type::LOAD || (*rq_it)->type == access_type::RFO ||
-         (*rq_it)->type == access_type::TRANSLATION)) {
+        ((*rq_it)->type == access_type::LOAD || (*rq_it)->type == access_type::RFO)) {
       champsim::heatmap::track_llc_miss((*rq_it)->v_address);
 
-      // Set is_llc_miss in corresponding ROB entry as true
-      if ((*rq_it)->type == access_type::LOAD || (*rq_it)->type == access_type::TRANSLATION) {
-        // Several cases for get_rob_entry() return different values
-        // 1. Load instr (or its translation), no branch prediction, return entry pointer
-        // 2. Load instr (or its translation),    branch prediction, return nullptr
-        // 3. Translation from write instr, return nullptr
+      if ((*rq_it)->type == access_type::LOAD) {
         auto rob_entry = get_rob_entry((*rq_it)->cpu, (*rq_it)->instr_id);
         if (rob_entry != nullptr && rob_entry->caused_rob_stall == false) {
-          if ((*rq_it)->type == access_type::LOAD)
-            rob_entry->is_load_llc_miss = true;
-          else {
-            rob_entry->is_trans_llc_miss = true;
-            rob_entry->translation_stall_source_memory.insert((*rq_it)->v_address.to<uint64_t>());
-          }
-          // Track the source memory address that caused this LLC miss (no duplicates)
+          rob_entry->is_load_llc_miss = true;
           rob_entry->llc_miss_source_memory.insert((*rq_it)->v_address.to<uint64_t>());
         }
       }

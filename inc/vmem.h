@@ -24,6 +24,7 @@
 #include <optional>
 #include <random>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 
 #include "address.h"
@@ -68,9 +69,20 @@ private:
   std::unordered_map<uint64_t, std::array<uint64_t, 8>> hole_bitmaps; // 2MB-base VPN → 512-bit bitmap
   std::unordered_map<uint64_t, uint8_t> coarse_filters;               // 2MB-base VPN → 8-bit filter
 
+  // Latency-parity: physical page mapping from 2MB dram-only golden run
+  // Key: 2MB VPN (in hugepage units), Value: (2MB PPN in hugepage units, is_dram)
+  std::map<uint64_t, std::pair<uint64_t, bool>> physical_page_map;
+  std::unordered_set<uint64_t> protected_ppages;  // 4KB PPNs reserved for replay/mirror
+  std::string physical_mapping_file;
+
+  // Policy file: per-subpage tier bitmaps (bit=0 → DRAM, bit=1 → CXL)
+  std::unordered_map<uint64_t, std::array<uint64_t, 8>> tier_bitmaps; // 2MB-base VPN → 512-bit tier map
+
 private:
   // Helper function to get device index for array access
   [[nodiscard]] std::size_t get_device_index(const Device& device) const;
+  [[nodiscard]] champsim::page_number allocate_ppage(const Device&);
+  void reserve_replayed_region(uint64_t hugepage_ppn);
 
 public:
   const champsim::chrono::clock::duration minor_fault_penalty;
@@ -78,6 +90,11 @@ public:
   const pte_entry pte_page_size; // Size of a PTE page (存放pte的页，大小通常和一般页一致，例如4KB；每个pte大小是8字节，所以一个页表页可以存储512个entries；正好是9bits)
   bool track_allocations = false;  // If true, record allocations
   bool use_allocation_map = false; // If true, use preloaded map for allocation
+  bool use_physical_mapping = false;          // If true, replay PPNs from physical_page_map
+  bool track_physical_mappings = false;       // If true, save VPN→PPN at end of simulation
+  bool use_policy = false;                    // If true, tier decisions from policy file
+  bool generating_physical_mapping = false;   // If true, force all allocations to DRAM (Phase 1)
+  PageSize default_page_size = PageSize::PAGE_4K;
 
 private:
   std::vector<std::deque<champsim::page_number>> ppage_free_list;
@@ -85,8 +102,6 @@ private:
   champsim::page_number active_pte_page{};
   champsim::address_slice<champsim::dynamic_extent> next_pte_page;
 
-  [[nodiscard]] champsim::page_number ppage_front(const Device&) const;
-  void ppage_pop(const Device&);
   [[nodiscard]] champsim::page_number ppage_front_2m(const Device&) const;
   void ppage_pop_2m(const Device&);
 
@@ -157,6 +172,28 @@ public:
    * For 2MB pages, use the base 4KB-VPN (2MB-aligned, lower 9 bits of VPN = 0).
    */
   void load_pmap(const std::string& path);
+
+  /**
+   * Save physical page mapping (2MB VPN → PPN) at end of 2MB dram-only run.
+   * Format: CSV "vpage,ppage" (both hex, 4KB-granularity 2MB-aligned values).
+   */
+  void save_physical_mapping(const std::string& path);
+
+  /**
+   * Load physical page mapping for address replay in downstream configs.
+   * Populates physical_page_map and reserves mirror PPNs in protected_ppages.
+   */
+  void load_physical_mapping(const std::string& path);
+
+  /**
+   * Load policy file specifying page types and per-subpage tier decisions.
+   * Format: "base_2mb_vpn_hex, page_type, tier_bitmap_hex"
+   *   page_type: 0=4KB, 1=2MB, 2=PERF
+   *   tier_bitmap: 128 hex chars (512 bits), bit=0 → DRAM, bit=1 → CXL
+   */
+  void load_policy(const std::string& path);
+
+  void set_default_page_size(PageSize ps) { default_page_size = ps; }
 
   // Perforated page support
   static constexpr unsigned PERF_COARSE_FILTER_CYCLES = 1;

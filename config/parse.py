@@ -243,7 +243,7 @@ class NormalizedConfiguration:
         if verbose:
             print('P: core count', len(self.cores))
 
-        pinned_cache_names = ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB')
+        pinned_cache_names = ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB', 'ITLB_2M', 'DTLB_2M')
         self.caches = util.combine_named(
             config_file.get('caches', []),
             (extract_element(name, core, config_file) for core, name in itertools.product(self.cores, pinned_cache_names))
