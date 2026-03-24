@@ -821,31 +821,48 @@ void CACHE::finish_translation(const response_type& packet)
     [[maybe_unused]] auto old_address = entry.address;
 
     if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) {
-      // Perforated page: oracle routing already sent holes to 4KB chain,
-      // so entries reaching here are non-holes. Use 2MB PPN directly.
+      // Perforated page classification: coarse filter → bitmap → hole/non-hole
+      // PERF entry in STLB serves as 2MB translation template.
+      // Classification on every DTLB_2M hit/fill for a PERF entry.
       uint64_t vpn_4k = champsim::page_number{entry.v_address}.to<uint64_t>();
 
       if (!g_vmem->coarse_filter_pass(vpn_4k)) {
-        // FAST PATH: coarse filter rejects → not a hole, translate with 2MB PPN
+        // FAST PATH: coarse filter says no hole in this 64-subpage region
         entry.event_cycle += VirtualMemory::PERF_COARSE_FILTER_CYCLES * this->clock_period;
+        champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+        champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+        entry.address = champsim::address{champsim::splice(
+            champsim::address_slice{pn_2m, champsim::address{p_page}},
+            champsim::address_slice{off_2m, entry.v_address})};
+        entry.is_translated = true;
+        if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_coarse_filtered++; }
       } else {
-        // Coarse filter passes but oracle didn't route as hole → bitmap confirms non-hole
-        // Apply bitmap check latency (models STLB bitmap access)
+        // Coarse filter passes → possible hole, check bitmap
         entry.event_cycle += (VirtualMemory::PERF_COARSE_FILTER_CYCLES + VirtualMemory::PERF_BITMAP_LATENCY_CYCLES) * this->clock_period;
-        if (!this->warmup) { this->sim_stats.perf_non_hole++; }
+
+        if (!g_vmem->is_hole(vpn_4k)) {
+          // Bitmap confirms non-hole → translate with 2MB PPN
+          champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+          champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+          entry.address = champsim::address{champsim::splice(
+              champsim::address_slice{pn_2m, champsim::address{p_page}},
+              champsim::address_slice{off_2m, entry.v_address})};
+          entry.is_translated = true;
+          if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_non_hole++; }
+        } else {
+          // Bitmap confirms hole → re-route to 4KB translation pipeline
+          entry.page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
+          entry.page_size_determined = true;
+          entry.entry_type = 0;
+          entry.translate_issued = false;
+          if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_hole++; }
+        }
       }
 
-      champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
-      champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
-      entry.address = champsim::address{champsim::splice(
-          champsim::address_slice{pn_2m, champsim::address{p_page}},
-          champsim::address_slice{off_2m, entry.v_address})};
-      entry.is_translated = true;
-      if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_coarse_filtered++; }
-
       if constexpr (champsim::debug_print) {
-        fmt::print("[{}_TRANSLATE] finish_translation PERF vpn={:#x} cycle: {}\n",
-                   this->NAME, vpn_4k, this->current_time.time_since_epoch() / this->clock_period);
+        fmt::print("[{}_TRANSLATE] finish_translation PERF vpn={:#x} hole={} cycle: {}\n",
+                   this->NAME, vpn_4k, g_vmem->is_hole(vpn_4k),
+                   this->current_time.time_since_epoch() / this->clock_period);
       }
       return;
     }
@@ -888,16 +905,10 @@ void CACHE::issue_translation(tag_lookup_type& q_entry) const
     // Determine page size for this request if pmap is available and not already resolved
     if (g_vmem && !q_entry.page_size_determined) {
       auto ps = g_vmem->get_page_size(champsim::page_number{q_entry.v_address});
-      if (ps == PageSize::PAGE_PERF) {
-        // Oracle hole check: hole sub-pages route to 4KB TLB directly
-        uint64_t vpn = champsim::page_number{q_entry.v_address}.to<uint64_t>();
-        bool hole = g_vmem->is_hole(vpn);
-        q_entry.page_size = hole
-            ? static_cast<uint8_t>(PageSize::PAGE_4K)
-            : static_cast<uint8_t>(PageSize::PAGE_PERF);
-      } else {
-        q_entry.page_size = static_cast<uint8_t>(ps);
-      }
+      // All page types (4K, 2M, PERF) use their pmap-assigned type directly.
+      // For PERF pages, hole/non-hole classification happens later in
+      // finish_translation() via coarse filter + bitmap check.
+      q_entry.page_size = static_cast<uint8_t>(ps);
       q_entry.page_size_determined = true;
     }
 
