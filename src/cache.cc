@@ -111,11 +111,14 @@ CACHE::mshr_type::mshr_type(const tag_lookup_type& req, champsim::chrono::clock:
     : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), page_size(req.page_size), entry_type(req.entry_type), cpu(req.cpu), type(req.type),
       prefetch_from_this(req.prefetch_from_this), time_enqueued(_time_enqueued), instr_depend_on_me(req.instr_depend_on_me), to_return(req.to_return)
 {
-  // Set is_cxl_memory flag based on heatmap (if hotness allocation is enabled)
-  // This allows forward (proactive) marking instead of waiting for SHIM_LAYER response
+  // Set is_cxl_memory flag for per-cache DRAM/CXL miss statistics.
+  // Heatmap path (--use-heatmap)
   if (champsim::heatmap::is_hotness_allocation_enabled()) {
-    bool is_fast = champsim::heatmap::is_fast_memory(champsim::page_number{v_address});
-    is_cxl_memory = !is_fast;  // If not fast memory (DRAM), then it's CXL
+    is_cxl_memory = !champsim::heatmap::is_fast_memory(champsim::page_number{v_address});
+  }
+  // Policy path (--use-policy)
+  else if (g_vmem && g_vmem->use_policy) {
+    is_cxl_memory = g_vmem->is_cxl_page(champsim::page_number{v_address});
   }
 }
 

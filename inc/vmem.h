@@ -201,6 +201,7 @@ public:
   static constexpr unsigned PERF_HOLE_LATENCY_CYCLES = 10;
 
   [[nodiscard]] bool is_hole(uint64_t vpn_4k) const;
+  [[nodiscard]] bool is_cxl_page(champsim::page_number vpn) const;
   [[nodiscard]] bool coarse_filter_pass(uint64_t vpn_4k) const;
   void generate_perforated_pages(double frag_ratio, const std::string& distribution);
 

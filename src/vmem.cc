@@ -212,6 +212,23 @@ const Device VirtualMemory::select_device(champsim::page_number vpn) {
   return active_device;
 }
 
+bool VirtualMemory::is_cxl_page(champsim::page_number vpn) const
+{
+  if (use_policy && devices.size() == 2) {
+    uint64_t vpn_val = vpn.to<uint64_t>();
+    uint64_t base_2m = (vpn_val >> 9) << 9;
+    auto it = tier_bitmaps.find(base_2m);
+    if (it != tier_bitmaps.end()) {
+      uint64_t sub_idx = vpn_val & 0x1FF;
+      unsigned word = sub_idx / 64;
+      unsigned bit = sub_idx % 64;
+      return (it->second[word] >> bit) & 1;
+    }
+    return true;
+  }
+  return false;
+}
+
 champsim::dynamic_extent VirtualMemory::extent(std::size_t level) const
 {
   const champsim::data::bits lower{LOG2_PAGE_SIZE + champsim::lg2(pte_page_size.count()) * (level - 1)};
