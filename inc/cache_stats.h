@@ -33,6 +33,7 @@ struct cache_stats {
   uint64_t perf_coarse_filtered = 0;
   uint64_t perf_bitmap_stlb_hit = 0;
   uint64_t perf_bitmap_stlb_miss = 0;
+  long perf_bitmap_miss_latency_cycles = 0;  // Total latency for bitmap STLB misses (memory fetches)
 
   // CXL/DRAM split statistics (only meaningful when heatmap allocation is enabled)
   long total_miss_latency_cycles_dram{};  // Latency for requests served by DRAM

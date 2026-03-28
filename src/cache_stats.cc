@@ -22,6 +22,9 @@ cache_stats operator-(cache_stats lhs, cache_stats rhs)
   result.perf_non_hole = lhs.perf_non_hole - rhs.perf_non_hole;
   result.perf_hole = lhs.perf_hole - rhs.perf_hole;
   result.perf_coarse_filtered = lhs.perf_coarse_filtered - rhs.perf_coarse_filtered;
+  result.perf_bitmap_stlb_hit = lhs.perf_bitmap_stlb_hit - rhs.perf_bitmap_stlb_hit;
+  result.perf_bitmap_stlb_miss = lhs.perf_bitmap_stlb_miss - rhs.perf_bitmap_stlb_miss;
+  result.perf_bitmap_miss_latency_cycles = lhs.perf_bitmap_miss_latency_cycles - rhs.perf_bitmap_miss_latency_cycles;
 
   // CXL/DRAM split statistics
   result.total_miss_latency_cycles_dram = lhs.total_miss_latency_cycles_dram - rhs.total_miss_latency_cycles_dram;
