@@ -103,6 +103,7 @@ public:
                                 // this flag can only be set when a response is returned
     uint8_t page_size = 0; // 0=4K, 1=2M (matches PageSize enum)
     uint8_t entry_type = 0; // 0=TLB translation, 1=bitmap entry
+    champsim::page_number saved_2m_ppage{}; // STLB PERF: 2MB base PPN for bitmap classification
 
     struct returned_value {
       champsim::address data;
@@ -188,6 +189,10 @@ public:
 
   std::deque<mshr_type> MSHR;
   std::deque<mshr_type> inflight_writes;
+
+  // STLB perforated page: pending queues for multi-phase bitmap classification
+  std::deque<mshr_type> perf_bitmap_waiting;  // subpage requests waiting for bitmap fetch
+  std::deque<mshr_type> perf_hole_pending;    // confirmed holes needing 4KB PTW
 
   long operate() final;
   void initialize() final;

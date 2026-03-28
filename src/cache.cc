@@ -22,6 +22,7 @@
 #include <fstream>
 #include <iomanip>
 #include <numeric>
+#include <unordered_set>
 #include <fmt/core.h>
 #include <iostream>
 #include <sstream>
@@ -37,6 +38,19 @@
 #include "util/algorithm.h"
 #include "util/bits.h"
 #include "util/span.h"
+
+namespace {
+// Compute STLB address for 2MB-aligned VPN.
+// 2MB-aligned VPNs have lower 9 bits = 0, so they all collide in STLB set 0.
+// Shift right by 9 to place the region index in the set-index bit range.
+// Set a high bit (bit 40 of page_number) to prevent tag collisions with 4KB entries
+// whose VPN might equal region_index. Normal VPNs use at most ~36 bits, so bit 40
+// is safely outside the real VPN range.
+constexpr uint64_t STLB_2M_TAG_MARKER = 1ULL << 40;
+inline champsim::address stlb_addr_2m(uint64_t base_2m) {
+  return champsim::address{champsim::page_number{(base_2m >> 9) | STLB_2M_TAG_MARKER}};
+}
+} // namespace
 
 CACHE::CACHE(CACHE&& other)
     : operable(other),
@@ -190,14 +204,15 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
 {
   cpu = fill_mshr.cpu;
 
-  // ── STLB PERF: store template at 2MB-aligned address for secondary matching ──
-  const bool is_stlb_perf = (fill_mshr.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
-                              && g_vmem && NAME.find("STLB") != std::string::npos);
+  // ── STLB 2MB/PERF: store at 2MB-aligned address for secondary matching ──
+  const bool is_stlb = (g_vmem && NAME.find("STLB") != std::string::npos);
+  const bool is_stlb_2m = (is_stlb && fill_mshr.page_size == static_cast<uint8_t>(PageSize::PAGE_2M));
+  const bool is_stlb_perf = (is_stlb && fill_mshr.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF));
   champsim::address fill_address = fill_mshr.address;
-  if (is_stlb_perf) {
+  if (is_stlb_2m || is_stlb_perf) {
     uint64_t vpn_4k = champsim::page_number{fill_mshr.v_address}.to<uint64_t>();
     uint64_t base_2m = (vpn_4k >> 9) << 9;
-    fill_address = champsim::address{champsim::page_number{base_2m}};
+    fill_address = stlb_addr_2m(base_2m);
   }
 
   // find victim
@@ -261,8 +276,8 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
       ++sim_stats.pf_fill;
     }
 
-    if (is_stlb_perf) {
-      // Fill PERF template at 2MB-aligned address (for secondary matching)
+    if (is_stlb_2m || is_stlb_perf) {
+      // Fill 2MB/PERF entry at 2MB-aligned address (for secondary matching)
       mshr_type fill_copy = fill_mshr;
       fill_copy.address = fill_address;
       *way = fill_block(fill_copy, metadata_thru);
@@ -293,38 +308,83 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   }
   sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
 
-  // ── STLB PERF: classify requesting subpage and transform response to PAGE_4K ──
+  // ── STLB 2MB: synthesize 4KB response from 2MB fill ──
+  if (is_stlb_2m) {
+    champsim::page_number p_page_2m{fill_mshr.data_promise->data};
+    champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+    champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+    auto synth_paddr = champsim::address{champsim::splice(
+        champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
+        champsim::address_slice{off_2m, fill_mshr.v_address})};
+    response_type response{fill_mshr.address, fill_mshr.v_address, synth_paddr, metadata_thru,
+                           fill_mshr.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_2M), 0};
+    response.is_llc_miss = fill_mshr.is_llc_miss;
+    response.is_cxl_memory = fill_mshr.is_cxl_memory;
+    for (auto* ret : fill_mshr.to_return) ret->push_back(response);
+    return true;
+  }
+
+  // ── STLB PERF: handle template fill and bitmap fill ──
   if (is_stlb_perf) {
     uint64_t vpn_4k = champsim::page_number{fill_mshr.v_address}.to<uint64_t>();
+    uint64_t base_2m = (vpn_4k >> 9) << 9;
     champsim::page_number p_page_2m{fill_mshr.data_promise->data};
-    champsim::address synth_paddr;
 
-    if (!g_vmem->coarse_filter_pass(vpn_4k)) {
+    if (fill_mshr.entry_type == 1) {
+      // ── Bitmap fill: classify all waiting subpages for this 2MB region ──
+      // Track bitmap fetch latency (time from MSHR enqueue to fill)
+      if (!this->warmup) {
+        long bm_latency = (current_time - (fill_mshr.time_enqueued + clock_period)) / clock_period;
+        sim_stats.perf_bitmap_miss_latency_cycles += bm_latency;
+      }
+      constexpr uint64_t mask_2m = ~uint64_t{(1ULL << 9) - 1};
       champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
       champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
-      synth_paddr = champsim::address{champsim::splice(
+
+      for (auto it = perf_bitmap_waiting.begin(); it != perf_bitmap_waiting.end(); ) {
+        uint64_t wait_vpn = champsim::page_number{it->v_address}.to<uint64_t>();
+        uint64_t wait_base = wait_vpn & mask_2m;
+        if (wait_base != base_2m) { ++it; continue; }
+
+        if (!g_vmem->is_hole(wait_vpn)) {
+          // Not hole → synthesize 4KB from saved 2MB PPN, respond
+          auto synth_paddr = champsim::address{champsim::splice(
+              champsim::address_slice{pn_2m, champsim::address{it->saved_2m_ppage}},
+              champsim::address_slice{off_2m, it->v_address})};
+          if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_non_hole++; }
+          response_type response{it->address, it->v_address, synth_paddr, metadata_thru,
+                                 it->instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+          for (auto* ret : it->to_return) ret->push_back(response);
+        } else {
+          // Hole → queue for 4KB PTW
+          if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
+          perf_hole_pending.push_back(std::move(*it));
+        }
+        it = perf_bitmap_waiting.erase(it);
+      }
+      return true;
+    }
+
+    // ── PERF template fill (entry_type=0): classify requesting subpage ──
+    if (!g_vmem->coarse_filter_pass(vpn_4k)) {
+      // Coarse filter = 0: not hole → synthesize 4KB, respond immediately
+      champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+      champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+      auto synth_paddr = champsim::address{champsim::splice(
           champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
           champsim::address_slice{off_2m, fill_mshr.v_address})};
       if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_coarse_filtered++; }
-    } else if (!g_vmem->is_hole(vpn_4k)) {
-      champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
-      champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
-      synth_paddr = champsim::address{champsim::splice(
-          champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
-          champsim::address_slice{off_2m, fill_mshr.v_address})};
-      if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_non_hole++; }
+      response_type response{fill_mshr.address, fill_mshr.v_address, synth_paddr, metadata_thru,
+                             fill_mshr.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+      response.is_llc_miss = fill_mshr.is_llc_miss;
+      response.is_cxl_memory = fill_mshr.is_cxl_memory;
+      for (auto* ret : fill_mshr.to_return) ret->push_back(response);
     } else {
-      auto [ppage_4k, penalty] = g_vmem->va_to_pa(fill_mshr.cpu, champsim::page_number{fill_mshr.v_address});
-      synth_paddr = champsim::address{ppage_4k};
-      if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
-    }
-
-    response_type response{fill_mshr.address, fill_mshr.v_address, synth_paddr, metadata_thru,
-                           fill_mshr.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
-    response.is_llc_miss = fill_mshr.is_llc_miss;
-    response.is_cxl_memory = fill_mshr.is_cxl_memory;
-    for (auto* ret : fill_mshr.to_return) {
-      ret->push_back(response);
+      // Coarse filter = 1: need bitmap → queue for bitmap fetch (no response yet)
+      mshr_type bm_waiting = fill_mshr;
+      bm_waiting.saved_2m_ppage = p_page_2m;
+      bm_waiting.data_promise = {}; // reset: this entry will be resolved later, not via this fill
+      perf_bitmap_waiting.push_back(std::move(bm_waiting));
     }
     return true;
   }
@@ -382,33 +442,51 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
     if (way->page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
         && g_vmem && NAME.find("STLB") != std::string::npos) {
       uint64_t vpn_4k = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
+      uint64_t base_2m = (vpn_4k >> 9) << 9;
       champsim::page_number p_page_2m{way->data};
-      champsim::address synth_paddr;
 
       if (!g_vmem->coarse_filter_pass(vpn_4k)) {
+        // Coarse filter = 0: definitely not hole → synthesize 4KB
         champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
         champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
-        synth_paddr = champsim::address{champsim::splice(
+        auto synth_paddr = champsim::address{champsim::splice(
             champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
             champsim::address_slice{off_2m, handle_pkt.v_address})};
         if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_coarse_filtered++; }
-      } else if (!g_vmem->is_hole(vpn_4k)) {
-        champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
-        champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
-        synth_paddr = champsim::address{champsim::splice(
-            champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
-            champsim::address_slice{off_2m, handle_pkt.v_address})};
-        if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_non_hole++; }
+        response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr, metadata_thru,
+                               handle_pkt.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+        for (auto* ret : handle_pkt.to_return) ret->push_back(response);
       } else {
-        auto [ppage_4k, penalty] = g_vmem->va_to_pa(handle_pkt.cpu, champsim::page_number{handle_pkt.v_address});
-        synth_paddr = champsim::address{ppage_4k};
-        if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
-      }
-
-      response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr, metadata_thru,
-                             handle_pkt.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
-      for (auto* ret : handle_pkt.to_return) {
-        ret->push_back(response);
+        // Coarse filter = 1: need bitmap check. Look for cached bitmap in STLB.
+        champsim::address bm_addr = stlb_addr_2m(base_2m);
+        auto [bm_set_begin, bm_set_end] = get_set_span(bm_addr);
+        auto bm_way = std::find_if(bm_set_begin, bm_set_end, [matcher = matches_address(bm_addr, 1)](const auto& x) {
+          return x.valid && matcher(x);
+        });
+        if (bm_way != bm_set_end) {
+          // Bitmap cached in STLB
+          if (!this->warmup) sim_stats.perf_bitmap_stlb_hit++;
+          if (!g_vmem->is_hole(vpn_4k)) {
+            // Not hole → synthesize 4KB
+            champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+            champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+            auto synth_paddr = champsim::address{champsim::splice(
+                champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
+                champsim::address_slice{off_2m, handle_pkt.v_address})};
+            if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_non_hole++; }
+            response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr, metadata_thru,
+                                   handle_pkt.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+            for (auto* ret : handle_pkt.to_return) ret->push_back(response);
+          } else {
+            // Hole → return false so handle_miss routes to 4KB PTW
+            if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
+            return false;
+          }
+        } else {
+          // Bitmap not cached → return false so handle_miss fetches bitmap
+          if (!this->warmup) sim_stats.perf_bitmap_stlb_miss++;
+          return false;
+        }
       }
     } else {
       // Use stored entry's page_size (not request's) — handle normal TLB entries
@@ -427,16 +505,49 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
     }
   }
 
+  // ── STLB secondary 2MB matching for 2MB pages ──
+  // 2MB entries are stored at 2MB-aligned VPN. Sub-page requests miss on the exact
+  // 4KB tag, so we do a secondary lookup at the 2MB-aligned address.
+  if (!hit && g_vmem
+      && handle_pkt.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
+      && NAME.find("STLB") != std::string::npos) {
+    uint64_t vpn_4k = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
+    uint64_t base_2m = (vpn_4k >> 9) << 9;
+    champsim::address addr_2m = stlb_addr_2m(base_2m);
+
+    auto [set_begin_2m, set_end_2m] = get_set_span(addr_2m);
+    auto way_2m = std::find_if(set_begin_2m, set_end_2m, [matcher = matches_address(addr_2m)](const auto& x) {
+      return x.valid && x.page_size == static_cast<uint8_t>(PageSize::PAGE_2M) && matcher(x);
+    });
+
+    if (way_2m != set_end_2m) {
+      // Secondary hit: synthesize 4KB physical address from 2MB base PPN
+      champsim::page_number p_page_2m{way_2m->data};
+      champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+      champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+      auto synth_paddr = champsim::address{champsim::splice(
+          champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
+          champsim::address_slice{off_2m, handle_pkt.v_address})};
+
+      sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+      response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr,
+                             metadata_thru, handle_pkt.instr_depend_on_me,
+                             static_cast<uint8_t>(PageSize::PAGE_2M), 0};
+      for (auto* ret : handle_pkt.to_return) ret->push_back(response);
+      return true;
+    }
+    // 2MB template not in STLB → fall through as regular miss
+  }
+
   // ── STLB secondary 2MB matching for perforated pages ──
   // When a 4KB request for a PERF subpage misses in STLB on the exact 4KB tag,
   // try matching against the 2MB PERF template stored at the 2MB-aligned address.
-  // On hit: classify (coarse filter → bitmap), synthesize 4KB translation, return as PAGE_4K.
   if (!hit && g_vmem
       && handle_pkt.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
       && NAME.find("STLB") != std::string::npos) {
     uint64_t vpn_4k = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
     uint64_t base_2m = (vpn_4k >> 9) << 9;
-    champsim::address addr_2m{champsim::page_number{base_2m}};
+    champsim::address addr_2m = stlb_addr_2m(base_2m);
 
     auto [set_begin_2m, set_end_2m] = get_set_span(addr_2m);
     auto way_2m = std::find_if(set_begin_2m, set_end_2m, [matcher = matches_address(addr_2m)](const auto& x) {
@@ -444,53 +555,62 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
     });
 
     if (way_2m != set_end_2m) {
-      // Secondary hit on PERF template. Classify this subpage.
-      champsim::page_number p_page_2m{way_2m->data}; // 2MB base PPN
-
-      // Synthesize 4KB physical address (works for both non-hole and hole)
-      champsim::address synth_paddr;
-      bool is_hole = false;
+      // Secondary hit on PERF template.
+      champsim::page_number p_page_2m{way_2m->data};
 
       if (!g_vmem->coarse_filter_pass(vpn_4k)) {
-        // Fast path: coarse filter rejects → definitely non-hole
+        // Coarse filter = 0: definitely not hole → synthesize 4KB
         champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
         champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
-        synth_paddr = champsim::address{champsim::splice(
+        auto synth_paddr = champsim::address{champsim::splice(
             champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
             champsim::address_slice{off_2m, handle_pkt.v_address})};
         if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_coarse_filtered++; }
-      } else if (!g_vmem->is_hole(vpn_4k)) {
-        // Bitmap confirms non-hole → synthesize from 2MB PPN
-        champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
-        champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
-        synth_paddr = champsim::address{champsim::splice(
-            champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
-            champsim::address_slice{off_2m, handle_pkt.v_address})};
-        if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_non_hole++; }
+
+        sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+        response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr,
+                               metadata_thru, handle_pkt.instr_depend_on_me,
+                               static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+        for (auto* ret : handle_pkt.to_return) ret->push_back(response);
+        return true;
+      }
+
+      // Coarse filter = 1: check bitmap cache in STLB
+      auto [bm_set_begin, bm_set_end] = get_set_span(addr_2m);
+      auto bm_way = std::find_if(bm_set_begin, bm_set_end, [matcher = matches_address(addr_2m, 1)](const auto& x) {
+        return x.valid && matcher(x);
+      });
+
+      if (bm_way != bm_set_end) {
+        // Bitmap cached
+        if (!this->warmup) sim_stats.perf_bitmap_stlb_hit++;
+        if (!g_vmem->is_hole(vpn_4k)) {
+          // Not hole → synthesize 4KB
+          champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+          champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+          auto synth_paddr = champsim::address{champsim::splice(
+              champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
+              champsim::address_slice{off_2m, handle_pkt.v_address})};
+          if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_non_hole++; }
+
+          sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+          response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr,
+                                 metadata_thru, handle_pkt.instr_depend_on_me,
+                                 static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+          for (auto* ret : handle_pkt.to_return) ret->push_back(response);
+          return true;
+        } else {
+          // Hole → return false so handle_miss routes to 4KB PTW
+          if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
+          return false;
+        }
       } else {
-        // Hole → get real 4KB PPN via shadow walk (modeled as va_to_pa call)
-        auto [ppage_4k, penalty] = g_vmem->va_to_pa(handle_pkt.cpu, champsim::page_number{handle_pkt.v_address});
-        synth_paddr = champsim::address{ppage_4k};
-        is_hole = true;
-        if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
+        // Bitmap not cached → return false so handle_miss fetches bitmap
+        if (!this->warmup) sim_stats.perf_bitmap_stlb_miss++;
+        return false;
       }
-
-      // Return synthesized PAGE_4K response
-      sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
-      response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr,
-                             metadata_thru, handle_pkt.instr_depend_on_me,
-                             static_cast<uint8_t>(PageSize::PAGE_4K), 0};
-      for (auto* ret : handle_pkt.to_return) {
-        ret->push_back(response);
-      }
-
-      if constexpr (champsim::debug_print) {
-        fmt::print("[{}_PERF] secondary_hit vpn={:#x} hole={} synth_paddr={} cycle: {}\n",
-                   NAME, vpn_4k, is_hole, synth_paddr,
-                   current_time.time_since_epoch() / clock_period);
-      }
-      return true;
     }
+    // Template not in STLB → fall through as regular miss
   }
 
   return hit;
@@ -528,6 +648,96 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} type: {} local_prefetch: {} cycle: {}\n", NAME, __func__, handle_pkt.instr_id,
                handle_pkt.address, handle_pkt.v_address, access_type_names.at(champsim::to_underlying(handle_pkt.type)), handle_pkt.prefetch_from_this,
                current_time.time_since_epoch() / clock_period);
+  }
+
+  // ── STLB PERF routing: bitmap fetch or hole 4KB PTW ──
+  // try_hit returned false for a PERF page. Determine why and route accordingly.
+  if (g_vmem && handle_pkt.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
+      && NAME.find("STLB") != std::string::npos) {
+    uint64_t vpn_4k = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
+    uint64_t base_2m = (vpn_4k >> 9) << 9;
+    champsim::address addr_2m = stlb_addr_2m(base_2m);
+
+    // Check if PERF template exists in STLB
+    auto [set_begin_2m, set_end_2m] = get_set_span(addr_2m);
+    auto way_2m = std::find_if(set_begin_2m, set_end_2m, [matcher = matches_address(addr_2m)](const auto& x) {
+      return x.valid && x.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF) && matcher(x);
+    });
+
+    if (way_2m != set_end_2m) {
+      // Template exists — try_hit failed because of bitmap miss or hole
+      champsim::page_number p_page_2m{way_2m->data};
+
+      // Check bitmap entry in STLB
+      auto bm_way = std::find_if(set_begin_2m, set_end_2m, [matcher = matches_address(addr_2m, 1)](const auto& x) {
+        return x.valid && matcher(x);
+      });
+
+      if (bm_way != set_end_2m && g_vmem->is_hole(vpn_4k)) {
+        // Bitmap cached + hole → queue for 4KB PTW
+        mshr_type hole_entry{handle_pkt, current_time};
+        hole_entry.saved_2m_ppage = p_page_2m;
+        perf_hole_pending.push_back(std::move(hole_entry));
+        sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+        return true;
+      }
+
+      if (bm_way == set_end_2m) {
+        // Bitmap not cached → queue for bitmap fetch
+        mshr_type bm_waiting{handle_pkt, current_time};
+        bm_waiting.saved_2m_ppage = p_page_2m;
+        bm_waiting.to_return = handle_pkt.to_return;
+        perf_bitmap_waiting.push_back(std::move(bm_waiting));
+
+        // Check if bitmap MSHR is already inflight
+        auto existing_bm = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(addr_2m, 1));
+        if (existing_bm != MSHR.end()) {
+          // Bitmap fetch already inflight → just queue, don't issue again
+          sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+          return true;
+        }
+
+        // Issue bitmap fetch to PTW
+        bool mshr_full = (MSHR.size() == MSHR_SIZE);
+        if (mshr_full) {
+          sim_stats.mshr_congestion_cycles++;
+          perf_bitmap_waiting.pop_back(); // undo the queue add
+          return false;
+        }
+
+        request_type bm_req;
+        bm_req.asid[0] = handle_pkt.asid[0];
+        bm_req.asid[1] = handle_pkt.asid[1];
+        bm_req.type = access_type::LOAD;
+        bm_req.cpu = handle_pkt.cpu;
+        bm_req.address = addr_2m; // 2MB-aligned VPN
+        bm_req.v_address = champsim::address{champsim::page_number{base_2m}}; // for PTW to get bitmap paddr
+        bm_req.instr_id = handle_pkt.instr_id;
+        bm_req.ip = handle_pkt.ip;
+        bm_req.entry_type = 1;
+        bm_req.page_size = static_cast<uint8_t>(PageSize::PAGE_PERF);
+        bm_req.response_requested = true;
+        bm_req.is_translated = true;
+
+        if (!lower_level->add_rq(bm_req)) {
+          perf_bitmap_waiting.pop_back();
+          return false;
+        }
+
+        // Create bitmap MSHR entry
+        mshr_type bm_mshr{handle_pkt, current_time};
+        bm_mshr.address = addr_2m;
+        bm_mshr.entry_type = 1;
+        bm_mshr.page_size = static_cast<uint8_t>(PageSize::PAGE_PERF);
+        bm_mshr.saved_2m_ppage = p_page_2m;
+        bm_mshr.to_return = {}; // no direct return; responses go through perf_bitmap_waiting
+        MSHR.push_back(std::move(bm_mshr));
+
+        sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+        return true;
+      }
+    }
+    // Template not in STLB → fall through to normal PTW path
   }
 
   mshr_type to_allocate{handle_pkt, current_time};
@@ -807,6 +1017,96 @@ long CACHE::operate()
                stash_bandwidth_consumed, std::size(translation_stash), channels_bandwidth_consumed, pq_bandwidth_consumed, initiate_tag_bw.amount_remaining());
   }
 
+  // ── STLB: process perforated page pending queues ──
+  if (g_vmem && NAME.find("STLB") != std::string::npos) {
+    // Process perf_bitmap_waiting entries that need bitmap fetch
+    // (entries added by handle_fill for PERF template with coarse_filter=1)
+    // Group by 2MB region — issue one bitmap fetch per region
+    {
+      constexpr uint64_t mask_2m = ~uint64_t{(1ULL << 9) - 1};
+      std::unordered_set<uint64_t> regions_needing_fetch;
+      for (const auto& entry : perf_bitmap_waiting) {
+        uint64_t base = champsim::page_number{entry.v_address}.to<uint64_t>() & mask_2m;
+        // Check if bitmap MSHR already exists
+        champsim::address addr_2m = stlb_addr_2m(base);
+        auto existing = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(addr_2m, 1));
+        if (existing == MSHR.end()) {
+          regions_needing_fetch.insert(base);
+        }
+      }
+      for (uint64_t base_2m : regions_needing_fetch) {
+        if (MSHR.size() >= MSHR_SIZE) break;
+        champsim::address addr_2m = stlb_addr_2m(base_2m);
+
+        request_type bm_req;
+        bm_req.type = access_type::LOAD;
+        bm_req.cpu = cpu;
+        bm_req.address = addr_2m;
+        bm_req.v_address = champsim::address{champsim::page_number{base_2m}};
+        bm_req.entry_type = 1;
+        bm_req.page_size = static_cast<uint8_t>(PageSize::PAGE_PERF);
+        bm_req.response_requested = true;
+        bm_req.is_translated = true;
+
+        if (lower_level->add_rq(bm_req)) {
+          // Construct mshr_type from the bm_req via tag_lookup_type
+          tag_lookup_type bm_tag{bm_req};
+          mshr_type bm_mshr_entry{bm_tag, current_time};
+          bm_mshr_entry.address = addr_2m;
+          bm_mshr_entry.entry_type = 1;
+          bm_mshr_entry.page_size = static_cast<uint8_t>(PageSize::PAGE_PERF);
+          bm_mshr_entry.to_return = {}; // no direct return
+          // Find a waiting entry for saved_2m_ppage
+          for (const auto& w : perf_bitmap_waiting) {
+            uint64_t w_base = champsim::page_number{w.v_address}.to<uint64_t>() & mask_2m;
+            if (w_base == base_2m) { bm_mshr_entry.saved_2m_ppage = w.saved_2m_ppage; break; }
+          }
+          MSHR.push_back(std::move(bm_mshr_entry));
+        }
+      }
+    }
+
+    // Process perf_hole_pending: issue real 4KB PTW for confirmed hole subpages.
+    // The result will be cached in STLB as a 4KB hole PTE entry.
+    for (auto it = perf_hole_pending.begin(); it != perf_hole_pending.end(); ) {
+      // Check if 4KB MSHR already exists for this VPN (from concurrent request)
+      auto existing_4k = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(it->address, 0));
+      if (existing_4k != MSHR.end()) {
+        // Merge to_return into existing MSHR
+        *existing_4k = mshr_type::merge(*existing_4k, *it);
+        it = perf_hole_pending.erase(it);
+        continue;
+      }
+
+      if (MSHR.size() >= MSHR_SIZE) break;
+
+      request_type hole_req;
+      hole_req.asid[0] = it->asid[0];
+      hole_req.asid[1] = it->asid[1];
+      hole_req.type = access_type::LOAD;
+      hole_req.cpu = it->cpu;
+      hole_req.address = it->address;
+      hole_req.v_address = it->v_address;
+      hole_req.instr_id = it->instr_id;
+      hole_req.ip = it->ip;
+      hole_req.page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
+      hole_req.entry_type = 0;
+      hole_req.response_requested = true;
+      hole_req.is_translated = true;
+
+      if (lower_level->add_rq(hole_req)) {
+        mshr_type hole_mshr = *it;
+        hole_mshr.page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
+        hole_mshr.entry_type = 0;
+        hole_mshr.data_promise = {}; // CRITICAL: reset to unknown readiness
+        MSHR.push_back(std::move(hole_mshr));
+        it = perf_hole_pending.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
   return progress + fill_bw.amount_consumed() + initiate_tag_bw.amount_consumed() + tag_check_bw.amount_consumed();
 }
 
@@ -928,56 +1228,10 @@ void CACHE::finish_translation(const response_type& packet)
   auto pkt_page_size = packet.page_size;
   auto pkt_entry_type = packet.entry_type;
 
-  // ── Handle bitmap response (step 2 of perforated page two-step translation) ──
-  if (pkt_entry_type == 1) {
-    // Bitmap STLB response: resolve entries that have bitmap_check_pending
-    constexpr uint64_t mask_2m = ~uint64_t{(1ULL << 9) - 1};
-    uint64_t pkt_2m_base = champsim::page_number{packet.v_address}.to<uint64_t>() & mask_2m;
-
-    auto resolve_bitmap = [pkt_2m_base, this](auto& entry) {
-      if (!entry.bitmap_check_pending || entry.is_translated)
-        return;
-      uint64_t entry_2m_base = champsim::page_number{entry.v_address}.to<uint64_t>() & mask_2m;
-      if (entry_2m_base != pkt_2m_base)
-        return;
-
-      uint64_t vpn_4k = champsim::page_number{entry.v_address}.to<uint64_t>();
-      bool hole = g_vmem->is_hole(vpn_4k);
-
-      if (!hole) {
-        // Non-hole: translate with saved 2MB PPN
-        champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
-        champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
-        entry.address = champsim::address{champsim::splice(
-            champsim::address_slice{pn_2m, champsim::address{entry.saved_2m_ppage}},
-            champsim::address_slice{off_2m, entry.v_address})};
-        entry.is_translated = true;
-        entry.bitmap_check_pending = false;
-        if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_non_hole++; }
-      } else {
-        // Hole → trigger real 4KB PTW walk (not direct va_to_pa)
-        // Change page_size to 4KB and re-enter translation pipeline via DTLB (4KB chain)
-        entry.page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
-        entry.page_size_determined = true; // prevent re-query of pmap
-        entry.entry_type = 0; // back to normal TLB request
-        entry.translate_issued = false;
-        entry.bitmap_check_pending = false;
-        if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_hole++; }
-      }
-
-      if constexpr (champsim::debug_print) {
-        fmt::print("[{}_TRANSLATE] finish_translation BITMAP vpn={:#x} hole={} translated={} cycle: {}\n",
-                   this->NAME, vpn_4k, hole, entry.is_translated,
-                   this->current_time.time_since_epoch() / this->clock_period);
-      }
-    };
-
-    for (auto& entry : inflight_tag_check)
-      resolve_bitmap(entry);
-    for (auto& entry : translation_stash)
-      resolve_bitmap(entry);
+  // entry_type=1 bitmap responses are handled internally by STLB.
+  // They should never reach L1. If they do, ignore them.
+  if (pkt_entry_type == 1)
     return;
-  }
 
   // ── Normal translation response (4KB, 2MB, or first step of PERF) ──
   auto matches_vpage = [page_num = champsim::page_number{packet.v_address}, pkt_page_size](const auto& entry) {
@@ -1086,32 +1340,18 @@ void CACHE::issue_translation(tag_lookup_type& q_entry) const
     fwd_pkt.page_size = q_entry.page_size;
     fwd_pkt.entry_type = q_entry.entry_type;
 
-    if (q_entry.bitmap_check_pending) {
-      // Bitmap lookup: use 2MB-base VPN as address, entry_type=1
-      // This goes through DTLB_2M → STLB. STLB stores bitmap entries with entry_type=1.
-      uint64_t vpn_4k = champsim::page_number{q_entry.v_address}.to<uint64_t>();
-      uint64_t base_2m = (vpn_4k >> 9) << 9;
-      fwd_pkt.address = champsim::address{champsim::page_number{base_2m}};
-      fwd_pkt.entry_type = 1;
-      fwd_pkt.page_size = static_cast<uint8_t>(PageSize::PAGE_PERF);
+    fwd_pkt.address = q_entry.address;
 
-      // Route bitmap requests through 2MB TLB chain
-      champsim::channel* target_tlb = (lower_translate_2m != nullptr) ? lower_translate_2m : lower_translate;
-      q_entry.translate_issued = target_tlb->add_rq(fwd_pkt);
-    } else {
-      fwd_pkt.address = q_entry.address;
-
-      // Route to 2MB TLB only for pure 2MB pages.
-      // PERF pages go through DTLB (4KB chain): L1 DTLB stores 4KB entries per subpage,
-      // STLB holds the 2MB PERF template and does classification via secondary matching.
-      champsim::channel* target_tlb = lower_translate;
-      if (q_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M) &&
-          lower_translate_2m != nullptr) {
-        target_tlb = lower_translate_2m;
-      }
-
-      q_entry.translate_issued = target_tlb->add_rq(fwd_pkt);
+    // Route to 2MB TLB only for pure 2MB pages.
+    // PERF pages go through DTLB (4KB chain): L1 DTLB stores 4KB entries per subpage,
+    // STLB holds the 2MB PERF template and does classification via secondary matching.
+    champsim::channel* target_tlb = lower_translate;
+    if (q_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M) &&
+        lower_translate_2m != nullptr) {
+      target_tlb = lower_translate_2m;
     }
+
+    q_entry.translate_issued = target_tlb->add_rq(fwd_pkt);
 
     if constexpr (champsim::debug_print) {
       if (q_entry.translate_issued) {
@@ -1328,6 +1568,7 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.perf_hole = sim_stats.perf_hole;
   roi_stats.perf_bitmap_stlb_hit = sim_stats.perf_bitmap_stlb_hit;
   roi_stats.perf_bitmap_stlb_miss = sim_stats.perf_bitmap_stlb_miss;
+  roi_stats.perf_bitmap_miss_latency_cycles = sim_stats.perf_bitmap_miss_latency_cycles;
 
   for (auto* ul : upper_levels) {
     ul->roi_stats.RQ_ACCESS = ul->sim_stats.RQ_ACCESS;
