@@ -83,7 +83,7 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
   auto uniq_end = std::unique(std::begin(cpus), std::end(cpus));
   cpus.erase(uniq_end, std::end(cpus));
 
-  for (const auto type : {access_type::LOAD, access_type::RFO, access_type::PREFETCH, access_type::WRITE, access_type::TRANSLATION}) {
+  for (const auto type : {access_type::LOAD, access_type::RFO, access_type::PREFETCH, access_type::WRITE, access_type::TRANSLATION, access_type::BITMAP}) {
     for (auto cpu : cpus) {
       stats.hits.allocate(std::pair{type, cpu});
       stats.misses.allocate(std::pair{type, cpu});
@@ -98,7 +98,7 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
     misses_value_type total_misses = 0;
     mshr_merge_value_type total_mshr_merge = 0;
     mshr_return_value_type total_mshr_return = 0;
-    for (const auto type : {access_type::LOAD, access_type::RFO, access_type::PREFETCH, access_type::WRITE, access_type::TRANSLATION}) {
+    for (const auto type : {access_type::LOAD, access_type::RFO, access_type::PREFETCH, access_type::WRITE, access_type::TRANSLATION, access_type::BITMAP}) {
       total_hits += stats.hits.value_or(std::pair{type, cpu}, hits_value_type{});
       total_misses += stats.misses.value_or(std::pair{type, cpu}, misses_value_type{});
       total_mshr_merge += stats.mshr_merge.value_or(std::pair{type, cpu}, mshr_merge_value_type{});
@@ -108,7 +108,7 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
     fmt::format_string<std::string_view, std::string_view, int, int, int> hitmiss_fmtstr{
         "cpu{}->{} {:<12s} ACCESS: {:10d} HIT: {:10d} MISS: {:10d} MSHR_MERGE: {:10d}"};
     lines.push_back(fmt::format(hitmiss_fmtstr, cpu, stats.name, "TOTAL", total_hits + total_misses, total_hits, total_misses, total_mshr_merge));
-    for (const auto type : {access_type::LOAD, access_type::RFO, access_type::PREFETCH, access_type::WRITE, access_type::TRANSLATION}) {
+    for (const auto type : {access_type::LOAD, access_type::RFO, access_type::PREFETCH, access_type::WRITE, access_type::TRANSLATION, access_type::BITMAP}) {
       lines.push_back(
           fmt::format(hitmiss_fmtstr, cpu, stats.name, access_type_names.at(champsim::to_underlying(type)),
                       stats.hits.value_or(std::pair{type, cpu}, hits_value_type{}) + stats.misses.value_or(std::pair{type, cpu}, misses_value_type{}),
@@ -144,13 +144,25 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
 
     // Perforated page statistics
     if (stats.perf_total > 0) {
-      lines.push_back(fmt::format("cpu{}->{} PERFORATED PAGE TRANSLATIONS: {}", cpu, stats.name, stats.perf_total));
-      lines.push_back(fmt::format("  Coarse filter fast-path: {} ({:.1f}%)", stats.perf_coarse_filtered,
+      uint64_t bitmap_needed = stats.perf_total - stats.perf_coarse_filtered;
+      uint64_t bitmap_lookups = stats.perf_bitmap_stlb_hit + stats.perf_bitmap_stlb_miss;
+      lines.push_back(fmt::format("cpu{}->{} PERFORATED PAGE TRANSLATIONS: {} (N)", cpu, stats.name, stats.perf_total));
+      lines.push_back(fmt::format("  Coarse filter fast-path (no bitmap): {} ({:.1f}%)", stats.perf_coarse_filtered,
                                   100.0 * stats.perf_coarse_filtered / stats.perf_total));
-      lines.push_back(fmt::format("  Bitmap non-hole: {} ({:.1f}%)", stats.perf_non_hole,
-                                  100.0 * stats.perf_non_hole / stats.perf_total));
-      lines.push_back(fmt::format("  Hole (re-routed to 4KB): {} ({:.1f}%)", stats.perf_hole,
-                                  100.0 * stats.perf_hole / stats.perf_total));
+      lines.push_back(fmt::format("  Bitmap access needed (M=N-coarse): {} ({:.1f}%)", bitmap_needed,
+                                  100.0 * bitmap_needed / stats.perf_total));
+      lines.push_back(fmt::format("    Bitmap non-hole: {}", stats.perf_non_hole));
+      lines.push_back(fmt::format("    Bitmap hole (re-routed to 4KB PTW): {}", stats.perf_hole));
+      if (bitmap_lookups > 0) {
+        lines.push_back(fmt::format("  Bitmap STLB hit: {} miss: {} ({:.1f}% hit rate)",
+                                    stats.perf_bitmap_stlb_hit, stats.perf_bitmap_stlb_miss,
+                                    100.0 * stats.perf_bitmap_stlb_hit / bitmap_lookups));
+        if (stats.perf_bitmap_stlb_miss > 0) {
+          lines.push_back(fmt::format("  Bitmap memory fetches: {} avg latency: {:.1f} cycles",
+                                      stats.perf_bitmap_stlb_miss,
+                                      static_cast<double>(stats.perf_bitmap_miss_latency_cycles) / stats.perf_bitmap_stlb_miss));
+        }
+      }
     }
 
     lines.push_back(
@@ -189,6 +201,7 @@ std::vector<std::string> champsim::plain_printer::format(SHIM_LAYER::stats_type 
   lines.push_back(fmt::format("  WRITE: {:10}", stats.dram_requests_write));
   lines.push_back(fmt::format("  PREFETCH: {:10}", stats.dram_requests_prefetch));
   lines.push_back(fmt::format("  TRANSLATION: {:10}", stats.dram_requests_translation));
+  lines.push_back(fmt::format("  BITMAP: {:10}", stats.dram_requests_bitmap));
   lines.push_back(fmt::format("  TOTAL: {:10}", stats.dram_requests_total));
 
   // CXL request statistics
@@ -197,6 +210,7 @@ std::vector<std::string> champsim::plain_printer::format(SHIM_LAYER::stats_type 
   lines.push_back(fmt::format("  WRITE: {:10}", stats.cxl_requests_write));
   lines.push_back(fmt::format("  PREFETCH: {:10}", stats.cxl_requests_prefetch));
   lines.push_back(fmt::format("  TRANSLATION: {:10}", stats.cxl_requests_translation));
+  lines.push_back(fmt::format("  BITMAP: {:10}", stats.cxl_requests_bitmap));
   lines.push_back(fmt::format("  TOTAL: {:10}", stats.cxl_requests_total));
 
   // Buffer congestion statistics

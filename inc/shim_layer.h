@@ -68,12 +68,14 @@ public:
     uint64_t dram_requests_write = 0;
     uint64_t dram_requests_prefetch = 0;
     uint64_t dram_requests_translation = 0;
+    uint64_t dram_requests_bitmap = 0;
     uint64_t dram_requests_total = 0;
 
     uint64_t cxl_requests_read = 0;
     uint64_t cxl_requests_write = 0;
     uint64_t cxl_requests_prefetch = 0;
     uint64_t cxl_requests_translation = 0;
+    uint64_t cxl_requests_bitmap = 0;
     uint64_t cxl_requests_total = 0;
 
     uint64_t rq_full = 0;

@@ -126,10 +126,14 @@ long SHIM_LAYER::route() {
           stats_func_cxl();
           if (!warmup && pkt.type == access_type::TRANSLATION)
             sim_stats.cxl_requests_translation++;
+          if (!warmup && pkt.type == access_type::BITMAP)
+            sim_stats.cxl_requests_bitmap++;
         } else {
           stats_func_dram();
           if (!warmup && pkt.type == access_type::TRANSLATION)
             sim_stats.dram_requests_translation++;
+          if (!warmup && pkt.type == access_type::BITMAP)
+            sim_stats.dram_requests_bitmap++;
         }
         it->reset();
         lower_bw.consume();

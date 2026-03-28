@@ -57,7 +57,7 @@ void to_json(nlohmann::json& j, const CACHE::stats_type& stats)
     total_downstream_demands -= stats.mshr_return.value_or(std::pair{access_type::PREFETCH, cpu}, mshr_return_value_type{});
 
   statsmap.emplace("miss latency", std::ceil(stats.total_miss_latency_cycles) / std::ceil(total_downstream_demands));
-  for (const auto type : {access_type::LOAD, access_type::RFO, access_type::PREFETCH, access_type::WRITE, access_type::TRANSLATION}) {
+  for (const auto type : {access_type::LOAD, access_type::RFO, access_type::PREFETCH, access_type::WRITE, access_type::TRANSLATION, access_type::BITMAP}) {
     std::vector<hits_value_type> hits;
     std::vector<misses_value_type> misses;
     std::vector<mshr_merge_value_type> mshr_merges;

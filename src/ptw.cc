@@ -64,17 +64,18 @@ auto PageTableWalker::handle_read(const request_type& handle_pkt, channel_type* 
     bm_mshr.perf_state = mshr_type::PerfState::BITMAP_PENDING;
     bm_mshr.translation_level = 0;
 
-    // Use get_pte_pa(level=0) to model the bitmap memory location
-    auto [bitmap_addr, penalty] = vmem->get_pte_pa(handle_pkt.cpu, champsim::page_number{handle_pkt.v_address}, 0);
-    bm_mshr.address = bitmap_addr;
+    // Use real bitmap physical address allocated in vmem
+    uint64_t base_2m = (champsim::page_number{handle_pkt.v_address}.to<uint64_t>() >> 9) << 9;
+    auto bitmap_paddr = vmem->get_bitmap_paddr(base_2m);
+    bm_mshr.address = champsim::address{bitmap_paddr};
 
     if (handle_pkt.response_requested) {
       bm_mshr.to_return = {&ul->returned};
     }
 
     if constexpr (champsim::debug_print) {
-      fmt::print("[{}] {} BITMAP_REQUEST v_address: {} bitmap_addr: {} cycle: {}\n",
-                 NAME, __func__, handle_pkt.v_address, bitmap_addr, current_time.time_since_epoch() / clock_period);
+      fmt::print("[{}] {} BITMAP_REQUEST v_address: {} bitmap_paddr: {:#x} cycle: {}\n",
+                 NAME, __func__, handle_pkt.v_address, bitmap_paddr, current_time.time_since_epoch() / clock_period);
     }
 
     return step_translation(bm_mshr);
@@ -149,7 +150,7 @@ auto PageTableWalker::step_translation(const mshr_type& source) -> std::optional
   packet.asid[0] = source.asid[0];
   packet.asid[1] = source.asid[1];
   packet.is_translated = true;
-  packet.type = access_type::TRANSLATION;
+  packet.type = (source.entry_type == 1) ? access_type::BITMAP : access_type::TRANSLATION;
 
   bool success = lower_level->add_rq(packet);
   if (success) {
