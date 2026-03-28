@@ -68,6 +68,8 @@ private:
   // Perforated page support: hole bitmaps and coarse filters
   std::unordered_map<uint64_t, std::array<uint64_t, 8>> hole_bitmaps; // 2MB-base VPN → 512-bit bitmap
   std::unordered_map<uint64_t, uint8_t> coarse_filters;               // 2MB-base VPN → 8-bit filter
+  std::unordered_map<uint64_t, uint64_t> bitmap_paddrs;               // 2MB-base VPN → bitmap physical address
+  uint64_t next_bitmap_paddr = 0x80000;                                // next bitmap paddr (starts at 512KB)
 
   // Latency-parity: physical page mapping from 2MB dram-only golden run
   // Key: 2MB VPN (in hugepage units), Value: (2MB PPN in hugepage units, is_dram)
@@ -194,6 +196,7 @@ public:
   void load_policy(const std::string& path);
 
   void set_default_page_size(PageSize ps) { default_page_size = ps; }
+  void carve_2mb_pages();
 
   // Perforated page support
   static constexpr unsigned PERF_COARSE_FILTER_CYCLES = 1;
@@ -203,8 +206,7 @@ public:
   [[nodiscard]] bool is_hole(uint64_t vpn_4k) const;
   [[nodiscard]] bool is_cxl_page(champsim::page_number vpn) const;
   [[nodiscard]] bool coarse_filter_pass(uint64_t vpn_4k) const;
-  void generate_perforated_pages(double frag_ratio, const std::string& distribution);
-
+  [[nodiscard]] uint64_t get_bitmap_paddr(uint64_t base_2m_vpn) const;
   /**
    * Get the page size for the given virtual page number (4KB granularity).
    * If a pmap is loaded, looks up the VPN. Default is PAGE_4K.

@@ -109,15 +109,46 @@ void VirtualMemory::populate_pages()
     std::for_each(list.begin(), list.end(), initialize_free_list);
   });
 
-  // Build 2MB free lists by carving out 2MB-aligned groups of 512 contiguous 4KB pages
-  // Only carve out up to half of each device's pages (by count of 2MB groups), keeping
-  // enough 4KB pages for page tables and small allocations.
+  // 2MB carving is deferred to carve_2mb_pages(), called after page mode is set.
   ppage_free_list_2m.resize(devices.size());
+}
+
+void VirtualMemory::carve_2mb_pages()
+{
+  // Carving ratio depends on page mode:
+  //   PAGE_4K:  no carving — all pages stay in 4KB pool (maximizes 4KB capacity)
+  //   PAGE_2M:  carve 3/4 — most pages go to 2MB pool, 1/4 remains for page tables
+  //   PAGE_PERF (mixed): carve 1/2 — balanced split for both 2MB and 4KB allocations
+  //
+  // Mirror constraint: when there are 2 devices (DRAM + CXL), DRAM's 2MB pool
+  // must not exceed the smaller device's capacity. Cross-device mirroring maps
+  // DRAM PPN → CXL PPN via offset, so DRAM data pages must reside in the
+  // address range mirrorable to CXL. This caps the 2MB pool for DRAM (device 0).
+  std::size_t mirror_cap_2m = std::numeric_limits<std::size_t>::max(); // no cap by default
+  if (devices.size() == 2) {
+    auto smaller_size = std::min(devices[0]->size(), devices[1]->size());
+    // Subtract 1: the 2MB pool doesn't start at PPN 0 (first 2MB is reserved),
+    // so the last entry's mirror would overshoot CXL range by one 2MB page.
+    mirror_cap_2m = smaller_size.count() / HUGE_PAGE_SIZE_BYTES - 1;
+    fmt::print("[VMEM] Mirror constraint: 2MB pool capped at {} entries ({} GB) per device\n",
+               mirror_cap_2m, mirror_cap_2m * 2 / 1024);
+  }
+
   for (std::size_t dev_idx = 0; dev_idx < ppage_free_list.size(); ++dev_idx) {
     auto& list_4k = ppage_free_list[dev_idx];
     auto& list_2m = ppage_free_list_2m[dev_idx];
-    // Limit: at most half of total pages go to 2MB pool
-    std::size_t max_2m_pages = list_4k.size() / (512 * 2);
+    std::size_t max_2m_pages = 0;
+    if (default_page_size == PageSize::PAGE_2M) {
+      max_2m_pages = list_4k.size() * 3 / (512 * 4);  // 3/4 to 2MB
+    } else if (default_page_size == PageSize::PAGE_PERF) {
+      max_2m_pages = list_4k.size() / (512 * 2);       // 1/2 to 2MB
+    }
+    // PAGE_4K: max_2m_pages = 0, no carving
+
+    // Apply mirror cap
+    if (max_2m_pages > mirror_cap_2m)
+      max_2m_pages = mirror_cap_2m;
+
     std::size_t i = 0;
     while (i + 512 <= list_4k.size() && list_2m.size() < max_2m_pages) {
       auto base_ppn = list_4k[i].to<uint64_t>();
@@ -138,6 +169,12 @@ void VirtualMemory::populate_pages()
       }
       ++i;
     }
+    fmt::print("[VMEM] Device {}: page_mode={}, 2MB pool={} ({} GB), 4KB pool={} ({:.2f} GB)\n",
+               dev_idx,
+               default_page_size == PageSize::PAGE_4K ? "4kb" :
+               default_page_size == PageSize::PAGE_2M ? "2mb" : "mixed",
+               list_2m.size(), list_2m.size() * 2 / 1024,
+               list_4k.size(), list_4k.size() * 4096.0 / (1024.0 * 1024.0 * 1024.0));
   }
 }
 
@@ -256,9 +293,8 @@ champsim::page_number VirtualMemory::allocate_ppage(const Device& dev)
       if (protected_ppages.find(candidate.to<uint64_t>()) == protected_ppages.end())
         return candidate;
     }
-    fmt::print("[VMEM] WARNING: Out of physical memory for device {}, repopulating\n", get_device_index(dev));
-    populate_pages();
-    shuffle_pages();
+    fmt::print("[VMEM] FATAL: Out of physical memory for device {} — repopulate disabled\n", get_device_index(dev));
+    assert(false && "Out of physical memory and repopulate is disabled");
   }
 }
 
@@ -274,7 +310,12 @@ champsim::page_number VirtualMemory::ppage_front_2m(const Device& dev) const
 {
   auto idx = get_device_index(dev);
   assert(idx < ppage_free_list_2m.size());
-  assert(!ppage_free_list_2m[idx].empty());
+  if (ppage_free_list_2m[idx].empty()) {
+    fmt::print("[VMEM] FATAL: Out of 2MB physical pages for device {} "
+               "(4KB pages remaining: {}). Workload needs more physical memory.\n",
+               idx, ppage_free_list[idx].size());
+    assert(false && "Out of 2MB physical pages — increase DRAM size or reduce 2MB allocation ratio");
+  }
   return ppage_free_list_2m[idx].front();
 }
 
@@ -283,7 +324,32 @@ void VirtualMemory::ppage_pop_2m(const Device& dev)
   auto idx = get_device_index(dev);
   ppage_free_list_2m[idx].pop_front();
   if (ppage_free_list_2m[idx].empty()) {
-    fmt::print("[VMEM] WARNING: Out of 2MB physical pages for device {}\n", idx);
+    // Try to scavenge 2MB-aligned blocks from 4KB free list
+    auto& list_4k = ppage_free_list[idx];
+    for (std::size_t i = 0; i + 512 <= list_4k.size(); ) {
+      auto base_ppn = list_4k[i].to<uint64_t>();
+      if ((base_ppn & 0x1FF) == 0) {
+        bool contiguous = true;
+        for (std::size_t j = 1; j < 512; ++j) {
+          if (list_4k[i + j].to<uint64_t>() != base_ppn + j) {
+            contiguous = false;
+            break;
+          }
+        }
+        if (contiguous) {
+          ppage_free_list_2m[idx].push_back(list_4k[i]);
+          list_4k.erase(list_4k.begin() + static_cast<std::ptrdiff_t>(i),
+                        list_4k.begin() + static_cast<std::ptrdiff_t>(i + 512));
+          fmt::print("[VMEM] Scavenged 2MB page from 4KB pool for device {} "
+                     "(2MB pool: {}, 4KB pool: {})\n",
+                     idx, ppage_free_list_2m[idx].size(), list_4k.size());
+          return; // found one, enough for now
+        }
+      }
+      ++i;
+    }
+    fmt::print("[VMEM] WARNING: Out of 2MB physical pages for device {} "
+               "(no contiguous 4KB blocks available)\n", idx);
   }
 }
 
@@ -308,6 +374,16 @@ bool VirtualMemory::is_hole(uint64_t vpn_4k) const
   unsigned word = sub_idx / 64;
   unsigned bit = sub_idx % 64;
   return (it->second[word] >> bit) & 1;
+}
+
+uint64_t VirtualMemory::get_bitmap_paddr(uint64_t base_2m_vpn) const
+{
+  auto it = bitmap_paddrs.find(base_2m_vpn);
+  if (it == bitmap_paddrs.end()) {
+    fmt::print(stderr, "[VMEM] ERROR: get_bitmap_paddr called for unknown base_2m_vpn {:#x}\n", base_2m_vpn);
+    assert(0);
+  }
+  return it->second;
 }
 
 void VirtualMemory::load_pmap(const std::string& path)
@@ -655,75 +731,6 @@ void VirtualMemory::save_allocation_tracking()
   fmt::print("  Saved to: {}\n", allocation_file);
 }
 
-void VirtualMemory::generate_perforated_pages(double frag_ratio, const std::string& distribution)
-{
-  if (pmap.empty()) {
-    fmt::print("[VMEM] WARNING: No pmap loaded, cannot generate perforated pages\n");
-    return;
-  }
-
-  uint64_t converted = 0;
-  std::mt19937_64 rng(42); // deterministic seed
-  std::uniform_real_distribution<double> dist(0.0, 1.0);
-
-  // Collect all 2MB entries to convert
-  std::vector<uint64_t> pages_2m;
-  for (auto& [vpn, ps] : pmap) {
-    if (ps == PageSize::PAGE_2M)
-      pages_2m.push_back(vpn);
-  }
-
-  for (auto vpn : pages_2m) {
-    pmap[vpn] = PageSize::PAGE_PERF;
-    std::array<uint64_t, 8> bitmap{};
-    int num_holes = static_cast<int>(512 * frag_ratio);
-
-    if (distribution == "random") {
-      for (int s = 0; s < 512; ++s) {
-        if (dist(rng) < frag_ratio) {
-          unsigned w = s / 64;
-          unsigned b = s % 64;
-          bitmap[w] |= (1ULL << b);
-        }
-      }
-    } else if (distribution == "dispersed") {
-      if (num_holes > 0) {
-        int stride = 512 / num_holes;
-        if (stride < 1) stride = 1;
-        for (int s = 0, count = 0; s < 512 && count < num_holes; s += stride, ++count) {
-          unsigned w = s / 64;
-          unsigned b = s % 64;
-          bitmap[w] |= (1ULL << b);
-        }
-      }
-    } else { // clustered (default)
-      // Place holes in contiguous runs within each 64-sub-page region
-      int holes_per_region = num_holes / 8;
-      int extra = num_holes % 8;
-      for (int r = 0; r < 8; ++r) {
-        int region_holes = holes_per_region + (r < extra ? 1 : 0);
-        for (int b = 0; b < region_holes && b < 64; ++b) {
-          bitmap[r] |= (1ULL << b);
-        }
-      }
-    }
-
-    hole_bitmaps[vpn] = bitmap;
-
-    // Compute coarse filter
-    uint8_t cf = 0;
-    for (int r = 0; r < 8; ++r) {
-      if (bitmap[r] != 0)
-        cf |= (1u << r);
-    }
-    coarse_filters[vpn] = cf;
-    ++converted;
-  }
-
-  fmt::print("[VMEM] Generated perforated pages: {} pages converted, frag_ratio: {}, distribution: {}\n",
-             converted, frag_ratio, distribution);
-}
-
 void VirtualMemory::save_physical_mapping(const std::string& path)
 {
   // Collect unique VPN→PPN mappings in hugepage units (VPN/512, PPN/512).
@@ -833,6 +840,8 @@ void VirtualMemory::load_policy(const std::string& path)
   hole_bitmaps.clear();
   coarse_filters.clear();
   tier_bitmaps.clear();
+  bitmap_paddrs.clear();
+  next_bitmap_paddr = 0x80000;
 
   std::string line;
   uint64_t count_4k = 0, count_2m = 0, count_perf = 0;
@@ -860,12 +869,12 @@ void VirtualMemory::load_policy(const std::string& path)
         auto chunk = bitmap_hex.substr(w * 16, 16);
         bitmap[w] = std::stoull(chunk, nullptr, 16);
       }
-      tier_bitmaps[base_vpn] = bitmap;
-
       PageSize ps;
       if (page_type == 2) {
+        // Standard PERF: base frame in DRAM, holes in CXL.
+        // tier_bitmap == hole_bitmap (bit=1 → CXL).
         ps = PageSize::PAGE_PERF;
-        // For PERF pages, tier_bitmap == hole_bitmap
+        tier_bitmaps[base_vpn] = bitmap;
         hole_bitmaps[base_vpn] = bitmap;
         uint8_t cf = 0;
         for (int r = 0; r < 8; ++r) {
@@ -873,12 +882,35 @@ void VirtualMemory::load_policy(const std::string& path)
             cf |= (1u << r);
         }
         coarse_filters[base_vpn] = cf;
+        bitmap_paddrs[base_vpn] = next_bitmap_paddr;
+        next_bitmap_paddr += 64;
+        ++count_perf;
+      } else if (page_type == 3) {
+        // Inverted PERF: base frame in CXL, holes re-mapped to DRAM.
+        // hole_bitmap = bitmap (bit=1 = hole, hardware semantics unchanged).
+        // tier_bitmap = ~bitmap (bit=1 in hole_bitmap → bit=0 in tier → DRAM).
+        ps = PageSize::PAGE_PERF;
+        hole_bitmaps[base_vpn] = bitmap;
+        std::array<uint64_t, 8> inverted{};
+        for (int r = 0; r < 8; ++r)
+          inverted[r] = ~bitmap[r];
+        tier_bitmaps[base_vpn] = inverted;
+        uint8_t cf = 0;
+        for (int r = 0; r < 8; ++r) {
+          if (bitmap[r] != 0)
+            cf |= (1u << r);
+        }
+        coarse_filters[base_vpn] = cf;
+        bitmap_paddrs[base_vpn] = next_bitmap_paddr;
+        next_bitmap_paddr += 64;
         ++count_perf;
       } else if (page_type == 1) {
         ps = PageSize::PAGE_2M;
+        tier_bitmaps[base_vpn] = bitmap;
         ++count_2m;
       } else {
         ps = PageSize::PAGE_4K;
+        tier_bitmaps[base_vpn] = bitmap;
         ++count_4k;
       }
       pmap[base_vpn] = ps;
@@ -891,6 +923,39 @@ void VirtualMemory::load_policy(const std::string& path)
   use_policy = true;
   fmt::print("[VMEM] Loaded policy: {} regions (4K: {}, 2M: {}, PERF: {}) from {}\n",
              pmap.size(), count_4k, count_2m, count_perf, path);
+
+  // Print coarse filter distribution for inverted PERF (type=3) regions.
+  // Each 2MB region has an 8-bit coarse filter; bit=0 means no hot subpages
+  // in that 64-page group. This shows the density of hot subpages.
+  uint64_t iperf_count = 0, total_cf_bits = 0, zero_cf_bits = 0;
+  for (const auto& [base_vpn, cf] : coarse_filters) {
+    // Only count inverted PERF: tier_bitmap is inverted from hole_bitmap.
+    // Inverted PERF has tier_bitmap = ~hole_bitmap, so check if any tier_bitmap
+    // word differs from hole_bitmap word (inverted relationship).
+    auto hb_it = hole_bitmaps.find(base_vpn);
+    auto tb_it = tier_bitmaps.find(base_vpn);
+    if (hb_it == hole_bitmaps.end() || tb_it == tier_bitmaps.end()) continue;
+    bool is_inverted = false;
+    for (int r = 0; r < 8; ++r) {
+      if (hb_it->second[r] != 0 && tb_it->second[r] == ~hb_it->second[r]) {
+        is_inverted = true; break;
+      }
+    }
+    if (!is_inverted) continue;
+
+    iperf_count++;
+    total_cf_bits += 8;
+    for (int b = 0; b < 8; ++b) {
+      if (((cf >> b) & 1) == 0)
+        zero_cf_bits++;
+    }
+  }
+  if (iperf_count > 0) {
+    fmt::print("[VMEM] Inverted PERF (type=3) coarse filter stats: {} regions, "
+               "{} total bits, {} zero bits ({:.1f}% cold groups)\n",
+               iperf_count, total_cf_bits, zero_cf_bits,
+               100.0 * zero_cf_bits / total_cf_bits);
+  }
 }
 
 void VirtualMemory::load_allocation_mapping(const std::string& input_file)

@@ -74,8 +74,6 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   std::string save_bandwidth_path;
   std::string track_interleaving_path;
   std::string use_allocation_path;
-  double perf_frag_ratio = 0.0;
-  std::string perf_frag_dist = "clustered";
   std::string generate_pmap_path;
   std::string use_pmap_path;
   std::string use_policy_path;
@@ -107,8 +105,6 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   app.add_option("--save-bandwidth", save_bandwidth_path, "Save bandwidth statistics to specified file path");
   app.add_option("--generate-interleaving", track_interleaving_path, "Track page allocations in interleaving mode and save to specified file");
   app.add_option("--use-interleaving", use_allocation_path, "Use precomputed allocation mapping (CSV format: vpage,device)");
-  app.add_option("--perf-frag-ratio", perf_frag_ratio, "Fraction of holes in perforated pages (0.0-1.0)");
-  app.add_option("--perf-frag-dist", perf_frag_dist, "Hole distribution: clustered, dispersed, random")->default_val("clustered");
   app.add_option("--generate-pmap", generate_pmap_path, "Save VPN→PPN physical mapping at end of simulation");
   app.add_option("--use-pmap", use_pmap_path, "Load physical mapping for address replay");
   app.add_option("--use-policy", use_policy_path, "Load policy file (page types + per-subpage tier decisions)");
@@ -194,11 +190,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   // Print simulation configuration
   if (!generate_heatmap_path.empty()) {
-    fmt::print("\n*** ChampSim Heatmap Generation Mode ***\nWarmup Instructions: {}\nHeatmap Generation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\nHeatmap Output: {}\n\n",
-               phases.at(0).length, phases.at(1).length, std::size(gen_environment.cpu_view()), PAGE_SIZE, generate_heatmap_path);
+    fmt::print("\n*** ChampSim Heatmap Generation Mode ***\nWarmup Instructions: {}\nHeatmap Generation Instructions: {}\nNumber of CPUs: {}\nBase page size: {} (page mode: {})\nHeatmap Output: {}\n\n",
+               phases.at(0).length, phases.at(1).length, std::size(gen_environment.cpu_view()), PAGE_SIZE, page_mode_str, generate_heatmap_path);
   } else {
-    fmt::print("\n*** ChampSim Multicore Out-of-Order Simulator ***\nWarmup Instructions: {}\nSimulation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\n",
-               phases.at(0).length, phases.at(1).length, std::size(gen_environment.cpu_view()), PAGE_SIZE);
+    fmt::print("\n*** ChampSim Multicore Out-of-Order Simulator ***\nWarmup Instructions: {}\nSimulation Instructions: {}\nNumber of CPUs: {}\nBase page size: {} (page mode: {})\n",
+               phases.at(0).length, phases.at(1).length, std::size(gen_environment.cpu_view()), PAGE_SIZE, page_mode_str);
     if (!use_heatmap_path.empty()) {
       fmt::print("Using Heatmap: {}\nMemory Allocation Ratio: {}\nSort by Criticality: {}\n",
                  use_heatmap_path, ratio_str, sort_by_criticality ? "Yes" : "No");
@@ -211,7 +207,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     g_vmem->load_allocation_mapping(use_allocation_path);
   }
 
-  // Set page mode
+  // Set page mode and carve 2MB pool accordingly
   if (page_mode_str == "2mb") {
     g_vmem->set_default_page_size(PageSize::PAGE_2M);
     fmt::print("Page mode: 2mb (all pages use 2MB mapping)\n");
@@ -220,10 +216,12 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       fmt::print("ERROR: --page-mode mixed requires --use-policy\n");
       return 1;
     }
+    g_vmem->set_default_page_size(PageSize::PAGE_PERF);
     fmt::print("Page mode: mixed (page types from policy file)\n");
   } else {
     fmt::print("Page mode: 4kb (all pages use 4KB mapping)\n");
   }
+  g_vmem->carve_2mb_pages();
 
   // Phase 1: force all allocations to DRAM when generating pmap
   if (!generate_pmap_path.empty()) {
