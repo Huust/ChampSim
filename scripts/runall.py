@@ -38,8 +38,8 @@ GAPBS_DIR = '/crex/proj/uart_chp_cxl_trans/gapbs_traces'
 
 TIERED_CONFIGS = ['access_r1_1', 'access_r1_3', 'criticality_r1_1', 'criticality_r1_3']
 PERF_CONFIGS   = [
-    'simple_access_r1_1', 'simple_access_r1_3',
-    'simple_criticality_r1_1', 'simple_criticality_r1_3',
+    'pemtis_access_r1_1', 'pemtis_access_r1_3',
+    'pemtis_criticality_r1_1', 'pemtis_criticality_r1_3',
     'memtis_access_r1_1', 'memtis_access_r1_3',
     'memtis_criticality_r1_1', 'memtis_criticality_r1_3',
 ]
@@ -50,17 +50,24 @@ SBATCH_SLEEP   = 2
 
 GOOGLE_DIR = '/crex/proj/uart_chp_cxl_trans/DPC-4-Google_traces'
 
-TRACES = [
-    # SPEC
-    '429.mcf-184B', '429.mcf-192B', '429.mcf-22B', '429.mcf-51B',
-    '459.GemsFDTD-1169B', '459.GemsFDTD-1211B', '459.GemsFDTD-1418B', '459.GemsFDTD-1491B', '459.GemsFDTD-765B',
+TRACES_ALL = [
+    # SPEC (15)
+    '429.mcf-184B', '429.mcf-192B', '429.mcf-51B',
+    '459.GemsFDTD-1169B',
     '471.omnetpp-188B',
     '473.astar-359B',
     '483.xalancbmk-127B',
-    '605.mcf_s-1536B', '605.mcf_s-1554B', '605.mcf_s-1644B', '605.mcf_s-472B', '605.mcf_s-484B', '605.mcf_s-665B', '605.mcf_s-782B', '605.mcf_s-994B',
+    '605.mcf_s-1536B', '605.mcf_s-1644B', '605.mcf_s-782B', '605.mcf_s-994B',
     '620.omnetpp_s-141B', '620.omnetpp_s-874B',
-    '623.xalancbmk_s-10B', '623.xalancbmk_s-202B', '623.xalancbmk_s-592B',
-    # Google traces (excluding arizona_0000 and arizona_0001)
+    '623.xalancbmk_s-10B', '623.xalancbmk_s-592B',
+    # GAPBS (11, excluding pr/pr_spmv/tc)
+    'bc_uniform_28.drop_20B.length_250M',
+    'bfs_bu_kronecker_28.drop_11B.length_250M', 'bfs_bu_uniform_28.drop_30B.length_250M',
+    'bfs_td_kronecker_28.drop_16.5B.length_200M', 'bfs_td_uniform_28.drop_35B.length_250M',
+    'cc_kronecker_28.drop_4B.length_250M', 'cc_sv_kronecker_28.drop_30B.length_250M',
+    'cc_sv_uniform_28.drop_30B.length_250M', 'cc_uniform_28.drop_6B.length_250M',
+    'sssp_kronecker_28.drop_25B.length_250M', 'sssp_uniform_28.drop_40B.length_250M',
+    # Google (41)
     'arizona_0002.champsim-015',
     'charlie_0000.champsim-028', 'charlie_0001.champsim', 'charlie_0002.champsim-026',
     'charlie_0003.champsim-025', 'charlie_0004.champsim',
@@ -80,6 +87,8 @@ TRACES = [
     'yankee_0003.champsim-002', 'yankee_0004.champsim-001',
 ]
 
+TRACES = TRACES_ALL
+
 
 def find_trace(name):
     for d in [SPEC_DIR, GAPBS_DIR, GOOGLE_DIR]:
@@ -96,10 +105,9 @@ def find_trace(name):
 
 
 def trace_short(name):
-    if '.drop_' in name:
-        return name.split('.drop_')[0]
     # Google traces: strip .champsim[-NNN] suffix
     name = re.sub(r'\.champsim(-\d+)?$', '', name)
+    # GAPBS traces: strip .drop_*B.length_*M suffix for display but keep full name for files
     return name
 
 
@@ -199,6 +207,8 @@ def submit_for_trace(trace_path):
     else:     failed += 1
 
     # ── Step 3: 2MB tiered ×4 (deps: 2MB dram-only) ──
+    # Track all job IDs — each pemtis config needs its matching 2mb-tiered LLC latency
+    j_2mb_tiered = {}  # cfg → job_id
     for cfg in TIERED_CONFIGS:
         j = sbatch(RUN_2MB, cfg, RESULTS_2MB,
                    os.path.join(RESULTS_2MB, cfg),
@@ -208,6 +218,7 @@ def submit_for_trace(trace_path):
                              'PHYSICAL_MAPPING_DIR': physmap_dir})
         if j: submitted += 1
         else: failed += 1
+        j_2mb_tiered[cfg] = j
 
     if not j_4kb:
         print(f'  ! Skip 4KB tiered/skip/perf: 4KB dram-only failed')
@@ -236,9 +247,9 @@ def submit_for_trace(trace_path):
         if j: submitted += 1
         else: failed += 1
 
-    # ── Step 6: perf tiered ×8 (deps: 4KB dram-only) ──
-    for perf_cfg in PERF_CONFIGS:
-        # perf_cfg is e.g. "access_r1_1" or "criticality_r1_3"
+    # ── Step 6a: memtis perf ×4 (deps: 4KB dram-only for policy files) ──
+    memtis_configs = [c for c in PERF_CONFIGS if c.startswith('memtis_')]
+    for perf_cfg in memtis_configs:
         policy_file = os.path.join(policy_dir, f'{tname}.{perf_cfg}.policy')
         physmap_file = os.path.join(physmap_dir, f'{tname}.pmap')
         wrapper = os.path.join(policy_dir, f'{tname}.{perf_cfg}.sh')
@@ -259,6 +270,57 @@ echo "=== perf_tiered {perf_cfg} ==="
                    os.path.join(RESULTS_PERF, perf_cfg),
                    trace_path, tname,
                    deps=[j_4kb])
+        if j: submitted += 1
+        else: failed += 1
+
+    # ── Step 6b: pemtis perf ×4 (deps: 4KB dram-only + matching 2MB tiered) ──
+    # Each pemtis config uses LLC latency from its corresponding 2mb-tiered config:
+    #   pemtis_access_r1_1       → 2mb-tiered access_r1_1
+    #   pemtis_access_r1_3       → 2mb-tiered access_r1_3
+    #   pemtis_criticality_r1_1  → 2mb-tiered criticality_r1_1
+    #   pemtis_criticality_r1_3  → 2mb-tiered criticality_r1_3
+    pemtis_configs = [c for c in PERF_CONFIGS if c.startswith('pemtis_')]
+    for perf_cfg in pemtis_configs:
+        # e.g. perf_cfg = "pemtis_access_r1_1" → tiered_cfg = "access_r1_1"
+        tiered_cfg = perf_cfg[len('pemtis_'):]  # strip "pemtis_" prefix
+        ratio_suffix = perf_cfg.split('_')[-2] + '_' + perf_cfg.split('_')[-1]  # "r1_1"
+        metric = 'llc_miss' if 'access' in perf_cfg else 'criticality'
+        tiered_ref_stdout = os.path.join(RESULTS_2MB, tiered_cfg, 'stdout', f'{tname}.out')
+        j_2mb_dep = j_2mb_tiered.get(tiered_cfg)
+        annotated_heatmap = os.path.join(heatmap_dir_4kb, f'{tname}.{ratio_suffix}.heatmap')
+        policy_file = os.path.join(policy_dir, f'{tname}.{perf_cfg}.policy')
+        physmap_file = os.path.join(physmap_dir, f'{tname}.pmap')
+        pmap_tmp = os.path.join(policy_dir, f'{tname}.{perf_cfg}.pmap.tmp')
+        wrapper = os.path.join(policy_dir, f'{tname}.{perf_cfg}.sh')
+        with open(wrapper, 'w') as f:
+            f.write(f"""#!/bin/bash
+#SBATCH --account=uppmax2025-2-337
+#SBATCH --ntasks=1
+#SBATCH --time=05:00:00
+set -e
+# Validate dependencies
+if [[ ! -f "{annotated_heatmap}" ]]; then echo "Missing heatmap: {annotated_heatmap}"; exit 1; fi
+if [[ ! -f "{tiered_ref_stdout}" ]]; then echo "Missing 2mb-tiered output: {tiered_ref_stdout}"; exit 1; fi
+if [[ ! -f "{physmap_file}" ]]; then echo "Missing physmap: {physmap_file}"; exit 1; fi
+
+# Step 1: Generate pemtis policy with LLC latency from 2mb-tiered ({tiered_cfg})
+echo "=== Generating pemtis policy ({perf_cfg}) with tiered latency from {tiered_cfg} ==="
+python3 "{CHAMPSIM_BASE}/scripts/policy/pemtis.py" "{annotated_heatmap}" "{pmap_tmp}" \\
+    --metric {metric} --tiered-output "{tiered_ref_stdout}" --verbose
+python3 "{CHAMPSIM_BASE}/scripts/pmap_to_policy.py" "{pmap_tmp}" "{annotated_heatmap}" "{policy_file}"
+rm -f "{pmap_tmp}"
+
+# Step 2: Run perf simulation
+echo "=== perf_tiered {perf_cfg} ==="
+"{BIN_PERF}" -w 50000000 -i 100000000 --page-mode mixed \\
+    --use-pmap "{physmap_file}" \\
+    --use-policy "{policy_file}" \\
+    "{trace_path}" 2>&1
+""")
+        j = sbatch(wrapper, f'perf_{perf_cfg}', RESULTS_PERF,
+                   os.path.join(RESULTS_PERF, perf_cfg),
+                   trace_path, tname,
+                   deps=[j_4kb, j_2mb_dep])
         if j: submitted += 1
         else: failed += 1
 
