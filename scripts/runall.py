@@ -280,14 +280,15 @@ echo "=== perf_tiered {perf_cfg} ==="
     #   pemtis_criticality_r1_1  → 2mb-tiered criticality_r1_1
     #   pemtis_criticality_r1_3  → 2mb-tiered criticality_r1_3
     pemtis_configs = [c for c in PERF_CONFIGS if c.startswith('pemtis_')]
+    annotated_2mb_heatmap = os.path.join(heatmap_dir_2mb, f'{tname}.heatmap')
     for perf_cfg in pemtis_configs:
         # e.g. perf_cfg = "pemtis_access_r1_1" → tiered_cfg = "access_r1_1"
         tiered_cfg = perf_cfg[len('pemtis_'):]  # strip "pemtis_" prefix
         ratio_suffix = perf_cfg.split('_')[-2] + '_' + perf_cfg.split('_')[-1]  # "r1_1"
+        ratio = ratio_suffix.replace('r', '').replace('_', ':')  # "1:1"
         metric = 'llc_miss' if 'access' in perf_cfg else 'criticality'
         tiered_ref_stdout = os.path.join(RESULTS_2MB, tiered_cfg, 'stdout', f'{tname}.out')
         j_2mb_dep = j_2mb_tiered.get(tiered_cfg)
-        annotated_heatmap = os.path.join(heatmap_dir_4kb, f'{tname}.{ratio_suffix}.heatmap')
         policy_file = os.path.join(policy_dir, f'{tname}.{perf_cfg}.policy')
         physmap_file = os.path.join(physmap_dir, f'{tname}.pmap')
         pmap_tmp = os.path.join(policy_dir, f'{tname}.{perf_cfg}.pmap.tmp')
@@ -299,15 +300,15 @@ echo "=== perf_tiered {perf_cfg} ==="
 #SBATCH --time=05:00:00
 set -e
 # Validate dependencies
-if [[ ! -f "{annotated_heatmap}" ]]; then echo "Missing heatmap: {annotated_heatmap}"; exit 1; fi
+if [[ ! -f "{annotated_2mb_heatmap}" ]]; then echo "Missing heatmap: {annotated_2mb_heatmap}"; exit 1; fi
 if [[ ! -f "{tiered_ref_stdout}" ]]; then echo "Missing 2mb-tiered output: {tiered_ref_stdout}"; exit 1; fi
 if [[ ! -f "{physmap_file}" ]]; then echo "Missing physmap: {physmap_file}"; exit 1; fi
 
 # Step 1: Generate pemtis policy with LLC latency from 2mb-tiered ({tiered_cfg})
 echo "=== Generating pemtis policy ({perf_cfg}) with tiered latency from {tiered_cfg} ==="
-python3 "{CHAMPSIM_BASE}/scripts/policy/pemtis.py" "{annotated_heatmap}" "{pmap_tmp}" \\
-    --metric {metric} --tiered-output "{tiered_ref_stdout}" --verbose
-python3 "{CHAMPSIM_BASE}/scripts/pmap_to_policy.py" "{pmap_tmp}" "{annotated_heatmap}" "{policy_file}"
+python3 "{CHAMPSIM_BASE}/scripts/policy/pemtis.py" "{annotated_2mb_heatmap}" "{pmap_tmp}" \\
+    --metric {metric} --ratio {ratio} --tiered-output "{tiered_ref_stdout}" --verbose
+python3 "{CHAMPSIM_BASE}/scripts/pmap_to_policy.py" "{pmap_tmp}" "{annotated_2mb_heatmap}" "{policy_file}"
 rm -f "{pmap_tmp}"
 
 # Step 2: Run perf simulation
