@@ -182,10 +182,23 @@ void HeatMapTracker::allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t
   size_t total_vpns = vpn_data.size();
   size_t fast_vpns_count;
   if (loaded_capacity.has_value()) {
-    // Use capacity embedded in heatmap header (derived from 2MB DRAM budget).
-    // Clamp to total available pages so we never ask for more than we have.
-    fast_vpns_count = std::min(loaded_capacity.value(), total_vpns);
+    size_t capacity = loaded_capacity.value();
+    bool is_2mb_mode = g_vmem && (g_vmem->default_page_size == PageSize::PAGE_2M);
+    if (is_2mb_mode) {
+      // 2MB mode: capacity is in 4KB pages, convert to 2MB then apply ratio
+      size_t total_2mb = capacity / 512;
+      fast_vpns_count = (total_2mb * ratio_first) / (ratio_first + ratio_second);
+      fmt::print("Capacity from heatmap (2MB mode): {} 4KB pages -> {} 2MB pages, fast tier: {} (ratio {}:{})\n",
+                 capacity, total_2mb, fast_vpns_count, ratio_first, ratio_second);
+    } else {
+      // 4KB mode: capacity is in 4KB pages, apply ratio directly
+      fast_vpns_count = (capacity * ratio_first) / (ratio_first + ratio_second);
+      fmt::print("Capacity from heatmap (4KB mode): {} 4KB pages, fast tier: {} (ratio {}:{})\n",
+                 capacity, fast_vpns_count, ratio_first, ratio_second);
+    }
+    fast_vpns_count = std::min(fast_vpns_count, total_vpns);
   } else {
+    // No capacity header: use heatmap entry count directly with ratio
     fast_vpns_count = (total_vpns * ratio_first) / (ratio_first + ratio_second);
   }
 
@@ -258,9 +271,9 @@ namespace champsim {
       champsim::page_number vpn{v_address}; // 4KB VPN (vaddr >> 12)
       auto ps = g_vmem->get_page_size(vpn);
       if (ps == PageSize::PAGE_2M || ps == PageSize::PAGE_PERF) {
-        // Store true 2MB VPN: vaddr >> 21 = (4KB VPN) >> 9
         uint64_t vpn_2m = vpn.to<uint64_t>() >> 9;
         global_heatmap_instance.track_llc_miss(champsim::page_number{vpn_2m});
+        global_heatmap_instance.track_llc_miss_subpage(vpn.to<uint64_t>());
       } else {
         global_heatmap_instance.track_llc_miss(vpn);
       }
@@ -272,6 +285,7 @@ namespace champsim {
       if (ps == PageSize::PAGE_2M || ps == PageSize::PAGE_PERF) {
         uint64_t vpn_2m = vpn.to<uint64_t>() >> 9;
         global_heatmap_instance.track_critical_miss(champsim::page_number{vpn_2m});
+        global_heatmap_instance.track_critical_miss_subpage(vpn.to<uint64_t>());
       } else {
         global_heatmap_instance.track_critical_miss(vpn);
       }
@@ -283,6 +297,7 @@ namespace champsim {
       if (ps == PageSize::PAGE_2M || ps == PageSize::PAGE_PERF) {
         uint64_t vpn_2m = vpn.to<uint64_t>() >> 9;
         global_heatmap_instance.track_page_access(champsim::page_number{vpn_2m});
+        global_heatmap_instance.track_page_access_subpage(vpn.to<uint64_t>());
       } else {
         global_heatmap_instance.track_page_access(vpn);
       }
@@ -292,10 +307,10 @@ namespace champsim {
     void save(const std::string& file_path) {
       global_heatmap_instance.save_heatmap(file_path);
 
-      if (PAGE_SIZE > 4096) {
+      // Always save subpage heatmap if it has data (2MB/PERF pages produce subpage entries)
+      if (!global_heatmap_instance.subpage_heatmap_empty()) {
         auto slash_pos = file_path.rfind('/');
         auto dot_pos = file_path.rfind('.');
-        // Only treat dot as extension separator if it's in the filename (after last slash)
         std::string subpage_path;
         if (dot_pos != std::string::npos && (slash_pos == std::string::npos || dot_pos > slash_pos))
           subpage_path = file_path.substr(0, dot_pos) + "_subpage" + file_path.substr(dot_pos);

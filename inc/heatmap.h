@@ -31,6 +31,7 @@ public:
   void track_critical_miss_subpage(uint64_t subpage_vpn);
   void track_page_access_subpage(uint64_t subpage_vpn);
   void save_subpage_heatmap(const std::string& file_path);
+  bool subpage_heatmap_empty() const { return subpage_heatmap.empty(); }
   void enable_hotness_allocation();
   bool is_hotness_allocation_enabled();
   void allocate_vpns_by_heatmap(bool sort_by_criticality, uint32_t ratio_first, uint32_t ratio_second);

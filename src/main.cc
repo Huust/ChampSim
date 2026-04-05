@@ -154,7 +154,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       champsim::phase_info{"Simulation", false, simulation_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names}
     };
 
-    // Load heatmap and allocate VPNs if use-heatmap is provided
+    // Load heatmap data if use-heatmap is provided (allocation deferred until after page mode is set)
     if (!use_heatmap_path.empty()) {
       // Check if both DRAM and CXL devices are available for heatmap usage
       if (!gen_environment.has_dram() || !gen_environment.has_cxl()) {
@@ -165,22 +165,8 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
         std::abort();
       }
 
-      // Enable heatmap with the file path, then load the data
       champsim::heatmap::enable_hotness_allocation();
       champsim::heatmap::load(use_heatmap_path);
-
-      // Parse ratio string (format: "N:M") - now has default value "1:3"
-      size_t colon_pos = ratio_str.find(':');
-      if (colon_pos != std::string::npos) {
-        uint32_t ratio_first = std::stoul(ratio_str.substr(0, colon_pos));
-        uint32_t ratio_second = std::stoul(ratio_str.substr(colon_pos + 1));
-
-        champsim::heatmap::allocate_vpns(sort_by_criticality, ratio_first, ratio_second);
-        champsim::heatmap::enable_hotness_allocation();
-      } else {
-        fmt::print("ERROR: Invalid ratio format. Use N:M format (e.g., 1:3)\n");
-        return 1;
-      }
     }
   }
 
@@ -222,6 +208,21 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     fmt::print("Page mode: 4kb (all pages use 4KB mapping)\n");
   }
   g_vmem->carve_2mb_pages();
+
+  // Allocate VPNs by heatmap (must happen after page mode is set, so capacity
+  // interpretation is correct: 4KB mode uses #capacity directly, 2MB mode uses entry count)
+  if (!use_heatmap_path.empty()) {
+    size_t colon_pos = ratio_str.find(':');
+    if (colon_pos != std::string::npos) {
+      uint32_t ratio_first = std::stoul(ratio_str.substr(0, colon_pos));
+      uint32_t ratio_second = std::stoul(ratio_str.substr(colon_pos + 1));
+      champsim::heatmap::allocate_vpns(sort_by_criticality, ratio_first, ratio_second);
+      champsim::heatmap::enable_hotness_allocation();
+    } else {
+      fmt::print("ERROR: Invalid ratio format. Use N:M format (e.g., 1:3)\n");
+      return 1;
+    }
+  }
 
   // Phase 1: force all allocations to DRAM when generating pmap
   if (!generate_pmap_path.empty()) {
