@@ -247,8 +247,9 @@ void PageTableWalker::finish_packet(const response_type& packet)
       penalty = champsim::chrono::clock::duration::zero();
       ppage = champsim::page_number{mshr_entry.v_address};
     } else if (mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
-        || mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) {
-      // Both 2MB and perforated pages use va_to_pa_2m (return 2MB base PPN)
+        || mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
+        || mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_IDEAL_PERF)) {
+      // 2MB, perforated, and ideal-perforated pages all use va_to_pa_2m
       std::tie(ppage, penalty) = this->vmem->va_to_pa_2m(mshr_entry.cpu, champsim::page_number{mshr_entry.v_address});
     } else {
       std::tie(ppage, penalty) = this->vmem->va_to_pa(mshr_entry.cpu, champsim::page_number{mshr_entry.v_address});
@@ -275,7 +276,8 @@ void PageTableWalker::finish_packet(const response_type& packet)
     // Both 2MB and PERF pages stop after level 1 (PDE level).
     // For PERF, classification (coarse filter + bitmap) happens at L1.
     if (x.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
-        || x.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF))
+        || x.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
+        || x.page_size == static_cast<uint8_t>(PageSize::PAGE_IDEAL_PERF))
       return x.translation_level <= 1;
     return x.translation_level <= 0;   // 4KB: stop after level 1
   };

@@ -200,10 +200,18 @@ const Device VirtualMemory::select_device(champsim::page_number vpn) {
   if (use_physical_mapping && !use_policy && !champsim::heatmap::is_hotness_allocation_enabled())
     return (devices.size() == 1) ? Device{Single{}} : Device{Dram{}};
 
-  // Policy-based tier selection: tier_bitmaps provide per-subpage DRAM/CXL decision
+  // Policy-based tier selection
   if (use_policy && devices.size() == 2) {
     uint64_t vpn_val = vpn.to<uint64_t>();
     uint64_t base_2m = (vpn_val >> 9) << 9;
+
+    // PERF/IDEAL_PERF regions: use hole_bitmap + base tier
+    auto base_it = perf_base_is_dram.find(base_2m);
+    if (base_it != perf_base_is_dram.end()) {
+      return is_subpage_dram(vpn_val) ? Device{Dram{}} : Device{Cxl{}};
+    }
+
+    // Non-PERF regions (type=0, type=1): use tier_bitmaps
     auto it = tier_bitmaps.find(base_2m);
     if (it != tier_bitmaps.end()) {
       uint64_t sub_idx = vpn_val & 0x1FF;
@@ -231,9 +239,8 @@ const Device VirtualMemory::select_device(champsim::page_number vpn) {
     if (it != pmap.end()) {
       if (it->second == PageSize::PAGE_2M)
         return Device{Dram{}}; // entire 2MB region in DRAM
-      if (it->second == PageSize::PAGE_PERF) {
-        // Perforated: non-hole → DRAM, hole → CXL
-        return is_hole(vpn_val) ? Device{Cxl{}} : Device{Dram{}};
+      if (it->second == PageSize::PAGE_PERF || it->second == PageSize::PAGE_IDEAL_PERF) {
+        return is_subpage_dram(vpn_val) ? Device{Dram{}} : Device{Cxl{}};
       }
     }
 
@@ -376,6 +383,18 @@ bool VirtualMemory::is_hole(uint64_t vpn_4k) const
   return (it->second[word] >> bit) & 1;
 }
 
+bool VirtualMemory::is_subpage_dram(uint64_t vpn_4k) const
+{
+  uint64_t base_2m = (vpn_4k >> 9) << 9;
+  auto base_it = perf_base_is_dram.find(base_2m);
+  if (base_it == perf_base_is_dram.end())
+    return true; // not a PERF region
+  bool remapped = is_hole(vpn_4k);
+  bool base_dram = base_it->second;
+  // remapped → opposite tier; not remapped → base tier
+  return remapped ? !base_dram : base_dram;
+}
+
 uint64_t VirtualMemory::get_bitmap_paddr(uint64_t base_2m_vpn) const
 {
   auto it = bitmap_paddrs.find(base_2m_vpn);
@@ -477,7 +496,7 @@ PageSize VirtualMemory::get_page_size(champsim::page_number vpn_4k) const
   // Check if this VPN falls within a 2MB or perforated page
   uint64_t base_2m = (vpn >> 9) << 9;
   it = pmap.find(base_2m);
-  if (it != pmap.end() && (it->second == PageSize::PAGE_2M || it->second == PageSize::PAGE_PERF))
+  if (it != pmap.end() && (it->second == PageSize::PAGE_2M || it->second == PageSize::PAGE_PERF || it->second == PageSize::PAGE_IDEAL_PERF))
     return it->second;
 
   return PageSize::PAGE_4K;
@@ -870,12 +889,13 @@ void VirtualMemory::load_policy(const std::string& path)
         bitmap[w] = std::stoull(chunk, nullptr, 16);
       }
       PageSize ps;
-      if (page_type == 2) {
-        // Standard PERF: base frame in DRAM, holes in CXL.
-        // tier_bitmap == hole_bitmap (bit=1 → CXL).
+      if (page_type == 2 || page_type == 3) {
+        // Perforated page. bitmap bit=1 = "subpage remapped to other tier".
+        // type=2: base in DRAM, bit=1 subpages go to CXL (cold demoted)
+        // type=3: base in CXL,  bit=1 subpages go to DRAM (hot promoted)
         ps = PageSize::PAGE_PERF;
-        tier_bitmaps[base_vpn] = bitmap;
         hole_bitmaps[base_vpn] = bitmap;
+        perf_base_is_dram[base_vpn] = (page_type == 2);
         uint8_t cf = 0;
         for (int r = 0; r < 8; ++r) {
           if (bitmap[r] != 0)
@@ -885,24 +905,13 @@ void VirtualMemory::load_policy(const std::string& path)
         bitmap_paddrs[base_vpn] = next_bitmap_paddr;
         next_bitmap_paddr += 64;
         ++count_perf;
-      } else if (page_type == 3) {
-        // Inverted PERF: base frame in CXL, holes re-mapped to DRAM.
-        // hole_bitmap = bitmap (bit=1 = hole, hardware semantics unchanged).
-        // tier_bitmap = ~bitmap (bit=1 in hole_bitmap → bit=0 in tier → DRAM).
-        ps = PageSize::PAGE_PERF;
+      } else if (page_type == 4) {
+        // Ideal PERF: 2MB TLB, per-subpage tier routing, zero bitmap overhead.
+        // Same bitmap convention: bit=1 = remapped to other tier.
+        // No coarse_filter, no bitmap_paddr — no runtime bitmap cost.
+        ps = PageSize::PAGE_IDEAL_PERF;
         hole_bitmaps[base_vpn] = bitmap;
-        std::array<uint64_t, 8> inverted{};
-        for (int r = 0; r < 8; ++r)
-          inverted[r] = ~bitmap[r];
-        tier_bitmaps[base_vpn] = inverted;
-        uint8_t cf = 0;
-        for (int r = 0; r < 8; ++r) {
-          if (bitmap[r] != 0)
-            cf |= (1u << r);
-        }
-        coarse_filters[base_vpn] = cf;
-        bitmap_paddrs[base_vpn] = next_bitmap_paddr;
-        next_bitmap_paddr += 64;
+        perf_base_is_dram[base_vpn] = true;  // type=4 currently only used for fast-base
         ++count_perf;
       } else if (page_type == 1) {
         ps = PageSize::PAGE_2M;

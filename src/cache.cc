@@ -206,7 +206,8 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
 
   // ── STLB 2MB/PERF: store at 2MB-aligned address for secondary matching ──
   const bool is_stlb = (g_vmem && NAME.find("STLB") != std::string::npos);
-  const bool is_stlb_2m = (is_stlb && fill_mshr.page_size == static_cast<uint8_t>(PageSize::PAGE_2M));
+  const bool is_stlb_2m = (is_stlb && (fill_mshr.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
+                                       || fill_mshr.page_size == static_cast<uint8_t>(PageSize::PAGE_IDEAL_PERF)));
   const bool is_stlb_perf = (is_stlb && fill_mshr.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF));
   champsim::address fill_address = fill_mshr.address;
   if (is_stlb_2m || is_stlb_perf) {
@@ -282,11 +283,14 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
       fill_copy.address = fill_address;
       *way = fill_block(fill_copy, metadata_thru);
     } else {
-      // For non-STLB caches: PAGE_PERF must be stored as PAGE_4K.
-      // Only STLB keeps PAGE_PERF entries (as 2MB templates).
+      // For non-STLB caches: PAGE_PERF → PAGE_4K, PAGE_IDEAL_PERF → PAGE_2M.
       if (fill_mshr.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) {
         mshr_type fill_copy = fill_mshr;
         fill_copy.page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
+        *way = fill_block(fill_copy, metadata_thru);
+      } else if (fill_mshr.page_size == static_cast<uint8_t>(PageSize::PAGE_IDEAL_PERF)) {
+        mshr_type fill_copy = fill_mshr;
+        fill_copy.page_size = static_cast<uint8_t>(PageSize::PAGE_2M);
         *way = fill_block(fill_copy, metadata_thru);
       } else {
         *way = fill_block(fill_mshr, metadata_thru);
@@ -389,10 +393,12 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
     return true;
   }
 
-  // For non-STLB caches, ensure PAGE_PERF is never forwarded — convert to PAGE_4K
+  // For non-STLB caches, convert: PAGE_PERF → PAGE_4K, PAGE_IDEAL_PERF → PAGE_2M
   auto resp_ps = fill_mshr.page_size;
   if (resp_ps == static_cast<uint8_t>(PageSize::PAGE_PERF) && !is_stlb_perf)
     resp_ps = static_cast<uint8_t>(PageSize::PAGE_4K);
+  if (resp_ps == static_cast<uint8_t>(PageSize::PAGE_IDEAL_PERF) && !is_stlb_2m)
+    resp_ps = static_cast<uint8_t>(PageSize::PAGE_2M);
 
   response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me, resp_ps, fill_mshr.entry_type};
   response.is_llc_miss = fill_mshr.is_llc_miss;
@@ -509,7 +515,8 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   // 2MB entries are stored at 2MB-aligned VPN. Sub-page requests miss on the exact
   // 4KB tag, so we do a secondary lookup at the 2MB-aligned address.
   if (!hit && g_vmem
-      && handle_pkt.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
+      && (handle_pkt.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
+          || handle_pkt.page_size == static_cast<uint8_t>(PageSize::PAGE_IDEAL_PERF))
       && NAME.find("STLB") != std::string::npos) {
     uint64_t vpn_4k = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
     uint64_t base_2m = (vpn_4k >> 9) << 9;
@@ -517,7 +524,8 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
     auto [set_begin_2m, set_end_2m] = get_set_span(addr_2m);
     auto way_2m = std::find_if(set_begin_2m, set_end_2m, [matcher = matches_address(addr_2m)](const auto& x) {
-      return x.valid && x.page_size == static_cast<uint8_t>(PageSize::PAGE_2M) && matcher(x);
+      return x.valid && (x.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
+                         || x.page_size == static_cast<uint8_t>(PageSize::PAGE_IDEAL_PERF)) && matcher(x);
     });
 
     if (way_2m != set_end_2m) {
@@ -530,9 +538,10 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
           champsim::address_slice{off_2m, handle_pkt.v_address})};
 
       sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+      // Preserve actual page_size so finish_translation can route IDEAL_PERF subpages
       response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr,
                              metadata_thru, handle_pkt.instr_depend_on_me,
-                             static_cast<uint8_t>(PageSize::PAGE_2M), 0};
+                             way_2m->page_size, 0};
       for (auto* ret : handle_pkt.to_return) ret->push_back(response);
       return true;
     }
@@ -1237,7 +1246,8 @@ void CACHE::finish_translation(const response_type& packet)
   auto matches_vpage = [page_num = champsim::page_number{packet.v_address}, pkt_page_size](const auto& entry) {
     if (entry.is_translated || entry.bitmap_check_pending)
       return false;
-    if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_2M)) {
+    if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
+        || pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_IDEAL_PERF)) {
       constexpr uint64_t mask_2m = ~uint64_t{(1ULL << 9) - 1};
       return (champsim::page_number{entry.v_address}.to<uint64_t>() & mask_2m) == (page_num.to<uint64_t>() & mask_2m);
     }
@@ -1275,6 +1285,30 @@ void CACHE::finish_translation(const response_type& packet)
         entry.entry_type = 0;
         entry.translate_issued = false;
         if (!this->warmup) { this->sim_stats.perf_total++; this->sim_stats.perf_hole++; }
+      }
+      return;
+    }
+
+    if (pkt_page_size == static_cast<uint8_t>(PageSize::PAGE_IDEAL_PERF)) {
+      // Ideal PERF: 2MB TLB, per-subpage tier routing, zero overhead.
+      // Use tier_bitmap to determine DRAM vs CXL, then resolve address.
+      // Non-CXL subpages: 2MB splice (stay in base DRAM frame).
+      // CXL subpages: need 4KB allocation — re-route to 4KB pipeline.
+      uint64_t vpn_4k = champsim::page_number{entry.v_address}.to<uint64_t>();
+      if (g_vmem && !g_vmem->is_subpage_dram(vpn_4k)) {
+        // CXL subpage: re-route to 4KB pipeline (needs separate physical frame)
+        entry.page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
+        entry.page_size_determined = true;
+        entry.entry_type = 0;
+        entry.translate_issued = false;
+      } else {
+        // DRAM subpage: use 2MB base frame, zero extra cost
+        champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+        champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+        entry.address = champsim::address{champsim::splice(
+            champsim::address_slice{pn_2m, champsim::address{p_page}},
+            champsim::address_slice{off_2m, entry.v_address})};
+        entry.is_translated = true;
       }
       return;
     }

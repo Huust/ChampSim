@@ -31,7 +31,7 @@
 #include "champsim.h"
 #include "chrono.h"
 
-enum class PageSize : uint8_t { PAGE_4K = 0, PAGE_2M = 1, PAGE_PERF = 2 };
+enum class PageSize : uint8_t { PAGE_4K = 0, PAGE_2M = 1, PAGE_PERF = 2, PAGE_IDEAL_PERF = 4 };
 constexpr unsigned LOG2_PAGE_SIZE_4K = 12;
 constexpr unsigned LOG2_PAGE_SIZE_2M = 21;
 
@@ -65,8 +65,12 @@ private:
   // Multi-page-size support: pmap (4KB-VPN -> PageSize)
   std::unordered_map<uint64_t, PageSize> pmap; // key is 4KB-granularity VPN
 
-  // Perforated page support: hole bitmaps and coarse filters
-  std::unordered_map<uint64_t, std::array<uint64_t, 8>> hole_bitmaps; // 2MB-base VPN → 512-bit bitmap
+  // Perforated page support
+  // hole_bitmaps: bit=1 means "this subpage is remapped to the OTHER tier"
+  // perf_base_is_dram: true = base frame in DRAM (type=2), false = base frame in CXL (type=3)
+  // Device for a subpage = remapped ? opposite(base) : base
+  std::unordered_map<uint64_t, std::array<uint64_t, 8>> hole_bitmaps; // 2MB-base VPN → 512-bit remap bitmap
+  std::unordered_map<uint64_t, bool> perf_base_is_dram;               // 2MB-base VPN → base tier
   std::unordered_map<uint64_t, uint8_t> coarse_filters;               // 2MB-base VPN → 8-bit filter
   std::unordered_map<uint64_t, uint64_t> bitmap_paddrs;               // 2MB-base VPN → bitmap physical address
   uint64_t next_bitmap_paddr = 0x80000;                                // next bitmap paddr (starts at 512KB)
@@ -204,6 +208,7 @@ public:
   static constexpr unsigned PERF_HOLE_LATENCY_CYCLES = 10;
 
   [[nodiscard]] bool is_hole(uint64_t vpn_4k) const;
+  [[nodiscard]] bool is_subpage_dram(uint64_t vpn_4k) const;
   [[nodiscard]] bool is_cxl_page(champsim::page_number vpn) const;
   [[nodiscard]] bool coarse_filter_pass(uint64_t vpn_4k) const;
   [[nodiscard]] uint64_t get_bitmap_paddr(uint64_t base_2m_vpn) const;
