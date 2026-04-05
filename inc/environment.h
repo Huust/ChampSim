@@ -26,7 +26,13 @@
 #include "cxl_memory.h"
 #include "ooo_cpu.h"
 #include "operable.h"
+#ifdef USE_ECPT
+#include "ecpt.h"
+#define PTW_CLASS ECPTWalker
+#else
 #include "ptw.h"
+#define PTW_CLASS PageTableWalker
+#endif
 #include "vmem.h"
 
 // Forward declaration for Ramulator controller
@@ -38,7 +44,11 @@ struct environment {
   virtual std::vector<std::reference_wrapper<operable>> operable_view() = 0;
   virtual std::vector<std::reference_wrapper<O3_CPU>> cpu_view() = 0;
   virtual std::vector<std::reference_wrapper<CACHE>> cache_view() = 0;
+#ifdef USE_ECPT
+  virtual std::vector<std::reference_wrapper<ECPTWalker>> ptw_view() = 0;
+#else
   virtual std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() = 0;
+#endif
   virtual SHIM_LAYER& router_view() = 0;
 
   // Memory subsystem presence flags

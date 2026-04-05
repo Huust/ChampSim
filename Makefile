@@ -17,6 +17,8 @@ override REPLACEMENT_ROOT += $(addsuffix /replacement,$(MODULE_ROOT))
 # Experimental features control
 # Set SKIP_TRANSLATION=1 to enable skipping translation for CXL memory
 SKIP_TRANSLATION ?= 0
+# Set ECPT=1 to use Elastic Cuckoo Page Tables instead of radix PTW
+ECPT ?= 0
 
 # vcpkg integration
 TRIPLET_DIR = $(patsubst %/,%,$(firstword $(filter-out $(ROOT_DIR)/vcpkg_installed/vcpkg/, $(wildcard $(ROOT_DIR)/vcpkg_installed/*/))))
@@ -29,6 +31,9 @@ override LDLIBS   += -llzma -lz -lbz2 -lfmt -lCLI11
 # Enable experimental features based on configuration
 ifeq ($(SKIP_TRANSLATION),1)
     override CPPFLAGS += -DENABLE_SKIP_CXL_TRANSLATION
+endif
+ifeq ($(ECPT),1)
+    override CPPFLAGS += -DUSE_ECPT
 endif
 
 .PHONY: all clean configclean test pytest maketest ramulator

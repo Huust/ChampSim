@@ -219,6 +219,11 @@ public:
   [[nodiscard]] PageSize get_page_size(champsim::page_number vpn_4k) const;
 
   /**
+   * Access the pmap (4KB-VPN → PageSize) for external iteration (e.g., ECPT).
+   */
+  [[nodiscard]] const std::unordered_map<uint64_t, PageSize>& get_pmap() const { return pmap; }
+
+  /**
    * Translate the given address for a 2MB page.
    */
   std::pair<champsim::page_number, champsim::chrono::clock::duration> va_to_pa_2m(uint32_t cpu_num, champsim::page_number vaddr);

@@ -102,7 +102,13 @@ ptw_builder_parts = {
     'mshr_size': '.mshr_size({mshr_size})',
     'max_read': '.tag_bandwidth(champsim::bandwidth::maximum_type{{{max_read}}})',
     'max_write': '.fill_bandwidth(champsim::bandwidth::maximum_type{{{max_write}}})',
-    'frequency': '.clock_period(champsim::chrono::picoseconds{{{^clock_period}}})'
+    'frequency': '.clock_period(champsim::chrono::picoseconds{{{^clock_period}}})',
+    # ECPT-specific (ignored when building radix PTW since keys won't be in JSON)
+    'cwc_entries': '.cwc_entries({cwc_entries})',
+    'cwc_latency': '.cwc_latency({cwc_latency})',
+    'hash_latency': '.hash_latency({hash_latency})',
+    'pte_table_entries': '.pte_table_entries({pte_table_entries})',
+    'pmd_table_entries': '.pmd_table_entries({pmd_table_entries})'
 }
 
 def vector_string(iterable):
@@ -197,6 +203,9 @@ def get_ptw_builder(ptw, ul_pairs):
         '.virtual_memory(&vmem)'
     ]
 
+    # PSCL is radix-PTW-only. ECPT-specific params (cwc_*, pte/pmd_table_entries)
+    # are in ptw_builder_parts and only emitted if present in JSON.
+    # When building ECPT, use a JSON without PSCL keys to avoid calling add_pscl().
     local_ptw_builder_parts = {
         ('pscl5_set', 'pscl5_way'): '.add_pscl(5, {pscl5_set}, {pscl5_way})',
         ('pscl4_set', 'pscl4_way'): '.add_pscl(4, {pscl4_set}, {pscl4_way})',
@@ -213,7 +222,7 @@ def get_ptw_builder(ptw, ul_pairs):
         local_params['^clock_period'] = int(1000000/ptw['frequency'])
 
     builder_parts = itertools.chain(util.multiline(itertools.chain(
-        ('champsim::ptw_builder{{ champsim::defaults::default_ptw }}',),
+        ('PTW_BUILDER{{ PTW_DEFAULT }}',),
         required_parts,
         (v for k,v in ptw_builder_parts.items() if k in ptw),
         (v for keys,v in local_ptw_builder_parts.items() if any(k in ptw for k in keys))
@@ -424,6 +433,18 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     if pmem.get('use_ramulator', False) or (is_cxl_enabled and cxl_dram.get('use_ramulator', False)):
         yield '#include "ramulator_controller.h"'
 
+    # ECPT/PTW type switching via preprocessor macros
+    yield '#ifdef USE_ECPT'
+    yield '#define PTW_CLASS ECPTWalker'
+    yield '#define PTW_BUILDER champsim::ecpt_builder'
+    yield '#define PTW_DEFAULT champsim::defaults::default_ecpt'
+    yield '#else'
+    yield '#define PTW_CLASS PageTableWalker'
+    yield '#define PTW_BUILDER champsim::ptw_builder'
+    yield '#define PTW_DEFAULT champsim::defaults::default_ptw'
+    yield '#endif'
+    yield ''
+
     # Get fastest clock period in picoseconds
     global_clock_period = int(1000000/max(x['frequency'] for x in itertools.chain(cores, caches, ptws, (pmem,))))
 
@@ -546,7 +567,7 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
 
     ptw_instantiation_body = (
         'ptws {',
-        *get_builder_function_call('PageTableWalker', map(functools.partial(get_ptw_builder, ul_pairs=ul_pairs), ptws)),
+        *get_builder_function_call('PTW_CLASS', map(functools.partial(get_ptw_builder, ul_pairs=ul_pairs), ptws)),
         '},'
     )
 
@@ -588,7 +609,7 @@ def get_instantiation_lines(cores, caches, ptws, router, pmem, cxl, cxl_dram, vm
     yield from get_ref_vector_function('CACHE', f'{classname}::cache_view', 'caches')
     yield ''
 
-    yield from get_ref_vector_function('PageTableWalker', f'{classname}::ptw_view', 'ptws')
+    yield from get_ref_vector_function('PTW_CLASS', f'{classname}::ptw_view', 'ptws')
     yield ''
 
     # Build operable_view function body conditionally
@@ -711,7 +732,7 @@ def get_instantiation_header(num_cpus, env, build_id, is_dram_enabled, is_cxl_en
 
     struct_body.extend([
         'VirtualMemory vmem;',
-        'std::forward_list<PageTableWalker> ptws;',
+        'std::forward_list<PTW_CLASS> ptws;',
         'std::forward_list<CACHE> caches;',
         'std::forward_list<O3_CPU> cores;',
         '',
@@ -723,7 +744,7 @@ def get_instantiation_header(num_cpus, env, build_id, is_dram_enabled, is_cxl_en
         'generated_environment();',
         'std::vector<std::reference_wrapper<O3_CPU>> cpu_view() final;',
         'std::vector<std::reference_wrapper<CACHE>> cache_view() final;',
-        'std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() final;',
+        'std::vector<std::reference_wrapper<PTW_CLASS>> ptw_view() final;',
         'SHIM_LAYER& router_view() final;'
     ])
 

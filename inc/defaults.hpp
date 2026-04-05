@@ -23,7 +23,11 @@
 #include "../replacement/lru/lru.h"
 #include "cache_builder.h"
 #include "core_builder.h"
+#ifdef USE_ECPT
+#include "ecpt_builder.h"
+#else
 #include "ptw_builder.h"
+#endif
 
 namespace champsim::defaults
 {
@@ -155,7 +159,11 @@ const auto default_llc = champsim::cache_builder<champsim::cache_builder_module_
                              .reset_wq_checks_full_addr()
                              .prefetch_activate(access_type::LOAD, access_type::PREFETCH);
 
+#ifdef USE_ECPT
+const auto default_ecpt = champsim::ecpt_builder{}.bandwidth_factor(2).mshr_factor(5);
+#else
 const auto default_ptw = champsim::ptw_builder{}.bandwidth_factor(2).mshr_factor(5).add_pscl(5, 1, 2).add_pscl(4, 1, 4).add_pscl(3, 2, 4).add_pscl(2, 4, 8);
+#endif
 } // namespace champsim::defaults
 
 #endif
