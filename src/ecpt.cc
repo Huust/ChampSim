@@ -322,14 +322,6 @@ uint8_t ECPTWalker::find_critical_probe(uint64_t vpn_4k, WalkType wt,
     return 0; // Only 1 probe, it's the critical one
   }
 
-  if (wt == WalkType::PERF_PROBE) {
-    // PTE-only mini walk for perforated page classification.
-    // The PTE probes model memory latency; the "slower" probe (way 1)
-    // is a safe choice since both must return before STLB can classify.
-    // Use way 1 as critical — slightly pessimistic but correct.
-    return 1;
-  }
-
   if (wt == WalkType::SIZE) {
     // 2 PTE probes. Find which way this VPN is in.
     uint64_t ck = vpn_4k / CLUSTER_FACTOR;
@@ -340,14 +332,25 @@ uint8_t ECPTWalker::find_critical_probe(uint64_t vpn_4k, WalkType wt,
 
   if (wt == WalkType::COMPLETE) {
     // 4 probes: PTE-H1(0), PTE-H2(1), PMD-H1(2), PMD-H2(3)
-    if (is_2mb || is_perf) {
-      // For 2MB and PERF pages: PMD probe is critical (returns 2MB base / PERF template)
+    if (is_perf) {
+      // PERF: hole subpages need PTE result, non-holes need PMD result
+      if (vmem->is_hole(vpn_4k)) {
+        uint64_t ck = vpn_4k / CLUSTER_FACTOR;
+        auto it = way_assignments_[0].find(ck);
+        uint8_t way = (it != way_assignments_[0].end()) ? it->second : 0;
+        return way; // PTE-H1 or PTE-H2
+      } else {
+        uint64_t ck_2m = (vpn_4k >> 9) / CLUSTER_FACTOR;
+        auto it = way_assignments_[1].find(ck_2m);
+        uint8_t way = (it != way_assignments_[1].end()) ? it->second : 0;
+        return 2 + way; // PMD-H1 or PMD-H2
+      }
+    } else if (is_2mb) {
       uint64_t ck_2m = (vpn_4k >> 9) / CLUSTER_FACTOR;
       auto it = way_assignments_[1].find(ck_2m);
       uint8_t way = (it != way_assignments_[1].end()) ? it->second : 0;
       return 2 + way; // PMD-H1 or PMD-H2
     } else {
-      // Critical = PTE probe for the correct way
       uint64_t ck = vpn_4k / CLUSTER_FACTOR;
       auto it = way_assignments_[0].find(ck);
       uint8_t way = (it != way_assignments_[0].end()) ? it->second : 0;
@@ -357,10 +360,19 @@ uint8_t ECPTWalker::find_critical_probe(uint64_t vpn_4k, WalkType wt,
 
   if (wt == WalkType::PARTIAL) {
     // 3 probes: PMD-Hx(0), PTE-H1(1), PTE-H2(2)
-    if (is_2mb || is_perf) {
-      return 0; // PMD probe is critical (returns 2MB base / PERF template)
+    if (is_perf) {
+      // PERF: hole → PTE probe, non-hole → PMD probe
+      if (vmem->is_hole(vpn_4k)) {
+        uint64_t ck = vpn_4k / CLUSTER_FACTOR;
+        auto it = way_assignments_[0].find(ck);
+        uint8_t way = (it != way_assignments_[0].end()) ? it->second : 0;
+        return 1 + way; // PTE-H1 or PTE-H2
+      } else {
+        return 0; // PMD probe
+      }
+    } else if (is_2mb) {
+      return 0; // PMD probe
     } else {
-      // PTE probe for correct way
       uint64_t ck = vpn_4k / CLUSTER_FACTOR;
       auto it = way_assignments_[0].find(ck);
       uint8_t way = (it != way_assignments_[0].end()) ? it->second : 0;
@@ -473,21 +485,26 @@ long ECPTWalker::operate()
 
             champsim::page_number ppage;
             champsim::chrono::clock::duration penalty;
-            uint8_t resp_entry_type = 0;
 
-            if (mshr.entry_type == 1) {
-              // PERF_PROBE: PTE-only mini walk for perforated page classification.
-              // Return entry_type=1 response so STLB handle_fill can classify
-              // using is_hole(). The data field is a dummy (STLB reads from vmem).
-              ppage = champsim::page_number{mshr.v_address};
-              penalty = champsim::chrono::clock::duration::zero();
-              mshr.result_page_size = static_cast<uint8_t>(PageSize::PAGE_PERF);
-              resp_entry_type = 1;
-            } else if (ps == PageSize::PAGE_PERF) {
-              // Full walk hit a perforated page → return PERF template (2MB base PPN).
-              // STLB will store this as a PERF entry and use coarse filter for classification.
-              std::tie(ppage, penalty) = vmem->va_to_pa_2m(mshr.cpu, champsim::page_number{mshr.v_address});
-              mshr.result_page_size = static_cast<uint8_t>(PageSize::PAGE_PERF);
+            if (ps == PageSize::PAGE_PERF) {
+              // Perforated page: classify subpage internally, return PAGE_4K.
+              // ECPT's PARTIAL walk already probed both PMD and PTE — the memory
+              // access latency is correctly modeled. We just need the right PPN.
+              if (vmem->is_hole(vpn_4k)) {
+                // Hole: this subpage has its own 4KB physical frame
+                std::tie(ppage, penalty) = vmem->va_to_pa(mshr.cpu, champsim::page_number{mshr.v_address});
+              } else {
+                // Non-hole: synthesize 4KB address from 2MB base frame
+                auto [base_ppage, base_penalty] = vmem->va_to_pa_2m(mshr.cpu, champsim::page_number{mshr.v_address});
+                champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+                champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+                auto synth = champsim::address{champsim::splice(
+                    champsim::address_slice{pn_2m, champsim::address{base_ppage}},
+                    champsim::address_slice{off_2m, mshr.v_address})};
+                ppage = champsim::page_number{synth};
+                penalty = base_penalty;
+              }
+              mshr.result_page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
             } else if (ps == PageSize::PAGE_2M) {
               std::tie(ppage, penalty) = vmem->va_to_pa_2m(mshr.cpu, champsim::page_number{mshr.v_address});
               mshr.result_page_size = static_cast<uint8_t>(PageSize::PAGE_2M);
@@ -496,8 +513,8 @@ long ECPTWalker::operate()
               mshr.result_page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
             }
 
-            // Update CWT with actual page info (skip for PERF_PROBE — already populated)
-            if (mshr.entry_type != 1) {
+            // Update CWT with actual page info
+            {
               uint64_t base_2m = (vpn_4k >> 9) << 9;
               bool is_large = (ps == PageSize::PAGE_2M || ps == PageSize::PAGE_PERF);
               if (is_large) {
@@ -506,7 +523,6 @@ long ECPTWalker::operate()
                 uint8_t pmd_way = (it != way_assignments_[1].end()) ? it->second : 0;
                 cwt_[base_2m] = {true, pmd_way};
               }
-              // Update CWC section
               uint64_t section_id = vpn_4k >> SECTION_SHIFT;
               auto& sec = cwt_sections_[section_id];
               sec.section_id = section_id;
@@ -515,25 +531,16 @@ long ECPTWalker::operate()
                 sec.has_2mb = true;
               else
                 sec.has_4kb = true;
-              // PERF pages have both 2MB base and 4KB holes
               if (ps == PageSize::PAGE_PERF)
                 sec.has_4kb = true;
-
-              // Fill CWC (off-critical-path)
-              if (!mshr.cwc_hit) {
+              if (!mshr.cwc_hit)
                 cwc_.fill(section_id, sec.has_4kb, sec.has_2mb);
-              }
             }
 
-            // Push response to all requestors.
-            // For entry_type=1 (PERF_PROBE): use req_address so STLB finish_packet
-            // matches the bitmap MSHR (which was created at the 2MB-aligned address).
-            champsim::address resp_addr = (resp_entry_type == 1) ? mshr.req_address : mshr.v_address;
-
             for (auto* ret : mshr.to_return) {
-              ret->emplace_back(resp_addr, mshr.v_address,
+              ret->emplace_back(mshr.v_address, mshr.v_address,
                                 champsim::address{ppage}, mshr.pf_metadata,
-                                mshr.instr_depend_on_me, mshr.result_page_size, resp_entry_type);
+                                mshr.instr_depend_on_me, mshr.result_page_size, uint8_t{0});
             }
 
             ++stat_total_walks;
@@ -633,18 +640,8 @@ long ECPTWalker::operate()
           if (pkt.response_requested)
             new_mshr.to_return = {&ul->returned};
 
-          if (pkt.entry_type == 1) {
-            // Perforated page mini walk (replaces bitmap fetch from radix PTW).
-            // Skip CWC — go directly to HASH_PENDING with PERF_PROBE walk type.
-            new_mshr.entry_type = 1;
-            new_mshr.walk_type = WalkType::PERF_PROBE;
-            new_mshr.cwc_hit = true; // no CWC lookup needed
-            new_mshr.state = WalkState::HASH_PENDING;
-            new_mshr.ready_time = current_time + clock_period * HASH_LATENCY_CYCLES;
-          } else {
-            new_mshr.state = WalkState::CWC_PENDING;
-            new_mshr.ready_time = current_time + clock_period * CWC_LATENCY_CYCLES;
-          }
+          new_mshr.state = WalkState::CWC_PENDING;
+          new_mshr.ready_time = current_time + clock_period * CWC_LATENCY_CYCLES;
 
           MSHR.push_back(std::move(new_mshr));
           return true;

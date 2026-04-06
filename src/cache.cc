@@ -1203,62 +1203,6 @@ bool CACHE::prefetch_line(uint64_t /*deprecated*/, uint64_t /*deprecated*/, uint
 
 void CACHE::finish_packet(const response_type& packet)
 {
-  // ── Bitmap response fast path: bypass MSHR data_promise pipeline ──
-  // When an entry_type=1 (bitmap/PERF_PROBE) response arrives, immediately
-  // classify perf_bitmap_waiting entries and consume the bitmap MSHR.
-  // This avoids head-of-line blocking in the FIFO handle_fill pipeline,
-  // which is critical for ECPT where normal walks and bitmap probes have
-  // similar latency.
-  if (packet.entry_type == 1) {
-    auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(packet.address, packet.entry_type));
-    if (mshr_entry != MSHR.end()) {
-      // Fill bitmap entry in STLB cache (for future try_hit lookups)
-      uint64_t vpn_4k = champsim::page_number{mshr_entry->v_address}.to<uint64_t>();
-      uint64_t base_2m = (vpn_4k >> 9) << 9;
-      champsim::address fill_addr = stlb_addr_2m(base_2m);
-      auto [set_begin, set_end] = get_set_span(fill_addr);
-      auto way = std::find_if_not(set_begin, set_end, [](auto x) { return x.valid; });
-      if (way == set_end)
-        way = std::next(set_begin, impl_find_victim(mshr_entry->cpu, mshr_entry->instr_id, get_set_index(fill_addr), &*set_begin, mshr_entry->ip, fill_addr, mshr_entry->type));
-      if (way != set_end) {
-        mshr_type fill_copy = *mshr_entry;
-        fill_copy.address = fill_addr;
-        *way = fill_block(fill_copy, packet.pf_metadata);
-      }
-
-      // Classify waiting subpages using is_hole() (same logic as handle_fill entry_type=1)
-      if (!this->warmup) {
-        long bm_latency = (current_time - (mshr_entry->time_enqueued + clock_period)) / clock_period;
-        sim_stats.perf_bitmap_miss_latency_cycles += bm_latency;
-      }
-      constexpr uint64_t mask_2m = ~uint64_t{(1ULL << 9) - 1};
-      champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
-      champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
-
-      for (auto it = perf_bitmap_waiting.begin(); it != perf_bitmap_waiting.end(); ) {
-        uint64_t wait_vpn = champsim::page_number{it->v_address}.to<uint64_t>();
-        uint64_t wait_base = wait_vpn & mask_2m;
-        if (wait_base != base_2m) { ++it; continue; }
-        if (!g_vmem->is_hole(wait_vpn)) {
-          auto synth_paddr = champsim::address{champsim::splice(
-              champsim::address_slice{pn_2m, champsim::address{mshr_entry->saved_2m_ppage}},
-              champsim::address_slice{off_2m, it->v_address})};
-          if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_non_hole++; }
-          response_type response{it->address, it->v_address, synth_paddr, packet.pf_metadata,
-                                 it->instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
-          for (auto* ret : it->to_return) ret->push_back(response);
-        } else {
-          if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
-          perf_hole_pending.push_back(std::move(*it));
-        }
-        it = perf_bitmap_waiting.erase(it);
-      }
-      // Consume bitmap MSHR immediately (no need to go through handle_fill)
-      MSHR.erase(mshr_entry);
-      return;
-    }
-  }
-
   // check MSHR information
   auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(packet.address, packet.entry_type));
   auto first_unreturned = std::find_if(MSHR.begin(), MSHR.end(), [](auto x) { return x.data_promise.has_unknown_readiness(); });
