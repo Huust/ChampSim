@@ -311,12 +311,15 @@ void ECPTWalker::build_cwt()
 
 uint8_t ECPTWalker::find_critical_probe(uint64_t vpn_4k, WalkType wt,
                                          const std::array<Probe, 4>& probes,
-                                         uint8_t total) const
+                                         uint8_t total, uint8_t req_page_size) const
 {
   // Determine the actual page size from vmem
   auto ps = vmem->get_page_size(champsim::page_number{vpn_4k});
   bool is_2mb = (ps == PageSize::PAGE_2M);
   bool is_perf = (ps == PageSize::PAGE_PERF);
+  // Full walk (request=PAGE_PERF): PMD is critical (returns template)
+  // Mini walk (request=PAGE_4K for PERF VPN): must wait for PTE (hole confirmation)
+  bool perf_full_walk = is_perf && (req_page_size == static_cast<uint8_t>(PageSize::PAGE_PERF));
 
   if (wt == WalkType::DIRECT) {
     return 0; // Only 1 probe, it's the critical one
@@ -333,13 +336,19 @@ uint8_t ECPTWalker::find_critical_probe(uint64_t vpn_4k, WalkType wt,
   if (wt == WalkType::COMPLETE) {
     // 4 probes: PTE-H1(0), PTE-H2(1), PMD-H1(2), PMD-H2(3)
     if (is_perf) {
-      // PERF: hardware must wait for BOTH PTE probes to confirm whether a
-      // hole entry exists (PTE match overrides PMD). Critical = the PTE
-      // probe in the non-matching way (likely the slower one to return).
-      uint64_t ck = vpn_4k / CLUSTER_FACTOR;
-      auto it = way_assignments_[0].find(ck);
-      uint8_t way = (it != way_assignments_[0].end()) ? it->second : 0;
-      return 1 - way; // non-matching PTE way (must confirm "no override")
+      if (perf_full_walk) {
+        // Full walk: PMD is critical (returns PERF template for STLB caching)
+        uint64_t ck_2m = (vpn_4k >> 9) / CLUSTER_FACTOR;
+        auto it = way_assignments_[1].find(ck_2m);
+        uint8_t way = (it != way_assignments_[1].end()) ? it->second : 0;
+        return 2 + way;
+      } else {
+        // Mini walk: must wait for PTE to confirm hole/non-hole
+        uint64_t ck = vpn_4k / CLUSTER_FACTOR;
+        auto it = way_assignments_[0].find(ck);
+        uint8_t way = (it != way_assignments_[0].end()) ? it->second : 0;
+        return 1 - way; // non-matching PTE way
+      }
     } else if (is_2mb) {
       uint64_t ck_2m = (vpn_4k >> 9) / CLUSTER_FACTOR;
       auto it = way_assignments_[1].find(ck_2m);
@@ -356,12 +365,15 @@ uint8_t ECPTWalker::find_critical_probe(uint64_t vpn_4k, WalkType wt,
   if (wt == WalkType::PARTIAL) {
     // 3 probes: PMD-Hx(0), PTE-H1(1), PTE-H2(2)
     if (is_perf) {
-      // PERF: hardware must wait for BOTH PTE probes before accepting PMD.
-      // Critical = non-matching PTE way (confirms "no hole override").
-      uint64_t ck = vpn_4k / CLUSTER_FACTOR;
-      auto it = way_assignments_[0].find(ck);
-      uint8_t way = (it != way_assignments_[0].end()) ? it->second : 0;
-      return 1 + (1 - way); // non-matching PTE way (index 1 or 2)
+      if (perf_full_walk) {
+        return 0; // Full walk: PMD is critical (returns PERF template)
+      } else {
+        // Mini walk: must wait for PTE confirmation
+        uint64_t ck = vpn_4k / CLUSTER_FACTOR;
+        auto it = way_assignments_[0].find(ck);
+        uint8_t way = (it != way_assignments_[0].end()) ? it->second : 0;
+        return 1 + (1 - way); // non-matching PTE way
+      }
     } else if (is_2mb) {
       return 0; // PMD probe
     } else {
@@ -448,7 +460,7 @@ void ECPTWalker::setup_probes(mshr_type& mshr)
     break;
   }
 
-  mshr.critical_probe_idx = find_critical_probe(vpn_4k, mshr.walk_type, mshr.probes, mshr.total_probes);
+  mshr.critical_probe_idx = find_critical_probe(vpn_4k, mshr.walk_type, mshr.probes, mshr.total_probes, mshr.request_page_size);
 }
 
 // ============================================================================
@@ -478,15 +490,18 @@ long ECPTWalker::operate()
             champsim::page_number ppage;
             champsim::chrono::clock::duration penalty;
 
-            if (ps == PageSize::PAGE_PERF) {
-              // Perforated page: classify subpage internally, return PAGE_4K.
-              // ECPT's PARTIAL walk already probed both PMD and PTE — the memory
-              // access latency is correctly modeled. We just need the right PPN.
+            if (ps == PageSize::PAGE_PERF
+                && mshr.request_page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)) {
+              // Full walk (STLB miss): return PERF template (2MB base PPN).
+              // STLB will cache the template and use coarse filter for future hits.
+              std::tie(ppage, penalty) = vmem->va_to_pa_2m(mshr.cpu, champsim::page_number{mshr.v_address});
+              mshr.result_page_size = static_cast<uint8_t>(PageSize::PAGE_PERF);
+            } else if (ps == PageSize::PAGE_PERF) {
+              // Mini walk (STLB hit template, filter=1): classify internally, return PAGE_4K.
+              // Request had page_size=PAGE_4K (set by STLB try_hit).
               if (vmem->is_hole(vpn_4k)) {
-                // Hole: this subpage has its own 4KB physical frame
                 std::tie(ppage, penalty) = vmem->va_to_pa(mshr.cpu, champsim::page_number{mshr.v_address});
               } else {
-                // Non-hole: synthesize 4KB address from 2MB base frame
                 auto [base_ppage, base_penalty] = vmem->va_to_pa_2m(mshr.cpu, champsim::page_number{mshr.v_address});
                 champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
                 champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
@@ -629,6 +644,7 @@ long ECPTWalker::operate()
             return false;
 
           mshr_type new_mshr{pkt};
+          new_mshr.request_page_size = pkt.page_size;
           if (pkt.response_requested)
             new_mshr.to_return = {&ul->returned};
 

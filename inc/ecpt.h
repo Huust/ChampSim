@@ -123,6 +123,7 @@ class ECPTWalker : public champsim::operable
     uint8_t critical_probe_idx = 0;  // index of the probe that yields the answer
     std::array<Probe, 4> probes{};
 
+    uint8_t request_page_size = 0;  // page_size from the original request
     uint8_t result_page_size = 0;  // 0=4K, 1=2M, 2=PERF (actual page size from vmem)
     uint8_t entry_type = 0;        // 0=normal, 1=bitmap/perf_probe (from STLB)
 
@@ -168,7 +169,7 @@ class ECPTWalker : public champsim::operable
   champsim::address probe_address(uint64_t vpn_4k, int ps_idx, int way) const;
 
   // Determine which probe is critical (will find the actual translation)
-  uint8_t find_critical_probe(uint64_t vpn_4k, WalkType wt, const std::array<Probe, 4>& probes, uint8_t total) const;
+  uint8_t find_critical_probe(uint64_t vpn_4k, WalkType wt, const std::array<Probe, 4>& probes, uint8_t total, uint8_t req_page_size = 0) const;
 
   // Build hash tables and CWT from vmem mappings
   void build_tables();

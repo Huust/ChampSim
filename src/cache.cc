@@ -384,11 +384,35 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
       response.is_cxl_memory = fill_mshr.is_cxl_memory;
       for (auto* ret : fill_mshr.to_return) ret->push_back(response);
     } else {
-      // Coarse filter = 1: need bitmap → queue for bitmap fetch (no response yet)
+#ifdef USE_ECPT
+      // ECPT: PTE probes already done in the PARTIAL walk that produced this template.
+      // Classify using oracle (latency already paid). Non-hole: synthesize. Hole: queue mini walk.
+      champsim::dynamic_extent ecpt_off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+      champsim::dynamic_extent ecpt_pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+      uint64_t fill_vpn = champsim::page_number{fill_mshr.v_address}.to<uint64_t>();
+      if (!g_vmem->is_hole(fill_vpn)) {
+        auto synth_paddr = champsim::address{champsim::splice(
+            champsim::address_slice{ecpt_pn_2m, champsim::address{p_page_2m}},
+            champsim::address_slice{ecpt_off_2m, fill_mshr.v_address})};
+        if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_non_hole++; }
+        response_type response{fill_mshr.address, fill_mshr.v_address, synth_paddr, metadata_thru,
+                               fill_mshr.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+        response.is_llc_miss = fill_mshr.is_llc_miss;
+        for (auto* ret : fill_mshr.to_return) ret->push_back(response);
+      } else {
+        if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
+        // Queue for mini walk (same mechanism as perf_hole_pending)
+        mshr_type hole_entry = fill_mshr;
+        hole_entry.page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
+        perf_hole_pending.push_back(std::move(hole_entry));
+      }
+#else
+      // Radix: queue for bitmap fetch
       mshr_type bm_waiting = fill_mshr;
       bm_waiting.saved_2m_ppage = p_page_2m;
-      bm_waiting.data_promise = {}; // reset: this entry will be resolved later, not via this fill
+      bm_waiting.data_promise = {};
       perf_bitmap_waiting.push_back(std::move(bm_waiting));
+#endif
     }
     return true;
   }
@@ -451,10 +475,38 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
       uint64_t base_2m = (vpn_4k >> 9) << 9;
       champsim::page_number p_page_2m{way->data};
 
+      champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+      champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+#ifdef USE_ECPT
+      // ECPT path: coarse filter + oracle classification.
+      // PTE ECPT IS the bitmap — no separate bitmap fetch needed.
       if (!g_vmem->coarse_filter_pass(vpn_4k)) {
-        // Coarse filter = 0: definitely not hole → synthesize 4KB
-        champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
-        champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+        // Filter = 0: no holes in this 256KB region → synthesize 4KB
+        auto synth_paddr = champsim::address{champsim::splice(
+            champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
+            champsim::address_slice{off_2m, handle_pkt.v_address})};
+        if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_coarse_filtered++; }
+        response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr, metadata_thru,
+                               handle_pkt.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+        for (auto* ret : handle_pkt.to_return) ret->push_back(response);
+      } else if (!g_vmem->is_hole(vpn_4k)) {
+        // Filter = 1 but not a hole → synthesize 4KB
+        auto synth_paddr = champsim::address{champsim::splice(
+            champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
+            champsim::address_slice{off_2m, handle_pkt.v_address})};
+        if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_non_hole++; }
+        response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr, metadata_thru,
+                               handle_pkt.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+        for (auto* ret : handle_pkt.to_return) ret->push_back(response);
+      } else {
+        // Filter = 1 and IS a hole → need mini walk for 4KB PPN.
+        // Hole → return false → handle_miss sends as normal miss → ECPT classifies internally
+        if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
+        return false;
+      }
+#else
+      // Radix path: coarse filter + bitmap fetch
+      if (!g_vmem->coarse_filter_pass(vpn_4k)) {
         auto synth_paddr = champsim::address{champsim::splice(
             champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
             champsim::address_slice{off_2m, handle_pkt.v_address})};
@@ -463,19 +515,14 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
                                handle_pkt.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
         for (auto* ret : handle_pkt.to_return) ret->push_back(response);
       } else {
-        // Coarse filter = 1: need bitmap check. Look for cached bitmap in STLB.
         champsim::address bm_addr = stlb_addr_2m(base_2m);
         auto [bm_set_begin, bm_set_end] = get_set_span(bm_addr);
         auto bm_way = std::find_if(bm_set_begin, bm_set_end, [matcher = matches_address(bm_addr, 1)](const auto& x) {
           return x.valid && matcher(x);
         });
         if (bm_way != bm_set_end) {
-          // Bitmap cached in STLB
           if (!this->warmup) sim_stats.perf_bitmap_stlb_hit++;
           if (!g_vmem->is_hole(vpn_4k)) {
-            // Not hole → synthesize 4KB
-            champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
-            champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
             auto synth_paddr = champsim::address{champsim::splice(
                 champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
                 champsim::address_slice{off_2m, handle_pkt.v_address})};
@@ -484,16 +531,15 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
                                    handle_pkt.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
             for (auto* ret : handle_pkt.to_return) ret->push_back(response);
           } else {
-            // Hole → return false so handle_miss routes to 4KB PTW
             if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
             return false;
           }
         } else {
-          // Bitmap not cached → return false so handle_miss fetches bitmap
           if (!this->warmup) sim_stats.perf_bitmap_stlb_miss++;
           return false;
         }
       }
+#endif
     } else {
       // Use stored entry's page_size (not request's) — handle normal TLB entries
       response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me, way->page_size, way->entry_type};
@@ -567,15 +613,44 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
       // Secondary hit on PERF template.
       champsim::page_number p_page_2m{way_2m->data};
 
+      champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+      champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+#ifdef USE_ECPT
+      // ECPT: coarse filter + oracle classification
       if (!g_vmem->coarse_filter_pass(vpn_4k)) {
-        // Coarse filter = 0: definitely not hole → synthesize 4KB
-        champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
-        champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
         auto synth_paddr = champsim::address{champsim::splice(
             champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
             champsim::address_slice{off_2m, handle_pkt.v_address})};
         if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_coarse_filtered++; }
-
+        sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+        response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr,
+                               metadata_thru, handle_pkt.instr_depend_on_me,
+                               static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+        for (auto* ret : handle_pkt.to_return) ret->push_back(response);
+        return true;
+      } else if (!g_vmem->is_hole(vpn_4k)) {
+        auto synth_paddr = champsim::address{champsim::splice(
+            champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
+            champsim::address_slice{off_2m, handle_pkt.v_address})};
+        if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_non_hole++; }
+        sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+        response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr,
+                               metadata_thru, handle_pkt.instr_depend_on_me,
+                               static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+        for (auto* ret : handle_pkt.to_return) ret->push_back(response);
+        return true;
+      } else {
+        // Hole → return false → handle_miss sends as normal miss → ECPT classifies internally
+        if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
+        return false;
+      }
+#else
+      // Radix: coarse filter + bitmap fetch
+      if (!g_vmem->coarse_filter_pass(vpn_4k)) {
+        auto synth_paddr = champsim::address{champsim::splice(
+            champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
+            champsim::address_slice{off_2m, handle_pkt.v_address})};
+        if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_coarse_filtered++; }
         sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
         response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr,
                                metadata_thru, handle_pkt.instr_depend_on_me,
@@ -583,25 +658,17 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
         for (auto* ret : handle_pkt.to_return) ret->push_back(response);
         return true;
       }
-
-      // Coarse filter = 1: check bitmap cache in STLB
       auto [bm_set_begin, bm_set_end] = get_set_span(addr_2m);
       auto bm_way = std::find_if(bm_set_begin, bm_set_end, [matcher = matches_address(addr_2m, 1)](const auto& x) {
         return x.valid && matcher(x);
       });
-
       if (bm_way != bm_set_end) {
-        // Bitmap cached
         if (!this->warmup) sim_stats.perf_bitmap_stlb_hit++;
         if (!g_vmem->is_hole(vpn_4k)) {
-          // Not hole → synthesize 4KB
-          champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
-          champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
           auto synth_paddr = champsim::address{champsim::splice(
               champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
               champsim::address_slice{off_2m, handle_pkt.v_address})};
           if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_non_hole++; }
-
           sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
           response_type response{handle_pkt.address, handle_pkt.v_address, synth_paddr,
                                  metadata_thru, handle_pkt.instr_depend_on_me,
@@ -609,15 +676,14 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
           for (auto* ret : handle_pkt.to_return) ret->push_back(response);
           return true;
         } else {
-          // Hole → return false so handle_miss routes to 4KB PTW
           if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
           return false;
         }
       } else {
-        // Bitmap not cached → return false so handle_miss fetches bitmap
         if (!this->warmup) sim_stats.perf_bitmap_stlb_miss++;
         return false;
       }
+#endif
     }
     // Template not in STLB → fall through as regular miss
   }
@@ -659,8 +725,9 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
                current_time.time_since_epoch() / clock_period);
   }
 
-  // ── STLB PERF routing: bitmap fetch or hole 4KB PTW ──
-  // try_hit returned false for a PERF page. Determine why and route accordingly.
+  // ── STLB PERF routing: bitmap fetch or hole 4KB PTW (radix PTW only) ──
+  // ECPT handles PERF classification internally — holes fall through as normal 4KB misses.
+#ifndef USE_ECPT
   if (g_vmem && handle_pkt.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
       && NAME.find("STLB") != std::string::npos) {
     uint64_t vpn_4k = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
@@ -748,6 +815,7 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     }
     // Template not in STLB → fall through to normal PTW path
   }
+#endif // !USE_ECPT
 
   mshr_type to_allocate{handle_pkt, current_time};
 
