@@ -333,18 +333,13 @@ uint8_t ECPTWalker::find_critical_probe(uint64_t vpn_4k, WalkType wt,
   if (wt == WalkType::COMPLETE) {
     // 4 probes: PTE-H1(0), PTE-H2(1), PMD-H1(2), PMD-H2(3)
     if (is_perf) {
-      // PERF: hole subpages need PTE result, non-holes need PMD result
-      if (vmem->is_hole(vpn_4k)) {
-        uint64_t ck = vpn_4k / CLUSTER_FACTOR;
-        auto it = way_assignments_[0].find(ck);
-        uint8_t way = (it != way_assignments_[0].end()) ? it->second : 0;
-        return way; // PTE-H1 or PTE-H2
-      } else {
-        uint64_t ck_2m = (vpn_4k >> 9) / CLUSTER_FACTOR;
-        auto it = way_assignments_[1].find(ck_2m);
-        uint8_t way = (it != way_assignments_[1].end()) ? it->second : 0;
-        return 2 + way; // PMD-H1 or PMD-H2
-      }
+      // PERF: hardware must wait for BOTH PTE probes to confirm whether a
+      // hole entry exists (PTE match overrides PMD). Critical = the PTE
+      // probe in the non-matching way (likely the slower one to return).
+      uint64_t ck = vpn_4k / CLUSTER_FACTOR;
+      auto it = way_assignments_[0].find(ck);
+      uint8_t way = (it != way_assignments_[0].end()) ? it->second : 0;
+      return 1 - way; // non-matching PTE way (must confirm "no override")
     } else if (is_2mb) {
       uint64_t ck_2m = (vpn_4k >> 9) / CLUSTER_FACTOR;
       auto it = way_assignments_[1].find(ck_2m);
@@ -361,15 +356,12 @@ uint8_t ECPTWalker::find_critical_probe(uint64_t vpn_4k, WalkType wt,
   if (wt == WalkType::PARTIAL) {
     // 3 probes: PMD-Hx(0), PTE-H1(1), PTE-H2(2)
     if (is_perf) {
-      // PERF: hole → PTE probe, non-hole → PMD probe
-      if (vmem->is_hole(vpn_4k)) {
-        uint64_t ck = vpn_4k / CLUSTER_FACTOR;
-        auto it = way_assignments_[0].find(ck);
-        uint8_t way = (it != way_assignments_[0].end()) ? it->second : 0;
-        return 1 + way; // PTE-H1 or PTE-H2
-      } else {
-        return 0; // PMD probe
-      }
+      // PERF: hardware must wait for BOTH PTE probes before accepting PMD.
+      // Critical = non-matching PTE way (confirms "no hole override").
+      uint64_t ck = vpn_4k / CLUSTER_FACTOR;
+      auto it = way_assignments_[0].find(ck);
+      uint8_t way = (it != way_assignments_[0].end()) ? it->second : 0;
+      return 1 + (1 - way); // non-matching PTE way (index 1 or 2)
     } else if (is_2mb) {
       return 0; // PMD probe
     } else {
