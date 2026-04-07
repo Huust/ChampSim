@@ -224,6 +224,17 @@ public:
   [[nodiscard]] const std::unordered_map<uint64_t, PageSize>& get_pmap() const { return pmap; }
 
   /**
+   * Total physical memory size across all devices (bytes).
+   */
+  [[nodiscard]] uint64_t total_memory_size() const;
+
+  /**
+   * Mark a range of 4KB physical page numbers as protected (not allocatable).
+   * Used by ECPT to reserve hash table physical address space.
+   */
+  void protect_page_range(uint64_t first_ppn, uint64_t count);
+
+  /**
    * Translate the given address for a 2MB page.
    */
   std::pair<champsim::page_number, champsim::chrono::clock::duration> va_to_pa_2m(uint32_t cpu_num, champsim::page_number vaddr);

@@ -138,10 +138,15 @@ champsim::address ECPTWalker::probe_address(uint64_t vpn_4k, int ps_idx, int way
 
 void ECPTWalker::build_tables()
 {
-  // Reserve physical address space for ECPT tables.
-  // Place them ABOVE all data pages to avoid address overlap with real data.
-  // Data pages use [2MB, ~16GB). We start ECPT tables at 32GB to be safe.
-  uint64_t ecpt_base = 32ULL * 1024 * 1024 * 1024; // 32GB
+  // Reserve physical address space for ECPT tables at the END of DRAM.
+  // Compute total table size first, then place them at (total_memory - table_size).
+  uint64_t total_table_bytes = 0;
+  for (int ps = 0; ps < 2; ++ps) {
+    uint32_t entries = (ps == 0) ? PTE_TABLE_ENTRIES : PMD_TABLE_ENTRIES;
+    total_table_bytes += static_cast<uint64_t>(entries) * 64 * 2; // 2 ways
+  }
+  uint64_t total_mem = vmem->total_memory_size();
+  uint64_t ecpt_base = total_mem - total_table_bytes;
 
   for (int ps = 0; ps < 2; ++ps) {
     uint32_t entries = (ps == 0) ? PTE_TABLE_ENTRIES : PMD_TABLE_ENTRIES;
@@ -152,13 +157,21 @@ void ECPTWalker::build_tables()
     }
   }
 
+  // Protect ECPT hash table pages from being allocated as data pages.
+  // Convert byte range [total_mem - total_table_bytes, total_mem) to 4KB page numbers.
+  uint64_t first_protected_ppn = (total_mem - total_table_bytes) / PAGE_SIZE;
+  uint64_t protected_page_count = (total_table_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+  vmem->protect_page_range(first_protected_ppn, protected_page_count);
+
   fmt::print("[ECPT] Hash table layout:\n");
   fmt::print("[ECPT]   PTE way0: base={:#x} entries={}\n", tables_[0][0].base_paddr, tables_[0][0].num_entries);
   fmt::print("[ECPT]   PTE way1: base={:#x} entries={}\n", tables_[0][1].base_paddr, tables_[0][1].num_entries);
   fmt::print("[ECPT]   PMD way0: base={:#x} entries={}\n", tables_[1][0].base_paddr, tables_[1][0].num_entries);
   fmt::print("[ECPT]   PMD way1: base={:#x} entries={}\n", tables_[1][1].base_paddr, tables_[1][1].num_entries);
-  fmt::print("[ECPT]   Total size: {:.2f} MB\n",
-             static_cast<double>(ecpt_base - 0x100000) / (1024.0 * 1024.0));
+  fmt::print("[ECPT]   Total size: {:.2f} MB (at end of {:.0f} MB DRAM), {} pages protected\n",
+             static_cast<double>(total_table_bytes) / (1024.0 * 1024.0),
+             static_cast<double>(total_mem) / (1024.0 * 1024.0),
+             protected_page_count);
 
   // Do cuckoo insertion to determine way assignments.
   // We iterate all VPN→PPN mappings from vmem and assign each to a way.
@@ -451,13 +464,14 @@ void ECPTWalker::setup_probes(mshr_type& mshr)
     break;
   }
 
-  case WalkType::PERF_PROBE:
-    // PTE-only mini walk for perforated page (replaces bitmap fetch).
-    // Same probes as SIZE walk — 2 PTE probes.
-    mshr.total_probes = 2;
-    mshr.probes[0].paddr = probe_address(vpn_4k, 0, 0);
-    mshr.probes[1].paddr = probe_address(vpn_4k, 0, 1);
+  case WalkType::PERF_PROBE: {
+    // Single bitmap fetch (1 memory access) instead of 2 hash probes.
+    // The bitmap physical address is pre-allocated by vmem at policy load time.
+    mshr.total_probes = 1;
+    uint64_t base_2m = (vpn_4k >> 9) << 9;
+    mshr.probes[0].paddr = champsim::address{vmem->get_bitmap_paddr(base_2m)};
     break;
+  }
   }
 
   mshr.critical_probe_idx = find_critical_probe(vpn_4k, mshr.walk_type, mshr.probes, mshr.total_probes, mshr.request_page_size);

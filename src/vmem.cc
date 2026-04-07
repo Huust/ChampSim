@@ -288,6 +288,20 @@ uint64_t VirtualMemory::get_offset(champsim::page_number vaddr, std::size_t leve
 
 std::size_t VirtualMemory::available_ppages(const Device& dev) const { return (ppage_free_list[get_device_index(dev)].size()); }
 
+uint64_t VirtualMemory::total_memory_size() const
+{
+  uint64_t total = 0;
+  for (const auto* dev : devices)
+    total += dev->size().count();
+  return total;
+}
+
+void VirtualMemory::protect_page_range(uint64_t first_ppn, uint64_t count)
+{
+  for (uint64_t i = 0; i < count; ++i)
+    protected_ppages.insert(first_ppn + i);
+}
+
 champsim::page_number VirtualMemory::allocate_ppage(const Device& dev)
 {
   auto& free_list = ppage_free_list[get_device_index(dev)];
