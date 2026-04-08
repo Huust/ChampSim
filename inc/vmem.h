@@ -229,6 +229,18 @@ public:
   [[nodiscard]] uint64_t total_memory_size() const;
 
   /**
+   * DRAM (device 0) physical memory size (bytes).
+   */
+  [[nodiscard]] uint64_t dram_size() const;
+
+  /**
+   * Reserve physical pages at end of DRAM for ECPT hash tables.
+   * Must be called BEFORE carve_2mb_pages(). Removes reserved pages from
+   * the 4KB free list so they cannot be carved into 2MB pool or allocated.
+   */
+  uint64_t reserve_dram_tail(uint64_t bytes);
+
+  /**
    * Mark a range of 4KB physical page numbers as protected (not allocatable).
    * Used by ECPT to reserve hash table physical address space.
    */

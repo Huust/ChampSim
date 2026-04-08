@@ -296,6 +296,44 @@ uint64_t VirtualMemory::total_memory_size() const
   return total;
 }
 
+uint64_t VirtualMemory::dram_size() const
+{
+  if (devices.empty()) return 0;
+  return devices[0]->size().count();
+}
+
+uint64_t VirtualMemory::reserve_dram_tail(uint64_t bytes)
+{
+  uint64_t dram_bytes = dram_size();
+  if (bytes >= dram_bytes) {
+    fmt::print("[VMEM] FATAL: reserve_dram_tail({} bytes) exceeds DRAM size ({} bytes)\n", bytes, dram_bytes);
+    abort();
+  }
+  uint64_t base_addr = dram_bytes - bytes;
+  uint64_t first_ppn = base_addr / PAGE_SIZE;
+  uint64_t page_count = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+  // Remove these pages from DRAM's free list (device 0)
+  auto& list = ppage_free_list[0];
+  std::size_t old_size = list.size();
+  std::deque<champsim::page_number> kept;
+  for (auto& ppn : list) {
+    uint64_t p = ppn.to<uint64_t>();
+    if (p < first_ppn || p >= first_ppn + page_count)
+      kept.push_back(ppn);
+  }
+  auto removed = old_size - kept.size();
+  list = std::move(kept);
+
+  // Also add to protected set for safety
+  for (uint64_t i = 0; i < page_count; ++i)
+    protected_ppages.insert(first_ppn + i);
+
+  fmt::print("[VMEM] Reserved {} pages ({:.2f} MB) at DRAM tail [PPN {:#x} - {:#x}), {} removed from free list\n",
+             page_count, bytes / (1024.0 * 1024.0), first_ppn, first_ppn + page_count, removed);
+  return base_addr;
+}
+
 void VirtualMemory::protect_page_range(uint64_t first_ppn, uint64_t count)
 {
   for (uint64_t i = 0; i < count; ++i)
