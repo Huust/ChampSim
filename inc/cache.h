@@ -103,7 +103,8 @@ public:
                                 // this flag can only be set when a response is returned
     uint8_t page_size = 0; // 0=4K, 1=2M (matches PageSize enum)
     uint8_t entry_type = 0; // 0=TLB translation, 1=bitmap entry
-    champsim::page_number saved_2m_ppage{}; // STLB PERF: 2MB base PPN for bitmap classification
+    champsim::page_number saved_2m_ppage{}; // STLB PERF: 2MB base PPN for bitmap classification (warm path)
+    champsim::page_number perf_2m_ppage{};  // PERF cold path: 2MB PPN from PTW for template install
 
     struct returned_value {
       champsim::address data;

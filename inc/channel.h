@@ -85,6 +85,7 @@ class channel
                                 // this flag is only set when returning responses from shim layer to upper level LLC
     uint8_t page_size = 0; // 0=4K, 1=2M (matches PageSize enum)
     uint8_t entry_type = 0; // 0=TLB translation, 1=bitmap entry
+    champsim::page_number perf_2m_ppage{}; // PERF cold path: 2MB PPN for STLB template install
 
     response(champsim::address addr, champsim::address v_addr, champsim::address data_, uint32_t pf_meta, std::vector<uint64_t> deps)
         : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), instr_depend_on_me(deps)

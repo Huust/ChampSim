@@ -312,6 +312,56 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   }
   sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
 
+#ifndef USE_ECPT
+  // ── STLB PERF cold path (hole): PTW walked to 4KB PPN, install template as side effect ──
+  // PTW returned page_size=PAGE_4K, data=4KB PPN, perf_2m_ppage=2MB PPN.
+  // General fill logic already installed 4KB block at normal address.
+  // Also install PERF template for future hot-path hits.
+  if (is_stlb && !is_stlb_perf && !is_stlb_2m
+      && fill_mshr.perf_2m_ppage != champsim::page_number{}) {
+    uint64_t vpn_4k = champsim::page_number{fill_mshr.v_address}.to<uint64_t>();
+    uint64_t base_2m = (vpn_4k >> 9) << 9;
+    champsim::address template_addr = stlb_addr_2m(base_2m);
+
+    // Install PERF template if not already present
+    auto [tpl_begin, tpl_end] = get_set_span(template_addr);
+    auto tpl_way = std::find_if(tpl_begin, tpl_end, [matcher = matches_address(template_addr)](const auto& x) {
+      return x.valid && x.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF) && matcher(x);
+    });
+    if (tpl_way == tpl_end) {
+      // Template not yet in STLB — install it
+      auto inv = std::find_if_not(tpl_begin, tpl_end, [](auto x) { return x.valid; });
+      if (inv == tpl_end) {
+        inv = std::next(tpl_begin, impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id,
+            get_set_index(template_addr), &*tpl_begin, fill_mshr.ip, template_addr, fill_mshr.type));
+      }
+      if (inv != tpl_end) {
+        if (inv->valid && inv->dirty) {
+          request_type wb;
+          wb.cpu = fill_mshr.cpu; wb.address = inv->address; wb.data = inv->data;
+          wb.type = access_type::WRITE; wb.response_requested = false;
+          lower_level->add_wq(wb);
+        }
+        inv->valid = true; inv->prefetch = false; inv->dirty = false;
+        inv->address = template_addr;
+        inv->v_address = champsim::address{champsim::page_number{base_2m}};
+        inv->data = champsim::address{fill_mshr.perf_2m_ppage};
+        inv->page_size = static_cast<uint8_t>(PageSize::PAGE_PERF);
+        inv->entry_type = 0; inv->pf_metadata = 0;
+      }
+    }
+    // Respond with 4KB PPN (already in data_promise from PTW hole walk)
+    if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_hole++; }
+    response_type response{fill_mshr.address, fill_mshr.v_address,
+        fill_mshr.data_promise->data, metadata_thru,
+        fill_mshr.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+    response.is_llc_miss = fill_mshr.is_llc_miss;
+    response.is_cxl_memory = fill_mshr.is_cxl_memory;
+    for (auto* ret : fill_mshr.to_return) ret->push_back(response);
+    return true;
+  }
+#endif
+
   // ── STLB 2MB: synthesize 4KB response from 2MB fill ──
   if (is_stlb_2m) {
     champsim::page_number p_page_2m{fill_mshr.data_promise->data};
@@ -333,6 +383,27 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
     uint64_t vpn_4k = champsim::page_number{fill_mshr.v_address}.to<uint64_t>();
     uint64_t base_2m = (vpn_4k >> 9) << 9;
     champsim::page_number p_page_2m{fill_mshr.data_promise->data};
+
+#ifndef USE_ECPT
+    // ── Cold path: PTW pre-classified this subpage (non-hole) ──
+    // PTW returned page_size=PERF, data=2MB PPN, perf_2m_ppage set.
+    // Template block installed above with correct 2MB PPN as data.
+    // Synthesize 4KB paddr and respond. Skip bitmap queueing.
+    if (fill_mshr.perf_2m_ppage != champsim::page_number{} && fill_mshr.entry_type == 0) {
+      champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+      champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+      auto synth_paddr = champsim::address{champsim::splice(
+          champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
+          champsim::address_slice{off_2m, fill_mshr.v_address})};
+      if (!this->warmup) { sim_stats.perf_total++; sim_stats.perf_coarse_filtered++; }
+      response_type response{fill_mshr.address, fill_mshr.v_address, synth_paddr, metadata_thru,
+                             fill_mshr.instr_depend_on_me, static_cast<uint8_t>(PageSize::PAGE_4K), 0};
+      response.is_llc_miss = fill_mshr.is_llc_miss;
+      response.is_cxl_memory = fill_mshr.is_cxl_memory;
+      for (auto* ret : fill_mshr.to_return) ret->push_back(response);
+      return true;
+    }
+#endif
 
     if (fill_mshr.entry_type == 1) {
       // ── Bitmap fill: classify all waiting subpages for this 2MB region ──
@@ -1287,6 +1358,7 @@ void CACHE::finish_packet(const response_type& packet)
   // Propagate page_size from response (STLB may transform PAGE_PERF → PAGE_4K)
   mshr_entry->page_size = packet.page_size;
   mshr_entry->entry_type = packet.entry_type;
+  mshr_entry->perf_2m_ppage = packet.perf_2m_ppage;
   // is_cxl_memory is already set in MSHR constructor based on heatmap (forward marking)
   // No need to update from response packet
   mshr_entry->data_promise = champsim::waitable{finished_value, current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY)};

@@ -61,7 +61,7 @@ auto PageTableWalker::handle_read(const request_type& handle_pkt, channel_type* 
     bm_mshr.v_address = handle_pkt.address;
     bm_mshr.page_size = handle_pkt.page_size;
     bm_mshr.entry_type = 1;
-    bm_mshr.perf_state = mshr_type::PerfState::BITMAP_PENDING;
+    bm_mshr.perf_state = mshr_type::PerfState::BITMAP_FETCH;
     bm_mshr.translation_level = 0;
 
     // Use real bitmap physical address allocated in vmem
@@ -122,13 +122,21 @@ auto PageTableWalker::handle_fill(const mshr_type& fill_mshr) -> std::optional<m
   fwd_mshr.address = *fill_mshr.data;
 
   if (fill_mshr.entry_type == 1) {
-    // Bitmap-only request response — skip PSCL update, keep state
+    // Bitmap-only request response (warm path from STLB) — skip PSCL update, keep state
     fwd_mshr.translation_level = fill_mshr.translation_level;
     fwd_mshr.perf_state = fill_mshr.perf_state;
     fwd_mshr.entry_type = fill_mshr.entry_type;
-  } else if (fill_mshr.perf_state == mshr_type::PerfState::BITMAP_PENDING) {
-    // Bitmap-only request response (from L1 bitmap check) — skip PSCL update
+  } else if (fill_mshr.perf_state == mshr_type::PerfState::BITMAP_FETCH) {
+    // PTW-internal bitmap fetch (cold path) — skip PSCL update
     fwd_mshr.translation_level = fill_mshr.translation_level;
+    fwd_mshr.perf_state = fill_mshr.perf_state;
+    fwd_mshr.saved_2m_ppage = fill_mshr.saved_2m_ppage;
+  } else if (fill_mshr.perf_state == mshr_type::PerfState::HOLE_WALK) {
+    // Hole walk: normal PSCL update, decrement level
+    const auto pscl_idx = std::size(pscl) - fill_mshr.translation_level;
+    pscl.at(pscl_idx).fill({fill_mshr.v_address, *fill_mshr.data, fill_mshr.translation_level - 1});
+    fwd_mshr.translation_level = fill_mshr.translation_level - 1;
+    fwd_mshr.saved_2m_ppage = fill_mshr.saved_2m_ppage;
     fwd_mshr.perf_state = fill_mshr.perf_state;
   } else {
     // Normal walk step (including PERF pages, which walk like 2MB)
@@ -178,6 +186,9 @@ long PageTableWalker::operate()
   std::for_each(complete_begin, complete_end, [](auto& mshr_entry) {
     for (auto ret : mshr_entry.to_return) {
       ret->emplace_back(mshr_entry.v_address, mshr_entry.v_address, *mshr_entry.data, mshr_entry.pf_metadata, mshr_entry.instr_depend_on_me, mshr_entry.page_size, mshr_entry.entry_type);
+      // Carry saved 2MB PPN for PERF cold-path template install in STLB
+      if (mshr_entry.saved_2m_ppage != champsim::page_number{})
+        ret->back().perf_2m_ppage = mshr_entry.saved_2m_ppage;
     }
   });
   fill_bw.consume(std::distance(complete_begin, complete_end));
@@ -223,9 +234,7 @@ long PageTableWalker::operate()
 
 void PageTableWalker::finish_packet(const response_type& packet)
 {
-  auto finish_step = [this](auto mshr_entry) {
-    // PERF pages walk like 2MB: stop at level 1. Classification (coarse filter +
-    // bitmap check + hole re-route) happens at L1 in finish_translation().
+  auto finish_step = [this](auto& mshr_entry) {
     auto [ppage, penalty] = this->vmem->get_pte_pa(mshr_entry.cpu, champsim::page_number{mshr_entry.v_address}, mshr_entry.translation_level);
 
     if constexpr (champsim::debug_print) {
@@ -237,21 +246,20 @@ void PageTableWalker::finish_packet(const response_type& packet)
     return champsim::waitable{ppage, this->current_time + penalty + (this->warmup ? champsim::chrono::clock::duration{} : HIT_LATENCY)};
   };
 
-  auto finish_last_step = [this](auto mshr_entry) {
+  auto finish_last_step = [this](auto& mshr_entry) {
     champsim::page_number ppage;
     champsim::chrono::clock::duration penalty;
 
     if (mshr_entry.entry_type == 1) {
-      // Bitmap-only request: no translation needed, just return a dummy address
-      // The bitmap data is read from vmem at L1 level; this just models the memory access cost
+      // Bitmap-only request (warm path from STLB): return dummy address
       penalty = champsim::chrono::clock::duration::zero();
       ppage = champsim::page_number{mshr_entry.v_address};
     } else if (mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
-        || mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
         || mshr_entry.page_size == static_cast<uint8_t>(PageSize::PAGE_IDEAL_PERF)) {
-      // 2MB, perforated, and ideal-perforated pages all use va_to_pa_2m
+      // 2MB and ideal-perforated use va_to_pa_2m
       std::tie(ppage, penalty) = this->vmem->va_to_pa_2m(mshr_entry.cpu, champsim::page_number{mshr_entry.v_address});
     } else {
+      // 4KB pages (including HOLE_WALK completions)
       std::tie(ppage, penalty) = this->vmem->va_to_pa(mshr_entry.cpu, champsim::page_number{mshr_entry.v_address});
     }
 
@@ -267,27 +275,103 @@ void PageTableWalker::finish_packet(const response_type& packet)
   auto matches_addr = [block = champsim::block_number{packet.address}](auto x) {
     return champsim::block_number{x.address} == block;
   };
-  // For 2MB pages, stop one level earlier (skip level 1 PTE walk)
-  // For perforated pages, only done after bitmap step completes
-  auto is_last_step = [](auto x) {
-    // Bitmap-only requests are done after single memory access
-    if (x.entry_type == 1)
-      return true;
-    // Both 2MB and PERF pages stop after level 1 (PDE level).
-    // For PERF, classification (coarse filter + bitmap) happens at L1.
-    if (x.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
-        || x.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
-        || x.page_size == static_cast<uint8_t>(PageSize::PAGE_IDEAL_PERF))
-      return x.translation_level <= 1;
-    return x.translation_level <= 0;   // 4KB: stop after level 1
-  };
+
   auto last_finished = std::partition(std::begin(MSHR), std::end(MSHR), matches_addr);
 
-  std::for_each(std::begin(MSHR), last_finished, [is_last_step, finish_step, finish_last_step](auto& mshr_entry) {
-    mshr_entry.data = is_last_step(mshr_entry) ? finish_last_step(mshr_entry) : finish_step(mshr_entry);
-  });
+  // Process each matching MSHR entry individually (needed for per-entry PERF classification)
+  std::vector<mshr_type> newly_completed;
+  std::vector<mshr_type> newly_finished;
 
-  std::partition_copy(std::begin(MSHR), last_finished, std::back_inserter(completed), std::back_inserter(finished), is_last_step);
+  for (auto it = std::begin(MSHR); it != last_finished; ++it) {
+    auto& entry = *it;
+
+#ifndef USE_ECPT
+    // Helper: synthesize 4KB physical address from 2MB PPN + virtual address offset
+    auto synthesize_4kb = [](champsim::page_number p_page_2m, champsim::address v_addr) {
+      champsim::dynamic_extent off_2m{champsim::data::bits{LOG2_PAGE_SIZE_2M}, champsim::data::bits{}};
+      champsim::dynamic_extent pn_2m{champsim::address::bits, champsim::data::bits{LOG2_PAGE_SIZE_2M}};
+      return champsim::address{champsim::splice(
+          champsim::address_slice{pn_2m, champsim::address{p_page_2m}},
+          champsim::address_slice{off_2m, v_addr})};
+    };
+
+    // ── PERF cold path: bitmap fetch response ──
+    if (entry.perf_state == mshr_type::PerfState::BITMAP_FETCH) {
+      uint64_t vpn_4k = champsim::page_number{entry.v_address}.to<uint64_t>();
+      if (!vmem->is_hole(vpn_4k)) {
+        // Non-hole: synthesize 4KB from saved 2MB PPN, done
+        auto synth = synthesize_4kb(entry.saved_2m_ppage, entry.v_address);
+        entry.data = champsim::waitable{synth, current_time + (warmup ? champsim::chrono::clock::duration{} : HIT_LATENCY)};
+        entry.page_size = static_cast<uint8_t>(PageSize::PAGE_PERF);
+        entry.perf_state = mshr_type::PerfState::NORMAL;
+        newly_completed.push_back(entry);
+      } else {
+        // Hole: continue walk to level 0 for 4KB PPN
+        auto [ppage, penalty] = vmem->get_pte_pa(entry.cpu, champsim::page_number{entry.v_address}, 1);
+        entry.data = champsim::waitable{ppage, current_time + penalty + (warmup ? champsim::chrono::clock::duration{} : HIT_LATENCY)};
+        entry.perf_state = mshr_type::PerfState::HOLE_WALK;
+        entry.page_size = static_cast<uint8_t>(PageSize::PAGE_4K);
+        entry.translation_level = 1; // handle_fill will decrement to 0
+        newly_finished.push_back(entry);
+      }
+      continue;
+    }
+
+    // ── PERF cold path: PERF PTE reached at level 1 ──
+    if (entry.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
+        && entry.perf_state == mshr_type::PerfState::NORMAL
+        && entry.entry_type == 0
+        && entry.translation_level <= 1) {
+      // Save 2MB PPN
+      auto [ppage_2m, penalty_2m] = vmem->va_to_pa_2m(entry.cpu, champsim::page_number{entry.v_address});
+      entry.saved_2m_ppage = ppage_2m;
+
+      uint64_t vpn_4k = champsim::page_number{entry.v_address}.to<uint64_t>();
+
+      if (!vmem->coarse_filter_pass(vpn_4k)) {
+        // Coarse filter = 0: no holes in this region, synthesize 4KB
+        auto synth = synthesize_4kb(ppage_2m, entry.v_address);
+        entry.data = champsim::waitable{synth, current_time + penalty_2m + (warmup ? champsim::chrono::clock::duration{} : HIT_LATENCY)};
+        entry.perf_state = mshr_type::PerfState::NORMAL;
+        // page_size stays PERF so STLB installs template
+        newly_completed.push_back(entry);
+      } else {
+        // Coarse filter = 1: need bitmap check → issue bitmap memory access
+        uint64_t base_2m = (vpn_4k >> 9) << 9;
+        auto bitmap_paddr = champsim::address{vmem->get_bitmap_paddr(base_2m)};
+        entry.data = champsim::waitable{bitmap_paddr, current_time + penalty_2m + (warmup ? champsim::chrono::clock::duration{} : HIT_LATENCY)};
+        entry.address = bitmap_paddr;
+        entry.perf_state = mshr_type::PerfState::BITMAP_FETCH;
+        newly_finished.push_back(entry);
+      }
+      continue;
+    }
+#endif // !USE_ECPT
+
+    // ── Normal handling (4KB, 2MB, IDEAL_PERF, HOLE_WALK at level 0, warm-path bitmap) ──
+    auto is_last = [](const auto& x) {
+      if (x.entry_type == 1)
+        return true;
+      if (x.perf_state == mshr_type::PerfState::HOLE_WALK)
+        return x.translation_level <= 0;
+      if (x.page_size == static_cast<uint8_t>(PageSize::PAGE_2M)
+          || x.page_size == static_cast<uint8_t>(PageSize::PAGE_PERF)
+          || x.page_size == static_cast<uint8_t>(PageSize::PAGE_IDEAL_PERF))
+        return x.translation_level <= 1;
+      return x.translation_level <= 0;
+    };
+
+    if (is_last(entry)) {
+      entry.data = finish_last_step(entry);
+      newly_completed.push_back(entry);
+    } else {
+      entry.data = finish_step(entry);
+      newly_finished.push_back(entry);
+    }
+  }
+
+  completed.insert(completed.end(), newly_completed.begin(), newly_completed.end());
+  finished.insert(finished.end(), newly_finished.begin(), newly_finished.end());
   MSHR.erase(std::begin(MSHR), last_finished);
 }
 

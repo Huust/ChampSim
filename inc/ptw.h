@@ -64,8 +64,13 @@ class PageTableWalker : public champsim::operable
     uint8_t page_size = 0; // 0=4K, 1=2M, 2=PERF (matches PageSize enum)
     uint8_t entry_type = 0; // 0=TLB translation, 1=bitmap entry
 
-    enum class PerfState : uint8_t { NORMAL = 0, BITMAP_PENDING = 1 };
+    enum class PerfState : uint8_t {
+      NORMAL = 0,
+      BITMAP_FETCH = 1,  // PTW-internal: waiting for bitmap memory access (cold path)
+      HOLE_WALK = 2      // PTW-internal: walking level 0 for hole subpage
+    };
     PerfState perf_state = PerfState::NORMAL;
+    champsim::page_number saved_2m_ppage{}; // saved 2MB PPN for PERF synthesis/template
 
     std::size_t translation_level = 0;
 

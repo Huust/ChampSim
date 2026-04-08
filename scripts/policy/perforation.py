@@ -157,6 +157,8 @@ def parse_args() -> argparse.Namespace:
                    help="Minimum cold-subpage fraction for fast-tier HP eligibility. Default: 0.0")
     p.add_argument("--theta-high", type=float, default=1.0,
                    help="Maximum cold-subpage fraction for fast-tier HP eligibility. Default: 1.0 (no limit)")
+    p.add_argument("--max-regions", type=int, default=8,
+                   help="Max activated coarse filter regions (out of 8) per perforated HP. Default: 8 (no limit)")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
 
@@ -311,12 +313,26 @@ def main() -> None:
         # S1: free frames
         supply_s1 = R
 
-        # S2: cold subpages from eligible fast-tier huge pages, coldest first
-        supply_s2: List[Tuple[int, int, float]] = []
+        # S2: cold subpages from eligible fast-tier huge pages, region-aware.
+        # Group by (base, region_idx), sort regions by cold count descending
+        # so holes concentrate in few coarse filter regions.
+        # Enforce --max-regions: skip regions that would exceed the per-HP limit.
+        s2_region_groups: List[Tuple[int, int, List[int]]] = []
         for base in eligible_fast:
+            region_cold: Dict[int, List[int]] = defaultdict(list)
             for vpn in regions[base].cold_pages:
+                region_cold[(vpn - base) // 64].append(vpn)
+            for ridx, vpns in region_cold.items():
+                s2_region_groups.append((base, ridx, vpns))
+        s2_region_groups.sort(key=lambda x: (-len(x[2]), x[0], x[1]))
+        supply_s2: List[Tuple[int, int, float]] = []
+        s2_hp_region_count: Dict[int, int] = defaultdict(int)  # base → regions used
+        for base, _ridx, vpns in s2_region_groups:
+            if s2_hp_region_count[base] >= args.max_regions:
+                continue  # this HP already at region limit
+            s2_hp_region_count[base] += 1
+            for vpn in vpns:
                 supply_s2.append((base, vpn, hotness[vpn]))
-        supply_s2.sort(key=lambda x: (x[2], x[1]))
 
         # S3: cold standalone 4KB pages in fast tier (from Memtis splits), coldest first
         supply_s3: List[Tuple[int, float]] = []
@@ -330,10 +346,24 @@ def main() -> None:
         # D1: stranded hot standalone 4KB pages in slow tier, hottest first
         demand_d1: List[int] = sorted(slow_leftover, key=lambda v: (-hotness[v], v))
 
-        # D2: trapped hot subpages in eligible slow-tier huge pages, hottest first
-        demand_d2: List[int] = sorted(
-            [vpn for base in eligible_slow for vpn in regions[base].ideal_hot_pages],
-            key=lambda v: (-hotness[v], v))
+        # D2: trapped hot subpages in eligible slow-tier huge pages, region-aware.
+        # Group by (base, region_idx), sort regions by hot count descending
+        # so promoted subpages concentrate in few coarse filter regions.
+        d2_region_groups: List[Tuple[int, int, List[int]]] = []
+        for base in eligible_slow:
+            region_hot: Dict[int, List[int]] = defaultdict(list)
+            for vpn in regions[base].ideal_hot_pages:
+                region_hot[(vpn - base) // 64].append(vpn)
+            for ridx, vpns in region_hot.items():
+                d2_region_groups.append((base, ridx, vpns))
+        d2_region_groups.sort(key=lambda x: (-len(x[2]), x[0], x[1]))
+        demand_d2: List[int] = []
+        d2_hp_region_count: Dict[int, int] = defaultdict(int)
+        for base, _ridx, vpns in d2_region_groups:
+            if d2_hp_region_count[base] >= args.max_regions:
+                continue
+            d2_hp_region_count[base] += 1
+            demand_d2.extend(vpns)
 
         # ── Two-level priority matching ──
         s1_avail = supply_s1
@@ -415,6 +445,35 @@ def main() -> None:
             print(f"supply: S1(free)={R} S2(hp_cold)={len(supply_s2)} S3(bp_cold)={len(supply_s3)}")
             print(f"demand: D1(stranded)={len(demand_d1)} D2(trapped)={len(demand_d2)}")
             print(f"placed: D1={p1_count} D2={p2_count} holes={holes_punched} bp_demoted={bp_demoted_count} free_used={free_used}")
+
+            # ── Coarse filter statistics ──
+            def activated_regions(base: int, vpn_set: Set[int]) -> int:
+                return len({(vpn - base) // 64 for vpn in vpn_set})
+
+            # Classify promoted D2 pages by slow HP base (needed for slow-tier stats)
+            p2_by_base: Dict[int, Set[int]] = {}
+            p1_set_tmp = set(slow_leftover)
+            for b, vpns in promoted_to_fast.items():
+                p2v = {v for v in vpns if v not in p1_set_tmp}
+                if p2v:
+                    p2_by_base[b] = p2v
+
+            if punched_holes:
+                bits_list = [(b, len(h), activated_regions(b, h)) for b, h in punched_holes.items()]
+                avg_bits = sum(x[2] for x in bits_list) / len(bits_list)
+                avg_holes = sum(x[1] for x in bits_list) / len(bits_list)
+                print(f"coarse_filter_fast: {len(bits_list)} perforated HPs, "
+                      f"avg {avg_bits:.2f}/8 activated regions, avg {avg_holes:.1f} holes")
+                for b, nh, nb in sorted(bits_list, key=lambda x: -x[2]):
+                    print(f"  HP {b:x}: {nh} holes in {nb}/8 regions")
+            if p2_by_base:
+                bits_list_s = [(b, len(v), activated_regions(b, v)) for b, v in p2_by_base.items()]
+                avg_bits_s = sum(x[2] for x in bits_list_s) / len(bits_list_s)
+                avg_hot_s = sum(x[1] for x in bits_list_s) / len(bits_list_s)
+                print(f"coarse_filter_slow: {len(bits_list_s)} perforated HPs, "
+                      f"avg {avg_bits_s:.2f}/8 activated regions, avg {avg_hot_s:.1f} hot holes")
+                for b, nh, nb in sorted(bits_list_s, key=lambda x: -x[2]):
+                    print(f"  HP {b:x}: {nh} hot holes in {nb}/8 regions")
 
     # ══════════════════════════════════════════════════════════════════
     # EMIT PMAP
