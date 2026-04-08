@@ -207,6 +207,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   } else {
     fmt::print("Page mode: 4kb (all pages use 4KB mapping)\n");
   }
+#ifdef USE_ECPT
+  // Reserve ECPT hash table space at DRAM tail BEFORE carving 2MB pages
+  for (auto ptw_ref : gen_environment.ptw_view())
+    ptw_ref.get().reserve_tables();
+#endif
   g_vmem->carve_2mb_pages();
 
   // Allocate VPNs by heatmap (must happen after page mode is set, so capacity

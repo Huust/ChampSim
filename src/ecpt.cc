@@ -136,17 +136,28 @@ champsim::address ECPTWalker::probe_address(uint64_t vpn_4k, int ps_idx, int way
 // Hash table + CWT construction (called once at initialize())
 // ============================================================================
 
-void ECPTWalker::build_tables()
+void ECPTWalker::reserve_tables()
 {
-  // Reserve physical address space for ECPT tables at the END of DRAM.
-  // Compute total table size first, then place them at (total_memory - table_size).
+  // Called from main.cc BEFORE carve_2mb_pages() to remove hash table pages
+  // from the free list so they cannot be carved into 2MB pool.
   uint64_t total_table_bytes = 0;
   for (int ps = 0; ps < 2; ++ps) {
     uint32_t entries = (ps == 0) ? PTE_TABLE_ENTRIES : PMD_TABLE_ENTRIES;
-    total_table_bytes += static_cast<uint64_t>(entries) * 64 * 2; // 2 ways
+    total_table_bytes += static_cast<uint64_t>(entries) * 64 * 2;
   }
-  uint64_t total_mem = vmem->total_memory_size();
-  uint64_t ecpt_base = total_mem - total_table_bytes;
+  reserved_base_addr = vmem->reserve_dram_tail(total_table_bytes);
+  fmt::print("[ECPT] Reserved {:.2f} MB at DRAM tail (base={:#x}) for hash tables\n",
+             total_table_bytes / (1024.0 * 1024.0), reserved_base_addr);
+}
+
+void ECPTWalker::build_tables()
+{
+  // Use the base address reserved earlier by reserve_tables().
+  if (reserved_base_addr == 0) {
+    fmt::print("[ECPT] FATAL: build_tables() called before reserve_tables()\n");
+    abort();
+  }
+  uint64_t ecpt_base = reserved_base_addr;
 
   for (int ps = 0; ps < 2; ++ps) {
     uint32_t entries = (ps == 0) ? PTE_TABLE_ENTRIES : PMD_TABLE_ENTRIES;
@@ -157,21 +168,14 @@ void ECPTWalker::build_tables()
     }
   }
 
-  // Protect ECPT hash table pages from being allocated as data pages.
-  // Convert byte range [total_mem - total_table_bytes, total_mem) to 4KB page numbers.
-  uint64_t first_protected_ppn = (total_mem - total_table_bytes) / PAGE_SIZE;
-  uint64_t protected_page_count = (total_table_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
-  vmem->protect_page_range(first_protected_ppn, protected_page_count);
-
+  uint64_t total_table_bytes = ecpt_base - reserved_base_addr;
   fmt::print("[ECPT] Hash table layout:\n");
   fmt::print("[ECPT]   PTE way0: base={:#x} entries={}\n", tables_[0][0].base_paddr, tables_[0][0].num_entries);
   fmt::print("[ECPT]   PTE way1: base={:#x} entries={}\n", tables_[0][1].base_paddr, tables_[0][1].num_entries);
   fmt::print("[ECPT]   PMD way0: base={:#x} entries={}\n", tables_[1][0].base_paddr, tables_[1][0].num_entries);
   fmt::print("[ECPT]   PMD way1: base={:#x} entries={}\n", tables_[1][1].base_paddr, tables_[1][1].num_entries);
-  fmt::print("[ECPT]   Total size: {:.2f} MB (at end of {:.0f} MB DRAM), {} pages protected\n",
-             static_cast<double>(total_table_bytes) / (1024.0 * 1024.0),
-             static_cast<double>(total_mem) / (1024.0 * 1024.0),
-             protected_page_count);
+  fmt::print("[ECPT]   Total size: {:.2f} MB (base={:#x})\n",
+             total_table_bytes / (1024.0 * 1024.0), reserved_base_addr);
 
   // Do cuckoo insertion to determine way assignments.
   // We iterate all VPN→PPN mappings from vmem and assign each to a way.

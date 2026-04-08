@@ -179,6 +179,9 @@ class ECPTWalker : public champsim::operable
   void setup_probes(mshr_type& mshr);
 
 public:
+  // Reserve hash table space at DRAM tail. Must be called before carve_2mb_pages().
+  void reserve_tables();
+
   const std::string NAME;
   const uint32_t MSHR_SIZE;
   champsim::bandwidth::maximum_type MAX_READ, MAX_FILL;
@@ -189,6 +192,7 @@ public:
   const uint32_t PMD_TABLE_ENTRIES;
 
   VirtualMemory* vmem;
+  uint64_t reserved_base_addr = 0;  // set by reserve_tables()
 
   // Statistics
   uint64_t stat_total_walks = 0;
